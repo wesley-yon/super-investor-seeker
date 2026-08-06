@@ -520,6 +520,11 @@ class WorkflowResilienceTests(unittest.TestCase):
 
         self.assertRegex(workflow, r"(?m)^  push:\s*$")
         self.assertNotIn("branches: [main]", workflow)
+        self.assertIn("github.event_name != 'pull_request'", workflow)
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name != github.repository",
+            workflow,
+        )
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn("git ls-files -- data/ .cache/", workflow)
         self.assertIn("git log --all --format= --name-only -- data/ .cache/", workflow)

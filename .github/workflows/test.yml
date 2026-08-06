@@ -9,6 +9,12 @@ permissions:
 
 jobs:
   unit-tests:
+    # A same-repository PR already runs this exact SHA through the branch-push
+    # event. Keep pull_request coverage for forks without paying for, waiting
+    # on, or receiving duplicate failure mail from a second hosted runner.
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
