@@ -3357,6 +3357,32 @@ def _merge_committed_registry_display_metadata(
             entry.get("product_name"),
             identifier=identifier,
         )
+        committed_product_source = str(
+            committed_entry.get("product_name_source") or ""
+        ).strip()
+        private_product_source = str(
+            entry.get("product_name_source") or ""
+        ).strip()
+        committed_fund_symbol = _registry_fund_symbol(
+            identifier=identifier,
+            entry=committed_entry,
+        )
+        private_fund_symbol = _registry_fund_symbol(
+            identifier=identifier,
+            entry=entry,
+        )
+        authoritative_case_only_product = bool(
+            committed_product
+            and private_product
+            and committed_product.casefold() == private_product.casefold()
+            and committed_fund_symbol
+            and committed_fund_symbol == private_fund_symbol
+            and committed_product_source.startswith("sec_fund_")
+            and (
+                not private_product_source
+                or private_product_source.startswith("openfigi")
+            )
+        )
         aliases = (
             identifier,
             entry.get("ticker"),
@@ -3366,6 +3392,7 @@ def _merge_committed_registry_display_metadata(
         )
         if committed_product and (
             not private_product
+            or authoritative_case_only_product
             or _fund_product_name_degrades_existing(
                 committed_product,
                 private_product,
@@ -3373,11 +3400,8 @@ def _merge_committed_registry_display_metadata(
             )
         ):
             entry["product_name"] = committed_product
-            committed_source = str(
-                committed_entry.get("product_name_source") or ""
-            ).strip()
-            if committed_source:
-                entry["product_name_source"] = committed_source
+            if committed_product_source:
+                entry["product_name_source"] = committed_product_source
             else:
                 entry.pop("product_name_source", None)
         elif (
@@ -3385,11 +3409,8 @@ def _merge_committed_registry_display_metadata(
             and private_product == committed_product
             and not str(entry.get("product_name_source") or "").strip()
         ):
-            committed_source = str(
-                committed_entry.get("product_name_source") or ""
-            ).strip()
-            if committed_source:
-                entry["product_name_source"] = committed_source
+            if committed_product_source:
+                entry["product_name_source"] = committed_product_source
 
         merged[identifier] = entry
     return merged

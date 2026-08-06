@@ -657,6 +657,62 @@ class GeneratedDataContractTests(unittest.TestCase):
             prior_registry["123456789"]["product_name"],
         )
 
+    def test_committed_sec_fund_provenance_survives_case_only_cache_drift(
+        self,
+    ) -> None:
+        identifier = "464286772"
+        committed_entry = {
+            "ticker": "EWY",
+            "security_label": "EWY",
+            "security_kind": "ETF",
+            "product_name": "iShares MSCI South Korea ETF",
+            "product_name_source": "sec_fund_series",
+        }
+        private_entry = {
+            "ticker": "EWY",
+            "security_label": "EWY",
+            "security_kind": "ETF",
+            "product_name": "ISHARES MSCI SOUTH KOREA ETF",
+            "product_name_source": "openfigi",
+        }
+
+        for private_source in ("openfigi", ""):
+            with self.subTest(private_source=private_source):
+                candidate = {
+                    **private_entry,
+                    "product_name_source": private_source,
+                }
+                merged = pipeline._merge_committed_registry_display_metadata(
+                    {identifier: candidate},
+                    {identifier: committed_entry},
+                )
+                self.assertEqual(
+                    committed_entry["product_name"],
+                    merged[identifier]["product_name"],
+                )
+                self.assertEqual(
+                    "sec_fund_series",
+                    merged[identifier]["product_name_source"],
+                )
+
+        changed_symbol = {
+            **private_entry,
+            "ticker": "NEWF",
+            "security_label": "NEWF",
+        }
+        changed = pipeline._merge_committed_registry_display_metadata(
+            {identifier: changed_symbol},
+            {identifier: committed_entry},
+        )
+        self.assertEqual(
+            private_entry["product_name"],
+            changed[identifier]["product_name"],
+        )
+        self.assertEqual(
+            "openfigi",
+            changed[identifier]["product_name_source"],
+        )
+
     def test_swgxx_manual_name_override_keeps_filer_issuer_provenance(
         self,
     ) -> None:
