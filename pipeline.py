@@ -15,7 +15,7 @@ Usage:
                                                     # rebuild from existing fund
                                                     # files, fully refresh the
                                                     # private CUSIP cache, and
-                                                    # rebuild the public CUSIP
+                                                    # rebuild the snapshot CUSIP
                                                     # registry + derived outputs
 
 Reads SEC_USER_AGENT from env. SEC requires a real contact email in the UA.
@@ -106,9 +106,9 @@ SEC_FUND_NAMES_PATH = CACHE_DIR / "sec_fund_names.json"
 SEC_FUND_TICKERS_PATH = CACHE_DIR / "company_tickers_mf.json"
 TICKER_HEALTH_PATH = DATA_DIR / "ticker_health.json"
 SECURITY_LABELS_PATH = DATA_DIR / "security_labels.json"
-# The private cache carries operational evidence, while committed display
-# metadata is a durability floor so an older restored cache cannot erase
-# reviewed labels, kinds, or fund names. The compact public label map feeds
+# The private cache carries operational evidence, while the snapshot's data
+# copy is a durability floor so an older restored cache cannot erase reviewed
+# labels, kinds, or fund names. The compact browser-facing label map feeds
 # display without duplicating metadata in every holding.
 CUSIP_REGISTRY_PATH = CACHE_DIR / "cusip_registry.json"
 LEGACY_CUSIP_REGISTRY_PATH = DATA_DIR / "cusip_registry.json"
@@ -3278,12 +3278,12 @@ def _merge_committed_registry_display_metadata(
     private_registry: dict,
     committed_registry: dict,
 ) -> dict:
-    """Use committed display metadata as a floor for a stale private cache.
+    """Use snapshot display metadata as a floor for a stale private cache.
 
-    The private cache carries current operational/filing evidence, but Actions
-    caches can predate display enrichments already checked into the public
-    registry.  Merge only the reader-facing identity fields here so a restored
-    cache cannot silently erase a known kind, label, or descriptive fund name.
+    The private cache carries current operational/filing evidence, but it can
+    predate display enrichments already present in the snapshot's data copy.
+    Merge only reader-facing identity fields so a restored cache cannot
+    silently erase a known kind, label, or descriptive fund name.
     """
 
     merged = {
@@ -4033,13 +4033,30 @@ def _openfigi_detail(candidate: dict) -> dict:
 def _openfigi_is_definitive_no_match(entry: dict) -> bool:
     """Whether one per-identifier response is safe to persist as no-match."""
 
-    if isinstance(entry.get("warning"), str):
+    warning = entry.get("warning")
+    if isinstance(warning, str) and warning.strip():
         return True
     error = str(entry.get("error") or "").strip().lower().rstrip(".")
     return error in {
         "invalid idvalue format",
         "no identifier found",
     }
+
+
+class OpenFIGIFullRefreshError(RuntimeError):
+    """Raised when a full OpenFIGI refresh cannot verify every batch."""
+
+
+def _openfigi_batch_failure(
+    message: str,
+    *,
+    strict: bool,
+) -> None:
+    """Log a batch failure, raising when the caller requires completeness."""
+
+    if strict:
+        raise OpenFIGIFullRefreshError(message)
+    log.warning(message)
 
 
 def resolve_cusips_via_openfigi(
@@ -4055,7 +4072,11 @@ def resolve_cusips_via_openfigi(
     identifiers retain the CUSIP route. When OPENFIGI_API_KEY is present we use
     the keyed request size and pace more aggressively; otherwise we honor the
     lower public limits. Durable matched/no-match details short-circuit routine
-    retries; ``force_refresh`` is reserved for the weekly full refresh.
+    retries. ``force_refresh`` is reserved for the weekly full refresh and is
+    therefore also strict: every requested identifier must receive a complete,
+    structurally valid batch response or the refresh fails rather than silently
+    succeeding with retained stale mappings. Routine resolution remains
+    best-effort so a transient OpenFIGI outage cannot block daily SEC updates.
     """
     if not cusips:
         return {}
@@ -4117,27 +4138,79 @@ def resolve_cusips_via_openfigi(
             ]
             resp = _openfigi_post(payload)
             if resp is None:
-                log.warning(f"    batch {batch_num} failed with no response; skipping")
+                _openfigi_batch_failure(
+                    f"OpenFIGI batch {batch_num}/{total_batches} failed after "
+                    "all request attempts: no response",
+                    strict=force_refresh,
+                )
             elif resp.status_code != 200:
-                log.warning(f"    batch {batch_num} failed with HTTP {resp.status_code}; skipping")
+                _openfigi_batch_failure(
+                    f"OpenFIGI batch {batch_num}/{total_batches} failed with "
+                    f"HTTP {resp.status_code}: {_response_excerpt(resp)}",
+                    strict=force_refresh,
+                )
             else:
                 try:
                     data = resp.json()
                 except ValueError:
-                    log.warning(
-                        f"    batch {batch_num} returned invalid JSON; body={_response_excerpt(resp)}"
+                    _openfigi_batch_failure(
+                        f"OpenFIGI batch {batch_num}/{total_batches} returned "
+                        f"invalid JSON: {_response_excerpt(resp)}",
+                        strict=force_refresh,
                     )
                     data = []
                 if not isinstance(data, list):
-                    log.warning(
-                        f"    batch {batch_num} JSON was not a list "
-                        f"({type(data).__name__}); body={_response_excerpt(resp)}"
+                    _openfigi_batch_failure(
+                        f"OpenFIGI batch {batch_num}/{total_batches} JSON was "
+                        f"not a list ({type(data).__name__}): "
+                        f"{_response_excerpt(resp)}",
+                        strict=force_refresh,
                     )
                     data = []
+                if len(data) != len(batch):
+                    _openfigi_batch_failure(
+                        f"OpenFIGI batch {batch_num}/{total_batches} returned "
+                        f"{len(data)} result(s) for {len(batch)} identifier(s)",
+                        strict=force_refresh,
+                    )
                 details_changed = False
                 for cusip, entry in zip(batch, data):
                     if not isinstance(entry, dict):
+                        _openfigi_batch_failure(
+                            f"OpenFIGI batch {batch_num}/{total_batches} returned "
+                            f"a non-object result for {cusip}",
+                            strict=force_refresh,
+                        )
                         continue
+                    if force_refresh:
+                        result_keys = {
+                            key for key in ("data", "error", "warning")
+                            if key in entry
+                        }
+                        if len(result_keys) != 1:
+                            _openfigi_batch_failure(
+                                f"OpenFIGI batch {batch_num}/{total_batches} "
+                                f"returned a non-exclusive result shape for "
+                                f"{cusip}: {sorted(result_keys)!r}",
+                                strict=True,
+                            )
+                        result_key = next(iter(result_keys))
+                        if result_key == "error":
+                            _openfigi_batch_failure(
+                                f"OpenFIGI batch {batch_num}/{total_batches} "
+                                f"returned an error result for {cusip}: "
+                                f"{entry.get('error')!r}",
+                                strict=True,
+                            )
+                        if result_key == "warning" and not (
+                            isinstance(entry.get("warning"), str)
+                            and entry["warning"].strip()
+                        ):
+                            _openfigi_batch_failure(
+                                f"OpenFIGI batch {batch_num}/{total_batches} "
+                                f"returned an empty warning for {cusip}",
+                                strict=True,
+                            )
                     if "data" not in entry:
                         if _openfigi_is_definitive_no_match(entry):
                             _OPENFIGI_RUN_CACHE[cusip] = None
@@ -4145,19 +4218,49 @@ def resolve_cusips_via_openfigi(
                             if details.get(cusip) != no_match:
                                 details[cusip] = no_match
                                 details_changed = True
+                        else:
+                            _openfigi_batch_failure(
+                                f"OpenFIGI batch {batch_num}/{total_batches} "
+                                f"returned an incomplete result for {cusip}: "
+                                f"{entry!r}",
+                                strict=force_refresh,
+                            )
                         continue
                     inner = entry.get("data")
                     if not isinstance(inner, list) or any(
                         not isinstance(item, dict) for item in inner
                     ):
+                        _openfigi_batch_failure(
+                            f"OpenFIGI batch {batch_num}/{total_batches} returned "
+                            f"malformed mapping data for {cusip}",
+                            strict=force_refresh,
+                        )
                         continue
                     if not inner:
+                        if force_refresh:
+                            _openfigi_batch_failure(
+                                f"OpenFIGI batch {batch_num}/{total_batches} "
+                                f"returned empty mapping data for {cusip}; "
+                                "a no-match must use the warning response shape",
+                                strict=True,
+                            )
                         _OPENFIGI_RUN_CACHE[cusip] = None
                         no_match = {"status": "no_match"}
                         if details.get(cusip) != no_match:
                             details[cusip] = no_match
                             details_changed = True
                         continue
+                    if force_refresh and any(
+                        not isinstance(item.get("figi"), str)
+                        or not item["figi"].strip()
+                        for item in inner
+                    ):
+                        _openfigi_batch_failure(
+                            f"OpenFIGI batch {batch_num}/{total_batches} "
+                            f"returned a mapping result without a non-empty "
+                            f"FIGI for {cusip}",
+                            strict=True,
+                        )
 
                     candidate = _select_openfigi_candidate(inner)
                     if candidate is None:
@@ -4797,7 +4900,7 @@ def rebuild_tickers_in_place(
     }
     for cusip, (source_ticker, _canonical_ticker) in active_aliases.items():
         # Keep the mechanically provable source symbol in the private map.
-        # The public registry canonicalizes it after this repair pass.
+        # The snapshot registry canonicalizes it after this repair pass.
         cusip_map[cusip] = source_ticker
     suspect_cusips.difference_update(active_aliases)
     if active_aliases:
@@ -9109,8 +9212,8 @@ def build_cusip_registry(
         ),
     )
     if not refresh_official_fund_names:
-        # The public registry is the durability floor when a daily runner has
-        # a cold or partial private cache. Restore only exact CUSIP + symbol
+        # The snapshot registry is the durability floor when a daily runner
+        # has a cold or partial private cache. Restore only exact CUSIP + symbol
         # matches; full refreshes deliberately skip this guard so SEC-confirmed
         # renames, liquidations, and symbol reuse can replace stale metadata.
         for identifier, (
@@ -9180,7 +9283,7 @@ def build_cusip_registry(
 
 
 def validate_cusip_registry() -> list[str]:
-    """Return human-readable warnings about the committed registry."""
+    """Return human-readable warnings about the snapshot registry copies."""
     issues: list[str] = []
     registry = load_cusip_registry()
     if not registry:
@@ -9189,20 +9292,20 @@ def validate_cusip_registry() -> list[str]:
 
     if not LEGACY_CUSIP_REGISTRY_PATH.exists():
         issues.append(
-            f"public fallback missing at {LEGACY_CUSIP_REGISTRY_PATH.name}"
+            f"snapshot data copy missing at {LEGACY_CUSIP_REGISTRY_PATH.name}"
         )
     else:
         try:
             with open(LEGACY_CUSIP_REGISTRY_PATH) as f:
-                public_registry = json.load(f)
+                snapshot_registry = json.load(f)
         except json.JSONDecodeError:
             issues.append(
-                f"public fallback {LEGACY_CUSIP_REGISTRY_PATH.name} is invalid JSON"
+                f"snapshot data copy {LEGACY_CUSIP_REGISTRY_PATH.name} is invalid JSON"
             )
         else:
-            if public_registry != registry:
+            if snapshot_registry != registry:
                 issues.append(
-                    f"public fallback {LEGACY_CUSIP_REGISTRY_PATH.name} differs from cache registry"
+                    f"snapshot data copy {LEGACY_CUSIP_REGISTRY_PATH.name} differs from cache registry"
                 )
 
     missing_name = sum(1 for e in registry.values() if not e.get("name"))
@@ -11654,7 +11757,7 @@ def main() -> int:
         action="store_true",
         help="with --regenerate-only, prune the private CUSIP cache to current "
              "holdings, re-resolve all current CUSIPs via OpenFIGI, rebuild the "
-             "public CUSIP registry, and regenerate derived data",
+             "snapshot CUSIP registry, and regenerate derived data",
     )
     parser.add_argument(
         "--retry-unresolved",
@@ -11727,7 +11830,7 @@ def main() -> int:
             full_refresh=args.full_cusip_refresh,
             company_ticker_data=company_ticker_data,
             # Fund names are durable display metadata. Daily runs reuse the
-            # committed/private last-known-good names; only weekly/manual full
+            # snapshot last-known-good names; only weekly/manual full
             # refreshes may query the SEC for current series/class names.
             refresh_official_fund_names=args.full_cusip_refresh,
         )

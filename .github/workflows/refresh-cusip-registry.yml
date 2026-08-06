@@ -2,7 +2,9 @@ name: Refresh CUSIP Registry
 
 on:
   schedule:
-    - cron: '0 4 * * 0'      # weekly Sunday 12am ET during DST (4am UTC)
+    # Preserve the existing 04:00 UTC maintenance window while avoiding the
+    # scheduler's heavily loaded top of hour.
+    - cron: '23 4 * * 0'
   workflow_dispatch:
 
 concurrency:
@@ -105,11 +107,18 @@ jobs:
         # gate for both full-refresh and ordinary update paths.
         run: python -m unittest discover -s tests -p 'test_data_contract.py' -v
 
+      - name: Run full Python regression suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Test compressed site loader
+        run: node --test tests/test_site_data_loader.mjs
+
       - name: Annotate ticker health report
         # Non-fatal: surfaces bucket counts from the fresh full-refresh pass
         # so any CUSIPs that still don't resolve after hitting OpenFIGI for
         # every current holding are visible in the Actions run summary.
         if: always()
+        continue-on-error: true
         run: python scripts/annotate_ticker_health.py
 
       # Refresh the one-hour installation token after validation so a slow

@@ -15,6 +15,33 @@ def read(path: str) -> str:
 
 
 class WorkflowResilienceTests(unittest.TestCase):
+    def test_critical_schedules_avoid_top_of_hour_without_changing_windows(self):
+        update = read(".github/workflows/update-data.yml")
+        refresh = read(".github/workflows/refresh-cusip-registry.yml")
+
+        self.assertIn("cron: '23 11-23 * * 1-5'", update)
+        self.assertIn("cron: '23 4 * * 0'", refresh)
+        self.assertNotRegex(update, r"(?m)^\s*- cron: '0 ")
+        self.assertNotRegex(refresh, r"(?m)^\s*- cron: '0 ")
+
+    def test_keepalive_is_twice_monthly_empty_and_strictly_off_main(self):
+        workflow = read(".github/workflows/keepalive.yml")
+
+        self.assertIn("cron: '37 5 1,15 * *'", workflow)
+        self.assertNotRegex(workflow, r"(?m)^  push:")
+        self.assertIn("permissions:\n  contents: read", workflow)
+        keepalive_job = workflow.split("\n  keepalive:", 1)[1]
+        self.assertIn("permissions:\n      contents: write", keepalive_job)
+        self.assertIn("token: ${{ github.token }}", keepalive_job)
+        self.assertIn("KEEPALIVE_BRANCH: automation-keepalive", keepalive_job)
+        self.assertIn('git switch --orphan "$KEEPALIVE_BRANCH"', keepalive_job)
+        self.assertIn("git commit --allow-empty", keepalive_job)
+        self.assertIn(
+            'git push origin "HEAD:refs/heads/$KEEPALIVE_BRANCH"',
+            keepalive_job,
+        )
+        self.assertNotIn("HEAD:refs/heads/main", keepalive_job)
+
     def test_pages_has_reusable_recovery_and_code_only_push_triggers(self):
         workflow = read(".github/workflows/deploy-pages.yml")
 
@@ -239,6 +266,37 @@ class WorkflowResilienceTests(unittest.TestCase):
                     workflow.index("- name: Publish "),
                 )
 
+    def test_every_publishing_path_runs_complete_python_and_node_suites(self):
+        python_command = "python -m unittest discover -s tests -v"
+        node_command = "node --test tests/test_site_data_loader.mjs"
+        for path in MAINTENANCE_WORKFLOWS:
+            with self.subTest(path=path):
+                workflow = read(path)
+                publish_at = workflow.index("- name: Publish ")
+                self.assertIn(python_command, workflow)
+                self.assertIn(node_command, workflow)
+                self.assertLess(workflow.index(python_command), publish_at)
+                self.assertLess(workflow.index(node_command), publish_at)
+
+        pages = read(".github/workflows/deploy-pages.yml")
+        build = pages.split("\n  build:", 1)[1].split("\n  deploy:", 1)[0]
+        build_artifact_at = build.index("- name: Build bounded public Pages artifact")
+        self.assertIn(python_command, build)
+        self.assertIn(node_command, build)
+        self.assertLess(build.index(python_command), build_artifact_at)
+        self.assertLess(build.index(node_command), build_artifact_at)
+
+    def test_health_annotations_are_observable_but_truly_nonfatal(self):
+        for path in MAINTENANCE_WORKFLOWS:
+            with self.subTest(path=path):
+                workflow = read(path)
+                annotation = workflow.split(
+                    "- name: Annotate ticker health report", 1
+                )[1].split("\n      - name:", 1)[0]
+                self.assertIn("if: always()", annotation)
+                self.assertIn("continue-on-error: true", annotation)
+                self.assertIn("python scripts/annotate_ticker_health.py", annotation)
+
     def test_pages_restores_exact_snapshot_and_builds_explicit_allowlist(self):
         workflow = read(".github/workflows/deploy-pages.yml")
         build = workflow.split("\n  build:", 1)[1].split("\n  deploy:", 1)[0]
@@ -350,8 +408,18 @@ class WorkflowResilienceTests(unittest.TestCase):
         )
         self.assertIn('for candidate_id in "${deployment_ids[@]}"', finalization)
         self.assertIn('if [ "$candidate_status" = success ]; then', finalization)
+        self.assertIn("candidate_status_json", finalization)
+        self.assertIn(".[0].created_at | fromdateiso8601", finalization)
+        self.assertIn('deployed_at="$candidate_deployed_at"', finalization)
+        marker_build = finalization.split('marker_path="$RUNNER_TEMP', 1)[1].split(
+            "gh release upload", 1
+        )[0]
+        self.assertIn('--arg deployed_at "$deployed_at"', marker_build)
+        self.assertNotIn("$(date -u", marker_build)
+        self.assertIn("jq -er '.deployed_at'", finalization)
         self.assertIn(
-            'if [[ ! "$deployment_id" =~ ^[0-9]+$ ]]; then', finalization
+            'if [[ ! "$deployment_id" =~ ^[0-9]+$ ]] || [ -z "$deployed_at" ]; then',
+            finalization,
         )
         self.assertIn('gh release upload "$EXPECTED_RELEASE_TAG"', finalization)
         self.assertIn("Private Pages deployment marker did not round-trip exactly", finalization)
@@ -447,11 +515,18 @@ class WorkflowResilienceTests(unittest.TestCase):
                     )
                 self.assertIn("secrets: inherit", workflow)
 
-    def test_ci_mutation_guard_catches_all_data_worktree_changes(self):
+    def test_ci_privacy_guard_covers_current_history_and_test_residue(self):
         workflow = read(".github/workflows/test.yml")
 
-        self.assertIn('if [ -e data ]; then', workflow)
-        self.assertIn("Tests left generated data", workflow)
+        self.assertRegex(workflow, r"(?m)^  push:\s*$")
+        self.assertNotIn("branches: [main]", workflow)
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertIn("git ls-files -- data/ .cache/", workflow)
+        self.assertIn("git log --all --format= --name-only -- data/ .cache/", workflow)
+        self.assertIn("Private generated data exists in reachable Git history", workflow)
+        self.assertIn("for private_path in data .cache; do", workflow)
+        self.assertIn('if [ -e "$private_path" ]; then', workflow)
+        self.assertIn("Tests left private generated data", workflow)
         self.assertNotIn("git status --porcelain", workflow)
         self.assertNotIn("git diff --exit-code -- data/", workflow)
 
