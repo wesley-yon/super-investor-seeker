@@ -4195,7 +4195,15 @@ def resolve_cusips_via_openfigi(
                                 strict=True,
                             )
                         result_key = next(iter(result_keys))
-                        if result_key == "error":
+                        # These two recognized per-identifier negatives are
+                        # complete answers, not batch/provider failures. SEC
+                        # filings can contain placeholder or malformed CUSIPs,
+                        # so persist them as no-match while keeping every
+                        # unknown error fatal in full-refresh mode.
+                        if (
+                            result_key == "error"
+                            and not _openfigi_is_definitive_no_match(entry)
+                        ):
                             _openfigi_batch_failure(
                                 f"OpenFIGI batch {batch_num}/{total_batches} "
                                 f"returned an error result for {cusip}: "

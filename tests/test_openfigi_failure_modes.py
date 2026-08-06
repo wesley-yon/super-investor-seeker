@@ -655,6 +655,48 @@ class OpenFIGIParseTests(unittest.TestCase):
             self._details(),
         )
 
+    def test_full_refresh_accepts_definitive_error_no_matches(self):
+        self.cusips = ["000000001", "037833100", "594918104"]
+        response = _fake_response(payload=[
+            {"error": "Invalid idValue format."},
+            {
+                "data": [{
+                    "figi": "BBG000B9XRY4",
+                    "ticker": "AAPL",
+                    "exchCode": "US",
+                }],
+            },
+            {"error": "No identifier found."},
+        ])
+        with mock.patch.object(
+            pipeline,
+            "_openfigi_post",
+            return_value=response,
+        ):
+            result = pipeline.resolve_cusips_via_openfigi(
+                list(self.cusips),
+                force_refresh=True,
+            )
+
+        self.assertEqual({"037833100": "AAPL"}, result)
+        self.assertEqual(
+            {
+                "000000001": {"status": "no_match"},
+                "037833100": {
+                    "status": "matched",
+                    "ticker": "AAPL",
+                    "name": None,
+                    "securityDescription": None,
+                    "marketSector": None,
+                    "securityType": None,
+                    "securityType2": None,
+                    "exchCode": "US",
+                },
+                "594918104": {"status": "no_match"},
+            },
+            self._details(),
+        )
+
     def test_full_refresh_failure_cannot_succeed_from_stale_cache(self):
         pipeline.save_openfigi_details({
             "037833100": {
