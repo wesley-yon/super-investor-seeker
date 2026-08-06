@@ -1,0 +1,441 @@
+name: Update 13F Data
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # GitHub schedules run in UTC. This covers the full 7am-6pm
+    # America/New_York window in both EST and EDT; the filing-window job below
+    # enforces the exact local-time cutoff.
+    - cron: '0 11-23 * * 1-5'
+  workflow_dispatch:           # manual "Run workflow" button
+    inputs:
+      repair_amendments:
+        description: Rebuild every retained quarter affected by a 13F amendment
+        required: false
+        default: false
+        type: boolean
+      filing_quarters:
+        description: Number of SEC filing quarters to inspect
+        required: false
+        default: 4
+        type: number
+
+concurrency:
+  group: data-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  deployments: read            # verify the newest Pages environment deployment
+  pages: read                  # verify exact generated Pages deployments
+
+env:
+  DATA_REPOSITORY: wesley-yon/super-investor-seeker-data
+
+jobs:
+  filing-window:
+    runs-on: ubuntu-latest
+    outputs:
+      run_update: ${{ steps.window.outputs.run_update }}
+    steps:
+      - name: Check 13F filing update window
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "run_update=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          day=$(TZ=America/New_York date +%u)
+          hour=$(TZ=America/New_York date +%H)
+          if [ "$day" -ge 1 ] && [ "$day" -le 5 ] && [ "$hour" -ge 7 ] && [ "$hour" -le 18 ]; then
+            echo "run_update=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_update=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping 13F update outside Monday-Friday 7am-6pm America/New_York"
+          fi
+
+  update:
+    needs: filing-window
+    if: needs.filing-window.outputs.run_update == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      code_sha: ${{ steps.publish_snapshot.outputs.code_sha }}
+      release_tag: ${{ steps.publish_snapshot.outputs.release_tag }}
+      dataset_id: ${{ steps.publish_snapshot.outputs.dataset_id }}
+      site_changed: ${{ steps.publish_snapshot.outputs.site_changed }}
+    # GitHub-hosted jobs have a hard six-hour limit.
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # A queued push/schedule run should converge the live branch, not
+          # spend a full pipeline pass on the event's now-stale SHA.
+          ref: main
+          # Keep modest history for diagnostics. Publication aborts if main
+          # moves, rather than rebasing generated artifacts after validation.
+          fetch-depth: 10
+
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore latest validated private snapshot
+        id: restore_snapshot
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          restore_json=$(
+            python scripts/data_snapshot.py pull \
+              --repository "$DATA_REPOSITORY" \
+              --root "$GITHUB_WORKSPACE" \
+              --replace
+          )
+          echo "$restore_json" | jq -e . >/dev/null
+          release_tag=$(jq -er '.release_tag' <<<"$restore_json")
+          dataset_id=$(jq -er '.dataset_id' <<<"$restore_json")
+          archive_sha256=$(jq -er '.archive_sha256' <<<"$restore_json")
+          if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
+             [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
+             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Private snapshot returned invalid identity metadata"
+            exit 1
+          fi
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
+          echo "code_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Restored private snapshot $release_tag ($dataset_id)"
+
+      - name: Verify SEC_USER_AGENT secret is configured
+        # Fail fast with a clear error if the repo secret wasn't set. Without
+        # a valid contact email in the User-Agent, SEC returns 403 on every
+        # request and the pipeline silently spins on retries.
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: |
+          if [ -z "$SEC_USER_AGENT" ]; then
+            echo "::error::SEC_USER_AGENT secret is not set. Create it under Settings → Secrets and variables → Actions → 'New repository secret' with a value like 'YourName your.real@email.com'."
+            exit 1
+          fi
+          case "$SEC_USER_AGENT" in
+            *@*.*) : ;;  # looks like it contains an email — OK
+            *) echo "::error::SEC_USER_AGENT does not look like it contains a valid contact email. SEC requires a real email."; exit 1 ;;
+          esac
+
+      - name: Run pipeline
+        id: pipeline
+        # An inner cooperative timeout sends SIGTERM while enough job time
+        # remains to regenerate, validate, and publish the pipeline's durable
+        # checkpoint. Unexpected non-zero exits still fail closed. A
+        # successful migration-only run intentionally skips the recent-feed
+        # pass so the one-time replay keeps the hosted-run budget.
+        # Even if this step, the recent-feed pass, and regeneration all reach
+        # their ceilings, the job retains more than an hour for validation,
+        # private snapshot publication, Pages, and setup variance.
+        timeout-minutes: 240
+        env:
+          # Read from repo secret — never commit your email to a public repo.
+          # Configure at: Settings → Secrets and variables → Actions.
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+          REPAIR_AMENDMENTS: ${{ inputs.repair_amendments || 'false' }}
+          FILING_QUARTERS: ${{ inputs.filing_quarters || 4 }}
+        run: |
+          set -euo pipefail
+          mode=(--all)
+          value_unit_migration_pending=$(
+            python -c '
+          import pipeline
+          state = pipeline.load_state()
+          needed = (
+              state.get("value_unit_migration_version", 0)
+              < pipeline.VALUE_UNIT_MIGRATION_VERSION
+          )
+          print("true" if needed else "false")
+          '
+          )
+          if [ "$value_unit_migration_pending" = "true" ]; then
+            # This is a local, bounded scan of every retained quarter. It
+            # applies only exact signature-guarded repairs, rejects any
+            # remaining peer/adjacent anomaly, and performs no SEC/API calls.
+            python scripts/repair_value_units.py --migrate-policy
+          fi
+          migration_only=$(
+            VALUE_UNIT_MIGRATION_PENDING="$value_unit_migration_pending" python -c '
+          import os
+          import pipeline
+          state = pipeline.load_state()
+          needed = (
+              os.environ["VALUE_UNIT_MIGRATION_PENDING"] == "true"
+              or
+              state.get("amendment_reducer_version", 0)
+              < pipeline.AMENDMENT_REDUCER_VERSION
+              or state.get("security_identity_migration_version", 0)
+              < pipeline.SECURITY_IDENTITY_VERSION
+          )
+          print("true" if needed else "false")
+          '
+          )
+          if [ "$migration_only" = "true" ]; then
+            mode=(--migrations-only)
+          elif [ "$REPAIR_AMENDMENTS" = "true" ]; then
+            mode=(--repair-amendments)
+            if [ "$FILING_QUARTERS" -lt 8 ]; then
+              FILING_QUARTERS=8
+            fi
+          fi
+          set +e
+          # Leave the step-level guard enough room for the bounded local
+          # value-unit preflight above plus the checkpoint kill grace.
+          timeout --signal=TERM --kill-after=120s 210m \
+            python pipeline.py "${mode[@]}" --quarters "$FILING_QUARTERS" --defer-regeneration
+          pipeline_status=$?
+          set -e
+          if [ "$pipeline_status" -eq 124 ]; then
+            echo "::warning::Pipeline reached its cooperative time budget; continuing from its durable checkpoint"
+          elif [ "$pipeline_status" -ne 0 ]; then
+            exit "$pipeline_status"
+          fi
+          echo "migration_only=$migration_only" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh recently accepted 13F filings
+        id: recent_filings
+        # SEC quarterly company.idx files can lag newly accepted EDGAR filings.
+        # This generic current-feed pass catches any recent 13F-HR / 13F-HR/A
+        # accession before the registry-backed site data is regenerated.
+        if: steps.pipeline.outputs.migration_only != 'true'
+        timeout-minutes: 20
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+          RECENT_13F_QUARTERS: ${{ inputs.filing_quarters || 4 }}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --signal=TERM --kill-after=120s 15m \
+            python scripts/refresh_recent_13f_filings.py
+          recent_status=$?
+          set -e
+          if [ "$recent_status" -eq 124 ]; then
+            echo "::warning::Recent-filing refresh reached its cooperative time budget; continuing from its durable checkpoint"
+          elif [ "$recent_status" -ne 0 ]; then
+            exit "$recent_status"
+          fi
+
+      - name: Regenerate registry-backed site data
+        id: regenerate
+        # Runs in its own fresh Python process — no deadlocked workers, no
+        # racing the cancel grace window, no retry backoff threads. Reads
+        # every data/funds/*.json, refreshes missing/suspect CUSIP mappings,
+        # rebuilds the public CUSIP registry, and rewrites fund/stock/index
+        # display data from that registry.
+        # --retry-unresolved is a targeted pre-pass for recent
+        # Equity/Preferred/Warrant, suspicious-symbol, and option-family
+        # records from the prior ticker-health report. Stable debt and direct
+        # options stay observable but wait for Sunday's full refresh instead
+        # of consuming the same OpenFIGI requests every day.
+        # In the normal case OpenFIGI work is limited to missing/suspect
+        # CUSIPs. The private snapshot restores the durable cache, while this
+        # step retains enough headroom for a larger-than-usual repair set.
+        timeout-minutes: 35
+        env:
+          # Not strictly needed for regenerate-only, but kept for consistency
+          # with the main pipeline step. OPENFIGI_API_KEY enables the higher
+          # OpenFIGI request size, which keeps this repair step fast.
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+        run: python pipeline.py --regenerate-only --retry-unresolved
+
+      - name: Validate generated data
+        id: validate_data
+        # Validation runs only after both ingestion paths and regeneration
+        # succeed. A failed replay leaves the last published data untouched.
+        run: python validate_data.py
+
+      - name: Run generated-data contract regression tests
+        # Run the focused corpus contract here so stale-cache identity losses
+        # fail before a private snapshot is published.
+        run: python -m unittest discover -s tests -p 'test_data_contract.py' -v
+
+      - name: Annotate ticker health report
+        # Non-fatal: always runs, never fails the job. Just surfaces bucket
+        # counts as Actions warnings so maintenance surprises (OpenFIGI
+        # regressions, synthetic identifiers, new uncovered debt CUSIPs) show
+        # up in the run summary instead of being buried in
+        # data/ticker_health.json.
+        if: always()
+        run: python scripts/annotate_ticker_health.py
+
+      # Installation tokens expire after one hour. The pipeline can run for
+      # several hours, so mint a fresh write-scoped credential immediately
+      # before publication instead of reusing the restore credential.
+      - name: Refresh private data publication credential
+        id: publish-data-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: write
+
+      - name: Publish validated private snapshot
+        id: publish_snapshot
+        # The default success() guard requires the main ingest, recent-feed
+        # replay, regeneration, and validation steps all to have succeeded.
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.publish-data-app-token.outputs.token }}
+          BASE_DATASET_ID: ${{ steps.restore_snapshot.outputs.dataset_id }}
+          GH_TOKEN: ${{ steps.publish-data-app-token.outputs.token }}
+          PUBLIC_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          code_sha=$(git rev-parse HEAD)
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if [ "$code_sha" != "$(git rev-parse origin/main)" ]; then
+            echo "::error::main moved during generation; aborting stale publication"
+            exit 1
+          fi
+
+          snapshot_dir=$(mktemp -d "$RUNNER_TEMP/data-snapshot.XXXXXX")
+          pack_json=$(
+            python scripts/data_snapshot.py pack \
+              --root "$GITHUB_WORKSPACE" \
+              --output-dir "$snapshot_dir" \
+              --source-sha "$code_sha" \
+              --max-archive-bytes 1932735283
+          )
+          echo "$pack_json" | jq -e . >/dev/null
+          dataset_id=$(jq -er '.dataset_id' <<<"$pack_json")
+          archive_path=$(jq -er '.archive_path' <<<"$pack_json")
+          manifest_path=$(jq -er '.manifest_path' <<<"$pack_json")
+          archive_sha256=$(jq -er '.archive_sha256' <<<"$pack_json")
+          if [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
+             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+             [ ! -f "$archive_path" ] || [ ! -f "$manifest_path" ]; then
+            echo "::error::Packed snapshot returned invalid metadata"
+            exit 1
+          fi
+
+          if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then
+            # Pull intentionally restores the chronologically newest snapshot
+            # for maintenance. Pages instead follows GitHub's latest-release
+            # pointer so a verified rollback remains active until this run
+            # actually publishes a different dataset.
+            active_release_json=$(gh api "/repos/$DATA_REPOSITORY/releases/latest")
+            active_release_tag=$(jq -er '.tag_name' <<<"$active_release_json")
+            if [[ ! "$active_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
+               [ "$(jq -r '.draft or .prerelease' <<<"$active_release_json")" != false ]; then
+              echo "::error::The active private dataset release is invalid"
+              exit 1
+            fi
+            active_manifest_dir=$(mktemp -d "$RUNNER_TEMP/active-manifest.XXXXXX")
+            gh release download "$active_release_tag" \
+              --repo "$DATA_REPOSITORY" \
+              --pattern '*.manifest.json' \
+              --dir "$active_manifest_dir"
+            if [ "$(find "$active_manifest_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 1 ]; then
+              echo "::error::The active dataset release must contain exactly one manifest"
+              exit 1
+            fi
+            active_manifest_path=$(find "$active_manifest_dir" -maxdepth 1 -type f)
+            active_dataset_id=$(jq -er '.dataset_id' "$active_manifest_path")
+            if [[ ! "$active_dataset_id" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::The active dataset release contains an invalid dataset ID"
+              exit 1
+            fi
+            echo "Dataset is unchanged; retaining active Pages target $active_release_tag"
+            site_changed=$(
+              GH_TOKEN="$PUBLIC_GITHUB_TOKEN" \
+                DATA_ARCHIVE_TOKEN="$DATA_ARCHIVE_TOKEN" \
+                DATA_REPOSITORY="$DATA_REPOSITORY" \
+                bash scripts/pages_deploy_needed.sh \
+                  "$code_sha" "$active_dataset_id" "$active_release_tag"
+            )
+            echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$active_release_tag" >> "$GITHUB_OUTPUT"
+            echo "dataset_id=$active_dataset_id" >> "$GITHUB_OUTPUT"
+            echo "site_changed=$site_changed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          release_tag="dataset-$(date -u +%Y%m%dT%H%M%SZ)-${dataset_id:0:12}"
+          archive_name=$(basename "$archive_path")
+          manifest_name=$(basename "$manifest_path")
+          gh release create "$release_tag" \
+            --repo "$DATA_REPOSITORY" \
+            --draft \
+            --title "$release_tag" \
+            --notes "Validated dataset $dataset_id from public code $code_sha."
+          gh release upload "$release_tag" \
+            "$archive_path" "$manifest_path" \
+            --repo "$DATA_REPOSITORY"
+
+          remote_dir=$(mktemp -d "$RUNNER_TEMP/remote-snapshot.XXXXXX")
+          gh release download "$release_tag" \
+            --repo "$DATA_REPOSITORY" \
+            --dir "$remote_dir"
+          if [ "$(find "$remote_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 2 ]; then
+            echo "::error::Draft release does not contain exactly two snapshot assets"
+            exit 1
+          fi
+          python scripts/data_snapshot.py verify \
+            --archive "$remote_dir/$archive_name" \
+            --manifest "$remote_dir/$manifest_name"
+          remote_dataset_id=$(jq -er '.dataset_id' "$remote_dir/$manifest_name")
+          remote_source_sha=$(jq -er '.source_sha' "$remote_dir/$manifest_name")
+          if [ "$remote_dataset_id" != "$dataset_id" ] ||
+             [ "$remote_source_sha" != "$code_sha" ]; then
+            echo "::error::Remote snapshot identity does not match the validated local snapshot"
+            exit 1
+          fi
+          gh release edit "$release_tag" \
+            --repo "$DATA_REPOSITORY" \
+            --draft=false \
+            --latest
+          if [ "$(gh release view "$release_tag" --repo "$DATA_REPOSITORY" --json isDraft --jq '.isDraft')" != false ]; then
+            echo "::error::Snapshot release remained a draft after publication"
+            exit 1
+          fi
+          echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
+          echo "site_changed=true" >> "$GITHUB_OUTPUT"
+
+  deploy-pages:
+    needs: update
+    if: >-
+      ${{ needs.update.result == 'success' &&
+          needs.update.outputs.code_sha != '' &&
+          needs.update.outputs.release_tag != '' &&
+          needs.update.outputs.dataset_id != '' &&
+          needs.update.outputs.site_changed == 'true' }}
+    uses: ./.github/workflows/deploy-pages.yml
+    with:
+      code_sha: ${{ needs.update.outputs.code_sha }}
+      release_tag: ${{ needs.update.outputs.release_tag }}
+      dataset_id: ${{ needs.update.outputs.dataset_id }}
+    secrets: inherit
+    permissions:
+      actions: write
+      contents: read
+      deployments: read
+      pages: write
+      id-token: write

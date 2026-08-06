@@ -1,0 +1,508 @@
+{
+  "cik": 1533551,
+  "name": "Wellesley Asset Management",
+  "quarters": [
+    {
+      "report_date": "2026-03-31",
+      "filing_date": "2026-05",
+      "total_value": 952526299,
+      "num_holdings": 54,
+      "holdings": [
+        {
+          "ticker": null,
+          "issuer": "BOX US",
+          "cusip": "10316TAD6",
+          "class": "9/15/2029",
+          "value": 45329636,
+          "shares": 51181000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "VSH US",
+          "cusip": "928298AR9",
+          "class": "9/15/2030",
+          "value": 39561775,
+          "shares": 41311000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "SYNAPTICS INC",
+          "cusip": "87157DAJ8",
+          "class": "12/1/2031",
+          "value": 36151777,
+          "shares": 34325000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "PG&E CORP",
+          "cusip": "69331CAL2",
+          "class": "12/1/2027",
+          "value": 35547420,
+          "shares": 34085000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "HAE US",
+          "cusip": "405024AD2",
+          "class": "6/1/2029",
+          "value": 34807620,
+          "shares": 38253000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "ITRON INC",
+          "cusip": "465741AQ9",
+          "class": "7/15/2030",
+          "value": 34376084,
+          "shares": 35995000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "AKAMAI TECHNOLOGIES INC",
+          "cusip": "00971TAL5",
+          "class": "9/1/2027",
+          "value": 33877408,
+          "shares": 29005000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "BLACKLINE INC",
+          "cusip": "09239BAF6",
+          "class": "6/1/2029",
+          "value": 33696273,
+          "shares": 36922000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "GREENBRIER COS INC",
+          "cusip": "393657AM3",
+          "class": "4/15/2028",
+          "value": 33016638,
+          "shares": 28469000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "MERITAGE HOMES CORP",
+          "cusip": "59001ABF8",
+          "class": "5/15/2028",
+          "value": 32900355,
+          "shares": 33972000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "ON SEMICONDUCTOR CORP",
+          "cusip": "682189AU9",
+          "class": "3/1/2029",
+          "value": 32015952,
+          "shares": 32595000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "LIVN US",
+          "cusip": "53802LAB8",
+          "class": "3/15/2029",
+          "value": 30500052,
+          "shares": 27603000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "GUIDEWIRE SOFTWARE INC",
+          "cusip": "40171VAC4",
+          "class": "11/1/2029",
+          "value": 30266505,
+          "shares": 32234000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "SHIFT4 PMTS INC",
+          "cusip": "82452JAD1",
+          "class": "8/1/2027",
+          "value": 29509431,
+          "shares": 31386000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "DATADOG INC",
+          "cusip": "23804LAD5",
+          "class": "12/1/2029",
+          "value": 29397823,
+          "shares": 30305000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "PARSONS CORP DEL",
+          "cusip": "70202LAD4",
+          "class": "3/1/2029",
+          "value": 27974740,
+          "shares": 29685000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "MICROCHIP TECHNOLOGY INC.",
+          "cusip": "595017BG8",
+          "class": "6/1/2030",
+          "value": 27714606,
+          "shares": 27869000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "GPN US",
+          "cusip": "37940XAU6",
+          "class": "3/1/2031",
+          "value": 26726727,
+          "shares": 32113000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "ENVISTA HOLDINGS CORPORATION",
+          "cusip": "29415FAD6",
+          "class": "8/15/2028",
+          "value": 25406929,
+          "shares": 25419000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "WGO US",
+          "cusip": "974637AF7",
+          "class": "1/15/2030",
+          "value": 23994041,
+          "shares": 26517000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "AMPHASTAR PHARMACEUTICALS IN",
+          "cusip": "03209RAB9",
+          "class": "3/15/2029",
+          "value": 23622632,
+          "shares": 26026000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "PRGS US",
+          "cusip": "743312AD2",
+          "class": "3/1/2030",
+          "value": 22187860,
+          "shares": 26021000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "RGEN US",
+          "cusip": "759916AD1",
+          "class": "12/15/2028",
+          "value": 22112378,
+          "shares": 24481000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "LEMAITRE VASCULAR INC",
+          "cusip": "525558AB8",
+          "class": "2/1/2030",
+          "value": 21216686,
+          "shares": 19835000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "DROPBOX INC",
+          "cusip": "26210CAD6",
+          "class": "3/1/2028",
+          "value": 19915259,
+          "shares": 22397000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "AKAMAI TECHNOLOGIES INC",
+          "cusip": "00971TAN1",
+          "class": "2/15/2029",
+          "value": 19755171,
+          "shares": 17150000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "LYFT INC",
+          "cusip": "55087PAD6",
+          "class": "3/1/2029",
+          "value": 19739169,
+          "shares": 19420000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "LANTHEUS HLDGS INC",
+          "cusip": "516544AB9",
+          "class": "12/15/2027",
+          "value": 17351327,
+          "shares": 14437000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "OMNICELL COM",
+          "cusip": "68213NAF6",
+          "class": "12/1/2029",
+          "value": 17253301,
+          "shares": 19126000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "CMS ENERGY CORP",
+          "cusip": "125896BX7",
+          "class": "5/1/2028",
+          "value": 15178770,
+          "shares": 13390000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "PPL CAP FDG INC",
+          "cusip": "69352PAS2",
+          "class": "3/15/2028",
+          "value": 10883761,
+          "shares": 9249000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "LCI INDS",
+          "cusip": "501812AD3",
+          "class": "3/1/2030",
+          "value": 9925116,
+          "shares": 8200000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "SPECTRUM BRANDS INC",
+          "cusip": "84762LAZ8",
+          "class": "6/1/2029",
+          "value": 9185952,
+          "shares": 9290000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "AEROVIRONMENT INC",
+          "cusip": "008073AA6",
+          "class": "7/15/2030",
+          "value": 7811628,
+          "shares": 7916000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "PACIRA BIOSCIENCES INC",
+          "cusip": "695127AJ9",
+          "class": "5/15/2029",
+          "value": 7017410,
+          "shares": 7219000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "ARRAY TECHNOLOGIES INC",
+          "cusip": "04271TAB6",
+          "class": "12/1/2028",
+          "value": 6691715,
+          "shares": 7369000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "WORLD KINECT CORPORATION",
+          "cusip": "98149GAB6",
+          "class": "7/1/2028",
+          "value": 5983630,
+          "shares": 7174000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "JAZZ INVESTMENTS I LTD",
+          "cusip": "472145AH4",
+          "class": "9/15/2030",
+          "value": 5677640,
+          "shares": 5500000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "ALRM US",
+          "cusip": "011642AD7",
+          "class": "6/1/2029",
+          "value": 5227076,
+          "shares": 5649000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "SOUTHERN CO",
+          "cusip": "842587DZ7",
+          "class": "6/15/2027",
+          "value": 4460120,
+          "shares": 4500000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "LIVE NATION ENTERTAINMENT IN",
+          "cusip": "538034BC2",
+          "class": "1/15/2030",
+          "value": 4449361,
+          "shares": 4600000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "CENTERPOINT ENERGY INC",
+          "cusip": "15189TBD8",
+          "class": "8/15/2026",
+          "value": 4345824,
+          "shares": 3662000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "CHEESECAKE FACTORY INC",
+          "cusip": "163072AC5",
+          "class": "3/15/2030",
+          "value": 4096620,
+          "shares": 6000000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "BIOMARIN PHARMACEUTICAL INC",
+          "cusip": "09061GAK7",
+          "class": "5/15/2027",
+          "value": 3875178,
+          "shares": 4015000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "FLUOR CORP",
+          "cusip": "343412AJ1",
+          "class": "8/15/2029",
+          "value": 3364182,
+          "shares": 4195000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "COGENT BIOSCIENCES INC",
+          "cusip": "19240QAA0",
+          "class": "11/15/2031",
+          "value": 3279922,
+          "shares": 4625000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "TTEK US",
+          "cusip": "88162GAB9",
+          "class": "8/15/2028",
+          "value": 3056189,
+          "shares": 4884000,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": null,
+          "issuer": "POST HLDGS INC",
+          "cusip": "737446AT1",
+          "class": "8/15/2027",
+          "value": 2693713,
+          "shares": 4000000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "NUTANIX INC",
+          "cusip": "67059NAK4",
+          "class": "12/15/2029",
+          "value": 2496725,
+          "shares": 4000000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "COLLEGIUM PHARMACEUTICAL INC",
+          "cusip": "19459JAC8",
+          "class": "2/15/2029",
+          "value": 2474743,
+          "shares": 4125000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "IMMUNOCORE HLDGS PLC",
+          "cusip": "45258DAB1",
+          "class": "2/1/2030",
+          "value": 2160012,
+          "shares": 4150000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "WEC ENERGY GROUP INC",
+          "cusip": "92939UAP1",
+          "class": "6/1/2027",
+          "value": 1815840,
+          "shares": 3000000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "BRIDGEBIO PHARMA INC",
+          "cusip": "10806XAD4",
+          "class": "2/1/2029",
+          "value": 237113,
+          "shares": 210000,
+          "holding_type": "NOTE"
+        },
+        {
+          "ticker": null,
+          "issuer": "BRIDGEBIO PHARMA INC",
+          "cusip": "10806XAJ1",
+          "class": "3/1/2031",
+          "value": 212484,
+          "shares": 125000,
+          "holding_type": "NOTE"
+        }
+      ],
+      "value_unit_policy_version": 1,
+      "value_multiplier": 1,
+      "value_unit_method": "peer_consensus_migration",
+      "value_unit_confidence": "high",
+      "value_unit_evidence": {
+        "migration": true,
+        "repair_status": "inflated_1000x"
+      }
+    }
+  ]
+}

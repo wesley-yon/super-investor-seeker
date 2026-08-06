@@ -1,0 +1,639 @@
+{
+  "cik": 1738654,
+  "name": "Opti Capital Management, LP",
+  "quarters": [
+    {
+      "report_date": "2026-03-31",
+      "total_value": 1388169795,
+      "holdings": [
+        {
+          "cusip": "538034BA6",
+          "shares": 59377000,
+          "value": 90669154
+        },
+        {
+          "cusip": "09239BAF6",
+          "shares": 90500000,
+          "value": 85235615
+        },
+        {
+          "cusip": "852234AK9",
+          "shares": 87500000,
+          "value": 82162588
+        },
+        {
+          "cusip": "338307AF8",
+          "shares": 91441000,
+          "value": 79901146
+        },
+        {
+          "cusip": "26142RAB0",
+          "shares": 82250000,
+          "value": 74544244
+        },
+        {
+          "cusip": "92538JAB2",
+          "shares": 76744000,
+          "value": 67258518
+        },
+        {
+          "cusip": "83304AAH9",
+          "shares": 69454000,
+          "value": 63810863
+        },
+        {
+          "cusip": "252131AM9",
+          "shares": 68917000,
+          "value": 63782684
+        },
+        {
+          "cusip": "753422AF1",
+          "shares": 54459000,
+          "value": 51872198
+        },
+        {
+          "cusip": "87918AAF2",
+          "shares": 50000000,
+          "value": 48000000
+        },
+        {
+          "cusip": "10316TAD6",
+          "shares": 49500000,
+          "value": 45735278
+        },
+        {
+          "cusip": "89377MAB5",
+          "shares": 35000000,
+          "value": 45438295
+        },
+        {
+          "cusip": "29786AAL0",
+          "shares": 48000000,
+          "value": 44927952
+        },
+        {
+          "cusip": "29786AAN6",
+          "shares": 49809000,
+          "value": 44828150
+        },
+        {
+          "cusip": "08265TAD1",
+          "shares": 46000000,
+          "value": 43900192
+        },
+        {
+          "cusip": "090043AF7",
+          "shares": 44000000,
+          "value": 39240960
+        },
+        {
+          "cusip": "450056AB2",
+          "shares": 35000000,
+          "value": 38472700
+        },
+        {
+          "cusip": "98139AAD7",
+          "shares": 37945000,
+          "value": 35777620
+        },
+        {
+          "cusip": "98149GAB6",
+          "shares": 32463000,
+          "value": 34335628
+        },
+        {
+          "cusip": "37940XAU6",
+          "shares": 36500000,
+          "value": 32317502
+        },
+        {
+          "cusip": "922280AD4",
+          "shares": 35668000,
+          "value": 31162204
+        },
+        {
+          "cusip": "207410AH4",
+          "shares": 29073000,
+          "value": 28418858
+        },
+        {
+          "cusip": "09061GAK7",
+          "shares": 28058000,
+          "value": 27126334
+        },
+        {
+          "cusip": "358039AB1",
+          "shares": 22500000,
+          "value": 25982415
+        },
+        {
+          "cusip": "819047AB7",
+          "shares": 25768000,
+          "value": 24582672
+        },
+        {
+          "cusip": "501812AD3",
+          "shares": 19650000,
+          "value": 23802045
+        },
+        {
+          "cusip": "29786AAJ5",
+          "shares": 22251000,
+          "value": 21903884
+        },
+        {
+          "cusip": "743312AB6",
+          "shares": 20827000,
+          "value": 20785346
+        },
+        {
+          "cusip": "29355AAK3",
+          "shares": 22135000,
+          "value": 19813282
+        },
+        {
+          "cusip": "595017BG8",
+          "shares": 14168000,
+          "value": 14105661
+        },
+        {
+          "cusip": "405024AD2",
+          "shares": 12500000,
+          "value": 11925788
+        },
+        {
+          "cusip": "05988JAD5",
+          "shares": 8000000,
+          "value": 7240000
+        },
+        {
+          "cusip": "759916AD1",
+          "shares": 6581000,
+          "value": 6447419
+        },
+        {
+          "cusip": "83304AAF3",
+          "shares": 5500000,
+          "value": 5225000
+        },
+        {
+          "cusip": "501812AB7",
+          "shares": 5000000,
+          "value": 4987600
+        },
+        {
+          "cusip": "81141RAG5",
+          "shares": 2500000,
+          "value": 2450000
+        }
+      ]
+    },
+    {
+      "report_date": "2025-12-31",
+      "total_value": 1371559130,
+      "holdings": [
+        {
+          "cusip": "852234AK9",
+          "shares": 137500000,
+          "value": 127290625
+        },
+        {
+          "cusip": "31188VAD2",
+          "shares": 89646000,
+          "value": 100179405
+        },
+        {
+          "cusip": "538034BA6",
+          "shares": 59377000,
+          "value": 86393535
+        },
+        {
+          "cusip": "87918AAF2",
+          "shares": 70000000,
+          "value": 66675000
+        },
+        {
+          "cusip": "83304AAH9",
+          "shares": 69454000,
+          "value": 63376775
+        },
+        {
+          "cusip": "08265TAD1",
+          "shares": 64000000,
+          "value": 60323200
+        },
+        {
+          "cusip": "29355AAH0",
+          "shares": 55000000,
+          "value": 54516000
+        },
+        {
+          "cusip": "252131AM9",
+          "shares": 58000000,
+          "value": 53551400
+        },
+        {
+          "cusip": "89377MAB5",
+          "shares": 35000000,
+          "value": 52538500
+        },
+        {
+          "cusip": "753422AF1",
+          "shares": 48250000,
+          "value": 45926763
+        },
+        {
+          "cusip": "565788AH9",
+          "shares": 51088000,
+          "value": 43105500
+        },
+        {
+          "cusip": "09239BAF6",
+          "shares": 34940000,
+          "value": 37036400
+        },
+        {
+          "cusip": "98139AAD7",
+          "shares": 34000000,
+          "value": 33766250
+        },
+        {
+          "cusip": "26142RAB0",
+          "shares": 34750000,
+          "value": 31865750
+        },
+        {
+          "cusip": "01609WBG6",
+          "shares": 20000000,
+          "value": 31125000
+        },
+        {
+          "cusip": "09061GAK7",
+          "shares": 32058000,
+          "value": 30895898
+        },
+        {
+          "cusip": "896945AD4",
+          "shares": 30000000,
+          "value": 29625000
+        },
+        {
+          "cusip": "20717MAB9",
+          "shares": 30000000,
+          "value": 29250000
+        },
+        {
+          "cusip": "29786AAL0",
+          "shares": 30000000,
+          "value": 27843000
+        },
+        {
+          "cusip": "090043AF7",
+          "shares": 30000000,
+          "value": 27712500
+        },
+        {
+          "cusip": "338307AF8",
+          "shares": 30000000,
+          "value": 27066000
+        },
+        {
+          "cusip": "922280AD4",
+          "shares": 28668000,
+          "value": 26697075
+        },
+        {
+          "cusip": "698884AE3",
+          "shares": 24500000,
+          "value": 24006150
+        },
+        {
+          "cusip": "595017BG8",
+          "shares": 24168000,
+          "value": 23714850
+        },
+        {
+          "cusip": "007973AE0",
+          "shares": 14338000,
+          "value": 23568088
+        },
+        {
+          "cusip": "05988JAD5",
+          "shares": 24500000,
+          "value": 21528150
+        },
+        {
+          "cusip": "15677JAD0",
+          "shares": 21500000,
+          "value": 21328000
+        },
+        {
+          "cusip": "91879QAN9",
+          "shares": 20445000,
+          "value": 20430689
+        },
+        {
+          "cusip": "29415FAD6",
+          "shares": 21000000,
+          "value": 20246100
+        },
+        {
+          "cusip": "207410AH4",
+          "shares": 20000000,
+          "value": 19225000
+        },
+        {
+          "cusip": "98149GAB6",
+          "shares": 16750000,
+          "value": 17693025
+        },
+        {
+          "cusip": "743312AB6",
+          "shares": 17327000,
+          "value": 17262024
+        },
+        {
+          "cusip": "011642AB1",
+          "shares": 17000000,
+          "value": 16983000
+        },
+        {
+          "cusip": "10316TAD6",
+          "shares": 12500000,
+          "value": 12182500
+        },
+        {
+          "cusip": "501812AB7",
+          "shares": 9152000,
+          "value": 9083360
+        },
+        {
+          "cusip": "31188VAB6",
+          "shares": 7432000,
+          "value": 7394840
+        },
+        {
+          "cusip": "819047AB7",
+          "shares": 7000000,
+          "value": 6619200
+        },
+        {
+          "cusip": "83304AAF3",
+          "shares": 5500000,
+          "value": 5170000
+        },
+        {
+          "cusip": "67059NAK4",
+          "shares": 5000000,
+          "value": 4825000
+        },
+        {
+          "cusip": "194014AB2",
+          "shares": 4500000,
+          "value": 4412700
+        },
+        {
+          "cusip": "29786AAN6",
+          "shares": 4809000,
+          "value": 4298044
+        },
+        {
+          "cusip": "81141RAG5",
+          "shares": 2500000,
+          "value": 2429625
+        },
+        {
+          "cusip": "759916AD1",
+          "shares": 2181000,
+          "value": 2399209
+        }
+      ]
+    },
+    {
+      "report_date": "2025-09-30",
+      "total_value": 1600206697,
+      "holdings": [
+        {
+          "cusip": "852234AK9",
+          "shares": 137500000,
+          "value": 125558125
+        },
+        {
+          "cusip": "81180WBL4",
+          "shares": 43371000,
+          "value": 125152442
+        },
+        {
+          "cusip": "538034BA6",
+          "shares": 72825000,
+          "value": 118144143
+        },
+        {
+          "cusip": "45867GAD3",
+          "shares": 24500000,
+          "value": 109709016
+        },
+        {
+          "cusip": "40637HAD1",
+          "shares": 73000000,
+          "value": 83842398
+        },
+        {
+          "cusip": "67011XAB9",
+          "shares": 74846000,
+          "value": 74471770
+        },
+        {
+          "cusip": "87918AAF2",
+          "shares": 70000000,
+          "value": 65450000
+        },
+        {
+          "cusip": "81141RAG5",
+          "shares": 61562000,
+          "value": 59214949
+        },
+        {
+          "cusip": "29355AAH0",
+          "shares": 55000000,
+          "value": 53834000
+        },
+        {
+          "cusip": "83304AAH9",
+          "shares": 55454000,
+          "value": 49714511
+        },
+        {
+          "cusip": "753422AF1",
+          "shares": 50750000,
+          "value": 47831875
+        },
+        {
+          "cusip": "31188VAB6",
+          "shares": 45772000,
+          "value": 44765016
+        },
+        {
+          "cusip": "89377MAB5",
+          "shares": 30000000,
+          "value": 42772260
+        },
+        {
+          "cusip": "08265TAD1",
+          "shares": 44500000,
+          "value": 41971866
+        },
+        {
+          "cusip": "958102AT2",
+          "shares": 11000000,
+          "value": 35285250
+        },
+        {
+          "cusip": "30063PAB1",
+          "shares": 35500000,
+          "value": 34213125
+        },
+        {
+          "cusip": "465741AQ9",
+          "shares": 28500000,
+          "value": 32757188
+        },
+        {
+          "cusip": "698884AE3",
+          "shares": 32000000,
+          "value": 31043200
+        },
+        {
+          "cusip": "09061GAK7",
+          "shares": 32058000,
+          "value": 30495173
+        },
+        {
+          "cusip": "98139AAD7",
+          "shares": 30773000,
+          "value": 30467363
+        },
+        {
+          "cusip": "896945AD4",
+          "shares": 30000000,
+          "value": 29280000
+        },
+        {
+          "cusip": "04351PAD3",
+          "shares": 21000000,
+          "value": 28678860
+        },
+        {
+          "cusip": "29786AAL0",
+          "shares": 30000000,
+          "value": 27712500
+        },
+        {
+          "cusip": "40131MAB5",
+          "shares": 27388000,
+          "value": 26506106
+        },
+        {
+          "cusip": "33835LAA3",
+          "shares": 22476000,
+          "value": 22391715
+        },
+        {
+          "cusip": "91688FAB0",
+          "shares": 22500000,
+          "value": 21825000
+        },
+        {
+          "cusip": "15677JAD0",
+          "shares": 21500000,
+          "value": 21080750
+        },
+        {
+          "cusip": "91879QAN9",
+          "shares": 20445000,
+          "value": 20189438
+        },
+        {
+          "cusip": "29415FAD6",
+          "shares": 21000000,
+          "value": 19858125
+        },
+        {
+          "cusip": "26142RAB0",
+          "shares": 21750000,
+          "value": 19618870
+        },
+        {
+          "cusip": "207410AH4",
+          "shares": 20000000,
+          "value": 19112500
+        },
+        {
+          "cusip": "743312AB6",
+          "shares": 17327000,
+          "value": 17404972
+        },
+        {
+          "cusip": "05988JAD5",
+          "shares": 20000000,
+          "value": 17130000
+        },
+        {
+          "cusip": "011642AB1",
+          "shares": 17000000,
+          "value": 16787500
+        },
+        {
+          "cusip": "10316TAD6",
+          "shares": 10000000,
+          "value": 10108900
+        },
+        {
+          "cusip": "501812AB7",
+          "shares": 9152000,
+          "value": 8946034
+        },
+        {
+          "cusip": "338307AF8",
+          "shares": 8795000,
+          "value": 7816556
+        },
+        {
+          "cusip": "595017BG8",
+          "shares": 6943000,
+          "value": 6757198
+        },
+        {
+          "cusip": "453204AD1",
+          "shares": 3710000,
+          "value": 6213597
+        },
+        {
+          "cusip": "83304AAF3",
+          "shares": 5500000,
+          "value": 5095750
+        },
+        {
+          "cusip": "29786AAN6",
+          "shares": 4809000,
+          "value": 4276543
+        },
+        {
+          "cusip": "67059NAH1",
+          "shares": 2500000,
+          "value": 3445313
+        },
+        {
+          "cusip": "30063PAC9",
+          "shares": 2000000,
+          "value": 1857500
+        },
+        {
+          "cusip": "816850AF8",
+          "shares": 720000,
+          "value": 1419300
+        }
+      ]
+    }
+  ]
+}

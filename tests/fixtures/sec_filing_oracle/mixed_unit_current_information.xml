@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ANCHOR</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000001</cusip>
+    <value>1000000</value>
+    <shrsOrPrnAmt><sshPrnamt>10000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 2</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000002</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 3</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000003</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 4</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000004</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 5</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000005</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 6</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000006</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 7</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000007</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 8</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000008</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 9</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000009</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>MIXED UNIT ROW 10</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>900000010</cusip>
+    <value>100</value>
+    <shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt></shrsOrPrnAmt>
+  </infoTable>
+</informationTable>

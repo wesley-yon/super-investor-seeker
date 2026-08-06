@@ -1,0 +1,144 @@
+{
+  "cik": 1844830,
+  "name": "Lakehouse Capital Pty Ltd",
+  "quarters": [
+    {
+      "report_date": "2026-06-30",
+      "filing_date": "2026-07-22",
+      "accession": "0001844830-26-000003",
+      "total_value": 90465000,
+      "num_holdings": 12,
+      "holdings": [
+        {
+          "ticker": "MELI",
+          "issuer": "MERCADOLIBRE INC",
+          "cusip": "58733R102",
+          "class": "COM",
+          "value": 20044000,
+          "shares": 11809,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "NOW",
+          "issuer": "ServiceNow, Inc.",
+          "cusip": "81762P102",
+          "class": "COM",
+          "value": 12344000,
+          "shares": 124338,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "GOOG",
+          "issuer": "Alphabet Inc.",
+          "cusip": "02079K107",
+          "class": "CAP STK CL C",
+          "value": 8768000,
+          "shares": 24814,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "MSFT",
+          "issuer": "MICROSOFT CORP",
+          "cusip": "594918104",
+          "class": "COM",
+          "value": 8122000,
+          "shares": 21773,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "AMZN",
+          "issuer": "AMAZON COM INC",
+          "cusip": "023135106",
+          "class": "COM",
+          "value": 6803000,
+          "shares": 28542,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "V",
+          "issuer": "VISA INC.",
+          "cusip": "92826C839",
+          "class": "COM CL A",
+          "value": 6790000,
+          "shares": 19791,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "VEEV",
+          "issuer": "VEEVA SYSTEMS INC",
+          "cusip": "922475108",
+          "class": "CL A COM",
+          "value": 6633000,
+          "shares": 37377,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "SE",
+          "issuer": "Sea Ltd",
+          "cusip": "81141R100",
+          "class": "SPONSORD ADS",
+          "value": 6596000,
+          "shares": 68833,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "WK",
+          "issuer": "WORKIVA INC",
+          "cusip": "98139A105",
+          "class": "COM CL A",
+          "value": 4901000,
+          "shares": 101026,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "TW",
+          "issuer": "Tradeweb Markets Inc.",
+          "cusip": "892672106",
+          "class": "CL A",
+          "value": 3418000,
+          "shares": 34300,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "SCHW",
+          "issuer": "SCHWAB CHARLES CORP",
+          "cusip": "808513105",
+          "class": "COM",
+          "value": 3035000,
+          "shares": 32894,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "WDAY",
+          "issuer": "Workday, Inc.",
+          "cusip": "98138H101",
+          "class": "CL A",
+          "value": 3011000,
+          "shares": 24599,
+          "holding_type": "EQUITY"
+        }
+      ],
+      "composition_version": 1,
+      "is_complete": true,
+      "base_accession": "0001844830-26-000003",
+      "applied_accessions": [
+        "0001844830-26-000003"
+      ],
+      "source_filings": [
+        {
+          "accession": "0001844830-26-000003",
+          "form_type": "13F-HR",
+          "filing_date": "2026-07-22",
+          "accepted_at": "2026-07-21T21:56:40.000Z",
+          "amendment_number": null,
+          "amendment_kind": "ORIGINAL",
+          "source_hash": "c8dca71d3e0603eaca46236120bc5df587aa27abd59e5ff59246ffebf56a0a9f",
+          "reported_entry_total": 12,
+          "reported_value_total": 90465,
+          "applied": true
+        }
+      ],
+      "composition_hash": "337533cefa8b5000b91b98ca7b16ee4673443245a0a0e2d370a35297786c56ba"
+    }
+  ]
+}

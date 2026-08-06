@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/thirteenffiler">
+  <headerData>
+    <filerInfo>
+      <periodOfReport>12-31-2025</periodOfReport>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPage>
+      <reportCalendarOrQuarter>12-31-2025</reportCalendarOrQuarter>
+      <isAmendment>true</isAmendment>
+      <amendmentNo>1</amendmentNo>
+      <amendmentInfo>
+        <amendmentType>NEW HOLDINGS</amendmentType>
+      </amendmentInfo>
+    </coverPage>
+    <summaryPage>
+      <tableEntryTotal>1</tableEntryTotal>
+      <tableValueTotal>250000</tableValueTotal>
+    </summaryPage>
+  </formData>
+</edgarSubmission>

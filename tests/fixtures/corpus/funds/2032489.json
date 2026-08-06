@@ -1,0 +1,144 @@
+{
+  "cik": 2032489,
+  "name": "Rubicon Founders LLC",
+  "quarters": [
+    {
+      "report_date": "2025-12-31",
+      "filing_date": "2026-05-15",
+      "accession": "0002032489-26-000016",
+      "total_value": 164488272,
+      "num_holdings": 3,
+      "holdings": [
+        {
+          "ticker": "PRVA",
+          "issuer": "Privia Health Group, Inc.",
+          "cusip": "74276R102",
+          "class": "COM",
+          "value": 136890207,
+          "shares": 5773522,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "EVH",
+          "issuer": "Evolent Health, Inc.",
+          "cusip": "30050B101",
+          "class": "CL A",
+          "value": 23264492,
+          "shares": 5816123,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": null,
+          "issuer": "AGILON HEALTH INC",
+          "cusip": "00857U107",
+          "class": "COM",
+          "value": 4333573,
+          "shares": 6292396,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        }
+      ],
+      "composition_version": 2,
+      "security_identity_version": 1,
+      "is_complete": true,
+      "base_accession": "0002032489-26-000001",
+      "applied_accessions": [
+        "0002032489-26-000001",
+        "0002032489-26-000016"
+      ],
+      "source_filings": [
+        {
+          "accession": "0002032489-26-000001",
+          "form_type": "13F-HR",
+          "filing_date": "2026-02-17",
+          "accepted_at": "2026-02-17T19:26:53.000Z",
+          "amendment_number": null,
+          "amendment_kind": "ORIGINAL",
+          "source_hash": "18f0ddf94147bc1def1754e2479c892a96d5b925fc86a7bd431b21369365e1e5",
+          "reported_entry_total": 2,
+          "reported_value_total": 160154699,
+          "normalized_value_total": 160154699,
+          "value_unit_policy_version": 1,
+          "value_multiplier": 1,
+          "value_unit_method": "same_quarter_peer_dollars",
+          "value_unit_confidence": "high",
+          "value_unit_evidence": {
+            "eligible_positions": 2,
+            "low_price_positions": 0,
+            "low_price_cusips": 0,
+            "eligible_value": 160154699,
+            "low_price_value": 0,
+            "low_price_value_share": 0.0,
+            "prior_multiplier": null,
+            "raw_value_total": 160154699,
+            "peer": {
+              "matched_positions": 2,
+              "matched_cusips": 2,
+              "matched_value_coverage": 1.0,
+              "dollar_value_support": 1.0,
+              "thousands_value_support": 0.0,
+              "exact_matched_positions": 2,
+              "exact_matched_value_coverage": 1.0,
+              "exact_dollar_value_support": 1.0,
+              "exact_thousands_value_support": 0.0
+            }
+          },
+          "security_identity_version": 1,
+          "composition_action": "BASE",
+          "applied": true
+        },
+        {
+          "accession": "0002032489-26-000016",
+          "form_type": "13F-HR/A",
+          "filing_date": "2026-05-15",
+          "accepted_at": "2026-05-15T19:45:33.000Z",
+          "amendment_number": 1,
+          "amendment_kind": "NEW_HOLDINGS",
+          "source_hash": "cb56ec25834e8f52871d52edfe4b7a72ccfacddddef36576d59b40f6d53a409d",
+          "reported_entry_total": 1,
+          "reported_value_total": 4333573,
+          "normalized_value_total": 4333573,
+          "value_unit_policy_version": 1,
+          "value_multiplier": 1,
+          "value_unit_method": "same_quarter_peer_dollars",
+          "value_unit_confidence": "high",
+          "value_unit_evidence": {
+            "eligible_positions": 1,
+            "low_price_positions": 1,
+            "low_price_cusips": 1,
+            "eligible_value": 4333573,
+            "low_price_value": 4333573,
+            "low_price_value_share": 1.0,
+            "prior_multiplier": null,
+            "raw_value_total": 4333573,
+            "peer": {
+              "matched_positions": 1,
+              "matched_cusips": 1,
+              "matched_value_coverage": 1.0,
+              "dollar_value_support": 1.0,
+              "thousands_value_support": 0.0,
+              "exact_matched_positions": 1,
+              "exact_matched_value_coverage": 1.0,
+              "exact_dollar_value_support": 1.0,
+              "exact_thousands_value_support": 0.0
+            }
+          },
+          "security_identity_version": 1,
+          "composition_action": "APPEND",
+          "new_holdings_overlap": {
+            "identity_version": 1,
+            "matched_rows": 0,
+            "prior_rows": 2,
+            "amendment_rows": 1,
+            "exact_positions": false
+          },
+          "applied": true
+        }
+      ],
+      "composition_hash": "8564793ec7d5875f23b15bfe0f9e4d2f0f8d4f64be02b896d41433cbe89f064f",
+      "composition_hash_version": 2
+    }
+  ]
+}

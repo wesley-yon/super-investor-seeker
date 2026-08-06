@@ -1,0 +1,3546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Super Investor Seeker — 13F Holdings Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#03080e;--sf:#07111b;--cd:#0b1420;--cd2:#0e1926;--bd:#1d2a3a;--bd2:#28364a;--tx:#e6edf6;--mt:#8794a8;--ac:#4e8cff;--gn:#34d399;--rd:#ff5c63;--gd:#fbbf24}
+body{background:linear-gradient(180deg,#03080e 0%,#06101a 48%,#03080e 100%);color:var(--tx);font-family:'Source Sans 3',sans-serif;min-height:100vh}
+.mono{font-family:'JetBrains Mono',monospace}
+.hdr{border-bottom:1px solid rgba(148,163,184,.14);padding:11px 36px;display:flex;align-items:center;justify-content:space-between;background:rgba(3,8,14,.9);backdrop-filter:blur(14px);flex-wrap:wrap;gap:12px;position:sticky;top:0;z-index:100}
+.logo{cursor:pointer;display:flex;align-items:baseline;gap:10px;flex-shrink:0}
+.gsearch-wrap{position:relative;flex:1 1 360px;max-width:640px;min-width:220px}
+.gsearch-input{width:100%;background:rgba(11,20,32,.85);border:1px solid var(--bd2);color:var(--tx);padding:12px 44px 12px 16px;border-radius:7px;font-size:15px;outline:none;font-family:inherit}
+.gsearch-input:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(78,140,255,0.15)}
+.gsearch-results{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--cd);border:1px solid var(--bd);border-radius:10px;max-height:60vh;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4);display:none;z-index:101}
+.gsearch-results.open{display:block}
+.gsearch-section{padding:6px 14px 4px;font-size:10px;font-weight:600;color:var(--mt);text-transform:uppercase;letter-spacing:.08em;border-top:1px solid var(--bd);background:var(--sf)}
+.gsearch-section:first-child{border-top:none}
+.gsearch-item{padding:10px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;border-top:1px solid var(--bd)}
+.gsearch-item:hover,.gsearch-item.active{background:var(--sf)}
+.gsearch-tag{display:inline-flex;align-items:center;justify-content:center;min-width:38px;padding:2px 6px;border:none;border-radius:4px;font-size:9px;font-weight:700;text-align:center;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;line-height:1;margin:0;text-transform:uppercase}
+.gsearch-tag.fund{background:rgba(78,140,255,.15);color:var(--ac)}
+.gsearch-tag.stock{background:rgba(56,189,248,.15);color:#38bdf8}
+.gsearch-tag.note{background:rgba(148,163,184,.2);color:#94a3b8}
+.gsearch-tag.pref{background:rgba(164,139,250,.15);color:#a78bfa}
+.gsearch-tag.warrant{background:rgba(244,114,182,.15);color:#f472b6}
+.gsearch-tag.call{background:rgba(52,211,153,.15);color:var(--gn)}
+.gsearch-tag.put{background:rgba(248,113,113,.15);color:var(--rd)}
+.gsearch-tag.opt{background:rgba(251,191,36,.15);color:var(--gd)}
+.ht-tag{display:inline-flex;align-items:center;justify-content:center;min-width:38px;padding:2px 6px;border:none;border-radius:4px;font-size:9px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;line-height:1;white-space:nowrap;text-transform:uppercase}
+.ht-tag.stock{background:rgba(56,189,248,.15);color:#38bdf8}
+.ht-tag.call{background:rgba(52,211,153,.15);color:var(--gn)}
+.ht-tag.put{background:rgba(248,113,113,.15);color:var(--rd)}
+.ht-tag.opt{background:rgba(251,191,36,.15);color:var(--gd)}
+.ht-tag.note{background:rgba(148,163,184,.2);color:#94a3b8}
+.ht-tag.pref{background:rgba(164,139,250,.15);color:#a78bfa}
+.ht-tag.warrant{background:rgba(244,114,182,.15);color:#f472b6}
+.gsearch-empty{padding:16px;text-align:center;color:var(--mt);font-size:13px}
+.wrap{max-width:1600px;margin:0 auto;padding:30px 36px 56px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.card{background:var(--cd);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;cursor:pointer;position:relative;transition:border-color .15s}
+.card:hover{border-color:var(--ac)}
+.badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{padding:11px 14px;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mt);border-bottom:1px solid var(--bd);user-select:none;white-space:nowrap}
+td{padding:10px 14px}
+tr{border-bottom:1px solid rgba(148,163,184,.12)}
+tbody tr:hover{background:rgba(78,140,255,.07)!important}
+tbody tr:hover .col-sticky{background:#0c1724!important}
+.tbl-wrap{overflow-x:auto;border-radius:0 0 8px 8px;border-top:1px solid var(--bd);-webkit-overflow-scrolling:touch}
+.col-sticky{position:sticky;left:0;z-index:2;border-right:2px solid var(--bd)}
+thead .col-sticky{z-index:3}
+@media(max-width:768px){.col-rank{display:none}
+td.col-sticky{max-width:140px!important;font-size:12px!important}
+.home-hero{min-height:55vh;display:flex;flex-direction:column;justify-content:flex-end}
+.home-hero .search-bar-wrap{width:100%;max-width:none}
+.search-bar-wrap{max-width:none;padding:0}}
+th.sort{cursor:pointer;transition:color .12s}
+th.sort:hover{color:var(--tx)}
+th.sort .arr{display:inline-block;width:10px;margin-left:3px;color:var(--mt);font-size:10px;vertical-align:baseline}
+th.sort.active{color:var(--ac)}
+th.sort.active .arr{color:var(--ac)}
+.search-bar-wrap{position:relative;max-width:680px;margin:0 auto 32px}
+.search-bar{display:flex;gap:8px;max-width:680px;width:100%;margin:0 auto 32px}
+.search-bar input{flex:1;background:var(--cd);border:2px solid var(--ac);color:var(--tx);padding:16px 20px;border-radius:12px;font-size:18px;outline:none;font-family:inherit;box-shadow:0 0 0 4px rgba(78,140,255,0.1),0 4px 20px rgba(0,0,0,0.3)}
+.search-bar input:focus{border-color:var(--ac);box-shadow:0 0 0 4px rgba(78,140,255,0.2),0 4px 20px rgba(0,0,0,0.3)}
+.back{background:rgba(11,20,32,.65);border:1px solid var(--bd2);color:var(--tx);padding:8px 18px;border-radius:7px;cursor:pointer;font-size:13px;font-family:inherit}
+.back:hover{border-color:var(--ac);color:var(--tx)}
+.lbl{color:var(--mt);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-bottom:14px}
+h1{font-size:28px;font-weight:700}
+h2{font-size:22px;font-weight:700}
+a{color:var(--ac);cursor:pointer;text-decoration:none}
+a:hover{text-decoration:underline}
+.info-note{background:linear-gradient(180deg,rgba(12,23,35,.94),rgba(8,17,27,.94));border:1px solid var(--bd2);border-radius:8px;padding:12px 16px;margin-bottom:24px;font-size:13px;color:var(--mt);line-height:1.6}
+.info-note strong{color:var(--tx)}
+.empty{text-align:center;padding:80px 20px;color:var(--mt)}
+.empty h1{margin-bottom:16px;color:var(--tx)}
+.empty p{font-size:15px;max-width:520px;margin:0 auto;line-height:1.6}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.fund-page{display:grid;grid-template-columns:minmax(0,1fr) 296px;gap:28px;align-items:start}
+.fund-main,.fund-sidebar,.fund-panel{min-width:0}
+.fund-sidebar{align-items:start}
+.fund-title{margin-bottom:16px}
+.fund-title h1{font-size:31px;line-height:1.08;margin-bottom:8px;letter-spacing:0;overflow-wrap:anywhere}
+.fund-meta{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--mt);font-size:14px}
+.fund-meta span+span:before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--mt);margin-right:12px;vertical-align:middle;opacity:.75}
+.fund-stat-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.9fr) minmax(0,1fr) minmax(0,1fr);gap:14px;margin-bottom:18px}
+.fund-stat{min-height:84px;background:linear-gradient(140deg,rgba(14,25,38,.96),rgba(7,16,25,.96));border:1px solid var(--bd2);border-radius:8px;padding:15px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px;overflow:hidden}
+.fund-stat-label{color:var(--mt);font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+.fund-stat-value{font-size:27px;font-weight:800;line-height:1;color:var(--tx)}
+.fund-stat .mini{flex:0 0 auto;opacity:.9}
+.mini-donut{width:48px;height:48px;border-radius:50%;background:conic-gradient(var(--ac) var(--pct),rgba(78,140,255,.16) 0);position:relative}
+.mini-donut:after{content:"";position:absolute;inset:6px;background:var(--cd);border-radius:50%}
+.fund-panel,.side-panel{background:linear-gradient(180deg,rgba(12,23,35,.96),rgba(6,15,24,.96));border:1px solid var(--bd2);border-radius:8px;overflow:hidden}
+.fund-panel-head{height:58px;padding:0 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bd);gap:16px}
+.fund-panel-title{font-size:16px;font-weight:800}
+.exit-panel{margin-top:18px}
+.panel-count{margin-left:7px;color:var(--mt);font-size:12px;font-weight:600}
+.holdings-tools{display:flex;align-items:center;gap:10px;min-width:280px}
+.holdings-search{width:260px;background:#08111c;border:1px solid var(--bd2);color:var(--tx);border-radius:7px;padding:9px 34px 9px 13px;font-family:inherit;font-size:14px;outline:none}
+.holdings-search:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(78,140,255,.12)}
+.icon-btn{width:38px;height:34px;border-radius:7px;border:1px solid var(--bd2);background:#08111c;color:var(--mt);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px}
+.icon-btn:hover{border-color:var(--ac);color:var(--tx)}
+.fund-foot{padding:11px 16px;color:var(--mt);font-size:12px;text-align:center}
+#fundTable{min-width:920px}
+#fundTable th:nth-child(3),#fundTable td:nth-child(3){max-width:220px}
+#fundExitTable,#stockExitTable{min-width:820px}
+.side-panel{padding:20px;margin-bottom:16px}
+.side-title{font-size:16px;font-weight:800;margin-bottom:20px}
+.summary-row{display:grid;grid-template-columns:minmax(42px,auto) 1fr auto;gap:9px;align-items:baseline;font-size:14px;margin:13px 0;color:var(--mt)}
+.summary-row .ticker{color:var(--ac);font-weight:800}
+.summary-row .value{font-family:'JetBrains Mono',monospace;color:var(--tx);font-size:13px}
+.summary-label{font-size:13px;color:var(--mt);margin:18px 0 10px}
+.summary-line{height:1px;background:var(--bd);margin:16px 0}
+.summary-company{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.summary-up{color:var(--gn)!important;font-weight:800}
+.summary-down{color:var(--rd)!important;font-weight:800}
+.summary-new{color:var(--gn);font-weight:800}
+.summary-exit{color:var(--rd)!important;font-weight:800}
+.summary-list{font-size:13px;line-height:1.7}
+.fineprint{color:var(--mt);font-size:12px;line-height:1.5;padding:4px 6px}
+.stock-page{display:grid;grid-template-columns:minmax(0,1fr) 336px;gap:28px;align-items:start}
+.stock-main,.stock-sidebar,.stock-panel{min-width:0}
+.stock-sidebar{align-items:start}
+.stock-title{display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px;align-items:center;margin-bottom:18px}
+.ticker-mark{font-family:'JetBrains Mono',monospace;font-size:44px;line-height:1;font-weight:800;color:var(--ac);letter-spacing:0}
+.stock-title h1{font-size:23px;line-height:1.15;margin-bottom:6px;letter-spacing:0;overflow-wrap:anywhere}
+.stock-meta{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--mt);font-size:13px}
+.stock-meta span+span:before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--mt);margin-right:12px;vertical-align:middle;opacity:.75}
+.stock-stat-grid{display:grid;grid-template-columns:.95fr 1.05fr .95fr 1.2fr;gap:14px;margin-bottom:18px}
+.stock-stat{min-height:84px;background:linear-gradient(140deg,rgba(14,25,38,.96),rgba(7,16,25,.96));border:1px solid var(--bd2);border-radius:8px;padding:15px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px;overflow:hidden}
+.stock-stat-label{color:var(--mt);font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+.stock-stat-value{font-size:25px;font-weight:800;line-height:1;color:var(--tx)}
+.stock-stat .mini{flex:0 0 auto;opacity:.9}
+.stock-largest{display:flex;align-items:center;gap:14px;min-width:0}
+.stock-icon{width:34px;height:34px;flex:0 0 34px;color:var(--mt);opacity:.9}
+.stock-largest-name{font-size:15px;font-weight:800;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stock-largest-meta{font-family:'JetBrains Mono',monospace;color:var(--mt);font-size:12px;margin-top:4px;white-space:nowrap}
+#stockTable{min-width:1040px}
+.stock-table-footer{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;padding:13px 16px;color:var(--mt);font-size:13px;border-top:1px solid var(--bd)}
+.stock-pagination{display:flex;gap:8px;align-items:center;justify-content:center}
+.page-btn{min-width:32px;height:30px;border:none;border-radius:6px;background:transparent;color:var(--tx);font-family:'JetBrains Mono',monospace;cursor:pointer}
+.page-btn:hover{background:rgba(78,140,255,.12);color:var(--ac)}
+.page-btn.active{background:var(--ac);color:#fff}
+.page-btn[disabled]{cursor:default;color:var(--mt);opacity:.7}
+.rows-control{justify-self:end;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.rows-control select{background:#08111c;border:1px solid var(--bd2);color:var(--tx);border-radius:7px;padding:8px 28px 8px 12px;font-family:inherit}
+.stock-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;color:var(--tx);font-weight:700;margin:18px 0 9px}
+.stock-summary-head:first-of-type{margin-top:0}
+.summary-action{background:transparent;border:0;color:var(--ac);font:inherit;font-size:12px;cursor:pointer}
+.summary-action:hover{text-decoration:underline}
+.stock-summary-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:baseline;font-size:14px;margin:11px 0;color:var(--mt)}
+.stock-summary-rank{font-size:12px;color:var(--mt)}
+.stock-summary-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.stock-summary-name:hover{color:var(--ac)}
+.stock-summary-value{font-family:'JetBrains Mono',monospace;color:var(--tx);font-size:13px;font-weight:700}
+.fund-data-footer,.stock-data-footer{grid-column:1/-1;border-top:1px solid rgba(148,163,184,.12);padding-top:12px;margin-top:2px}
+@media(max-width:1350px){.stock-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1200px){.stock-page{grid-template-columns:1fr}.stock-sidebar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
+@media(max-width:768px){.stock-page{gap:16px}.stock-title{grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:start;margin-bottom:12px}.ticker-mark{font-size:34px}.stock-title h1{font-size:22px;margin-bottom:4px}.stock-meta{font-size:12px;gap:4px 8px}.stock-meta span+span:before{display:none}.stock-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px}.stock-sidebar{grid-template-columns:1fr}.stock-stat{min-height:62px;padding:10px 12px;gap:8px}.stock-stat-label{font-size:10px;margin-bottom:3px}.stock-stat-value{font-size:21px}.stock-stat .mini,.stock-icon{width:28px;height:28px;max-width:72px}.stock-stat:last-child{grid-column:1/-1}.stock-largest{gap:10px}.stock-largest-name{font-size:14px}.stock-largest-meta{font-size:11px}.stock-panel .fund-panel-head{height:auto;min-height:0;padding:10px 12px;gap:10px;flex-direction:row;align-items:center}.stock-panel .fund-panel-title{font-size:15px}.stock-panel .holdings-tools{gap:8px;width:auto;flex:1}.stock-panel .holdings-search{width:100%;min-width:0;padding:8px 32px 8px 12px}.stock-table-footer{grid-template-columns:1fr;justify-items:start;padding:10px 12px}.stock-pagination{justify-content:flex-start;flex-wrap:wrap}.rows-control{justify-self:start}.fund-data-footer,.stock-data-footer{padding:10px 0 0}#stockTable{min-width:700px;font-size:13px;table-layout:fixed}#stockTable th,#stockTable td{padding:9px 10px}#stockTable th:nth-child(2),#stockTable td:nth-child(2){width:160px;max-width:160px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#stockTable th:nth-child(3),#stockTable td:nth-child(3){width:92px}#stockTable th:nth-child(4),#stockTable td:nth-child(4){width:92px}#stockTable th:nth-child(5),#stockTable td:nth-child(5){width:82px}#stockTable th:nth-child(6),#stockTable td:nth-child(6){width:94px}#stockTable th:nth-child(7),#stockTable td:nth-child(7){width:72px}#stockTable th:nth-child(8),#stockTable td:nth-child(8){width:94px}}
+@media(max-width:1100px){.fund-page{grid-template-columns:1fr}.fund-sidebar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.side-panel{margin-bottom:0}.fund-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:768px){.hdr{padding:10px 16px}.logo span:last-child{font-size:14px!important}.gsearch-wrap{order:3;flex-basis:100%;max-width:none}.back{padding:7px 12px;margin-left:auto}.wrap{padding:22px 16px 42px}.fund-title{margin-bottom:14px}.fund-title h1{font-size:25px;line-height:1.15}.fund-meta{font-size:13px;gap:6px 10px}.fund-meta span+span:before{display:none}.fund-stat-grid,.fund-sidebar{grid-template-columns:1fr}.fund-stat{min-height:78px;padding:14px}.fund-stat-value{font-size:24px}.fund-stat .mini{max-width:104px}.fund-panel-head{height:auto;align-items:stretch;flex-direction:column;padding:14px}.holdings-tools{min-width:0;width:100%}.holdings-search{width:100%;min-width:0}.summary-row{grid-template-columns:minmax(52px,auto) minmax(0,1fr) auto}#fundTable{min-width:738px;font-size:13px;table-layout:fixed}#fundTable th,#fundTable td{padding:9px 10px}#fundTable th:nth-child(2),#fundTable td:nth-child(2){width:124px;max-width:124px!important}#fundTable th:nth-child(3),#fundTable td:nth-child(3){width:150px;max-width:150px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#fundTable th:nth-child(4),#fundTable td:nth-child(4){width:90px}#fundTable th:nth-child(5),#fundTable td:nth-child(5){width:92px}#fundTable th:nth-child(6),#fundTable td:nth-child(6){width:92px}#fundTable th:nth-child(7),#fundTable td:nth-child(7){width:94px}#fundTable th:nth-child(8),#fundTable td:nth-child(8){width:78px}#fundTable th:nth-child(9),#fundTable td:nth-child(9){width:72px}#fundTable th:nth-child(10),#fundTable td:nth-child(10){width:86px}}
+</style>
+<style id="analysts-notebook-theme">
+/* Analyst's Notebook visual system. App behavior and DOM contracts remain unchanged. */
+:root{
+  color-scheme:light;
+  --bg:#f4f0e8;
+  --sf:#f7f3eb;
+  --cd:#fcfaf5;
+  --cd2:#f9f6ef;
+  --bd:#d6cfc3;
+  --bd2:#bcb3a5;
+  --tx:#201f1b;
+  --mt:#5f5b53;
+  --ac:#006b4f;
+  --gn:#007342;
+  --rd:#97281f;
+  --gd:#744620;
+  --ac-soft:#e1e8e2;
+  --gn-soft:#e1eee5;
+  --rd-soft:#f3e2de;
+  --warm-hover:#eee9df;
+  --serif:'Newsreader',Iowan Old Style,'Palatino Linotype','Book Antiqua',Georgia,serif;
+  --sans:'Source Sans 3',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+
+html{background:var(--bg);scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--tx);
+  font-family:var(--sans);
+  font-size:15px;
+  line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+::selection{background:#ccd9d0;color:var(--tx)}
+button,input,select{font:inherit}
+button,input,select,a,[onclick]{-webkit-tap-highlight-color:transparent}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.mono,.summary-row .value,.stock-largest-meta,.stock-summary-value,.page-btn{
+  font-family:var(--sans);
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:'tnum' 1,'lnum' 1;
+}
+
+.hdr{
+  min-height:72px;
+  padding:13px clamp(20px,3vw,46px);
+  gap:18px;
+  background:rgba(244,240,232,.97);
+  border-bottom:1px solid var(--bd);
+  box-shadow:0 1px 0 rgba(32,31,27,.02);
+  backdrop-filter:none;
+}
+.logo{gap:12px;align-items:center;color:var(--tx)}
+.logo:hover .logo-name{color:var(--ac)}
+.logo-mark{
+  color:var(--ac)!important;
+  font-family:var(--serif)!important;
+  font-size:31px!important;
+  font-weight:600!important;
+  line-height:.8;
+  letter-spacing:-.045em;
+}
+.logo-name{font-size:15px!important;font-weight:600!important;letter-spacing:.01em;transition:color .15s ease}
+.gsearch-wrap{max-width:660px}
+.gsearch-input,.holdings-search,.rows-control select{
+  color:var(--tx);
+  background:var(--cd);
+  border:1px solid var(--bd2);
+  border-radius:4px;
+  box-shadow:none;
+}
+.gsearch-input{height:44px;padding:10px 42px 10px 14px;font-size:15px}
+.gsearch-input::placeholder,.holdings-search::placeholder,.search-bar input::placeholder{color:#777168;opacity:1}
+.gsearch-input:focus,.holdings-search:focus,.search-bar input:focus,.rows-control select:focus{
+  border-color:var(--ac);
+  box-shadow:0 0 0 3px rgba(0,107,79,.12);
+  outline:none;
+}
+.gsearch-results{
+  top:calc(100% + 7px);
+  background:var(--cd);
+  border:1px solid var(--bd2);
+  border-radius:4px;
+  box-shadow:0 14px 34px rgba(50,43,34,.14);
+}
+.gsearch-section{padding:8px 14px 6px;background:var(--sf);border-color:var(--bd);color:var(--mt);font-size:10px;letter-spacing:.1em}
+.gsearch-item{padding:11px 14px;border-color:var(--bd);gap:11px}
+.gsearch-item:hover,.gsearch-item.active{background:var(--warm-hover)}
+.gsearch-tag,.ht-tag{
+  min-width:40px;
+  padding:3px 7px;
+  border:1px solid transparent;
+  border-radius:999px;
+  font-family:var(--sans);
+  font-size:9px;
+  letter-spacing:.06em;
+}
+.gsearch-tag.fund{background:var(--ac-soft);border-color:#c7d3ca;color:var(--ac)}
+.gsearch-tag.stock,.ht-tag.stock{background:#e5ece9;border-color:#cad6d1;color:#25483a}
+.gsearch-tag.note,.ht-tag.note{background:#ebe8e1;border-color:#d6d0c5;color:#5f5b53}
+.gsearch-tag.pref,.ht-tag.pref{background:#eee8ef;border-color:#dcd0de;color:#68496b}
+.gsearch-tag.warrant,.ht-tag.warrant{background:#f1e7e4;border-color:#dfd0ca;color:#765044}
+.gsearch-tag.call,.ht-tag.call{background:var(--gn-soft);border-color:#c6dbc9;color:var(--gn)}
+.gsearch-tag.put,.ht-tag.put{background:var(--rd-soft);border-color:#dfc6c0;color:var(--rd)}
+.gsearch-tag.opt,.ht-tag.opt{background:#eee9dc;border-color:#dcd1b9;color:var(--gd)}
+.back{
+  min-height:38px;
+  padding:7px 15px;
+  color:var(--ac);
+  background:transparent;
+  border:1px solid var(--bd2);
+  border-radius:4px;
+  font-weight:600;
+}
+.back:hover{background:var(--cd);border-color:var(--ac);color:var(--ac)}
+
+.wrap{max-width:1580px;padding:42px clamp(20px,3vw,46px) 68px}
+h1,h2{font-family:var(--serif);font-weight:600;letter-spacing:-.025em}
+a{color:var(--ac);text-underline-offset:3px}
+.empty{padding:88px 20px;color:var(--mt)}
+.empty h1{font-size:clamp(34px,5vw,54px)}
+.spinner{border-color:var(--bd2);border-top-color:var(--ac)}
+
+.home-hero{
+  min-height:0;
+  display:block;
+  padding:clamp(48px,7.5vw,112px) 0 clamp(58px,8vw,102px);
+}
+.home-copy{max-width:990px;margin:0 0 42px;text-align:left}
+.home-copy h1{
+  max-width:950px;
+  font-size:clamp(48px,6.1vw,82px);
+  line-height:.98;
+  letter-spacing:-.045em;
+  text-wrap:balance;
+}
+.home-subtitle{max-width:720px;margin-top:20px;color:var(--mt);font-size:17px;line-height:1.6}
+.home-filer-count{color:var(--tx);font-weight:600}
+.search-bar-wrap{max-width:1120px;margin:0;position:relative}
+.search-bar{position:relative;max-width:none;margin:0;width:100%}
+.search-bar:before{
+  content:'';
+  position:absolute;
+  left:21px;
+  top:50%;
+  z-index:2;
+  width:15px;
+  height:15px;
+  border:1.7px solid var(--mt);
+  border-radius:50%;
+  transform:translateY(-58%);
+  pointer-events:none;
+}
+.search-bar:after{
+  content:'';
+  position:absolute;
+  left:35px;
+  top:34px;
+  z-index:2;
+  width:7px;
+  height:1.7px;
+  background:var(--mt);
+  transform:rotate(45deg);
+  transform-origin:left center;
+  pointer-events:none;
+}
+.search-bar input{
+  height:66px;
+  padding:15px 22px 15px 54px;
+  color:var(--tx);
+  background:var(--cd);
+  border:1px solid var(--bd2);
+  border-radius:4px;
+  box-shadow:0 8px 28px rgba(50,43,34,.06);
+  font-size:18px;
+}
+.search-bar input:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(0,107,79,.12),0 10px 30px rgba(50,43,34,.07)}
+#fundBrowse{padding-top:30px;border-top:1px solid var(--bd)}
+#fundBrowse .lbl{text-align:left!important;margin:0 0 8px;color:var(--ac);font-size:11px;letter-spacing:.12em}
+#fundBrowse .grid{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:clamp(30px,6vw,90px);row-gap:0}
+#fundBrowse .card{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto 14px;
+  align-items:center;
+  gap:12px;
+  min-height:70px;
+  padding:18px 0;
+  background:transparent;
+  border:0;
+  border-top:1px solid var(--bd);
+  border-radius:0;
+  transition:color .15s ease,border-color .15s ease;
+}
+#fundBrowse .card:nth-child(-n+2){border-top-color:transparent}
+#fundBrowse .card:after{content:'›';color:var(--bd2);font-family:var(--serif);font-size:22px;line-height:1;transition:transform .15s ease,color .15s ease}
+#fundBrowse .card:hover{color:var(--ac);border-color:var(--bd2)}
+#fundBrowse .card:hover:after{color:var(--ac);transform:translateX(3px)}
+.popular-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:16px;font-weight:600}
+.popular-cik{margin-top:0!important;color:var(--mt)!important;font-size:11px!important;white-space:nowrap}
+
+.fund-page{grid-template-columns:minmax(0,1fr) 316px;gap:24px}
+.stock-page{grid-template-columns:minmax(0,1fr) 340px;gap:24px}
+.fund-title{margin-bottom:26px}
+.fund-title h1{max-width:1100px;margin-bottom:10px;font-size:clamp(42px,4.7vw,64px);line-height:1.01;letter-spacing:-.04em}
+.fund-meta,.stock-meta{gap:10px 14px;color:var(--mt);font-size:13px}
+.fund-meta span+span:before,.stock-meta span+span:before{width:3px;height:3px;margin-right:14px;background:var(--bd2);opacity:1}
+.fund-stat-grid,.stock-stat-grid{
+  gap:0;
+  margin-bottom:22px;
+  overflow:hidden;
+  background:var(--cd);
+  border:1px solid var(--bd);
+  border-radius:4px;
+}
+.fund-stat,.stock-stat{
+  min-height:112px;
+  padding:20px clamp(15px,1.5vw,23px);
+  background:transparent;
+  border:0;
+  border-right:1px solid var(--bd);
+  border-radius:0;
+  gap:12px;
+}
+.fund-stat:last-child,.stock-stat:last-child{border-right:0}
+.fund-stat-label,.stock-stat-label{
+  margin-bottom:8px;
+  color:var(--mt);
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.095em;
+}
+.fund-stat-value,.stock-stat-value{color:var(--tx);font-size:clamp(25px,2vw,32px);font-weight:600;letter-spacing:-.03em}
+.top-position-copy,.top-position-value{min-width:0}
+.top-position-value{display:flex;align-items:baseline;gap:.28em;max-width:100%;white-space:nowrap}
+.top-position-symbol{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--ac)}
+.top-position-percent{flex:0 0 auto;color:var(--tx)}
+.top-position-value.security-label-position{align-items:flex-start;flex-direction:column;gap:3px;white-space:normal}
+.security-label-position .top-position-symbol{overflow:visible;text-overflow:clip;white-space:normal;font-size:clamp(16px,1.45vw,21px);line-height:1.15;overflow-wrap:anywhere}
+.security-label-position .top-position-percent{font-size:18px}
+#fundTable td.security-label-cell,#fundExitTable td.security-label-cell{white-space:normal!important;line-height:1.2;overflow-wrap:anywhere}
+.summary-row .ticker,.summary-list .summary-new,.summary-list .summary-down,.summary-list .summary-exit{min-width:0;overflow-wrap:anywhere}
+.fund-stat .mini,.stock-stat .mini{opacity:1}
+.mini-donut{width:50px;height:50px;background:conic-gradient(var(--ac) var(--pct),var(--ac-soft) 0)}
+.mini-donut:after{inset:7px;background:var(--cd)}
+
+.fund-panel,.side-panel{
+  background:var(--cd);
+  border:1px solid var(--bd);
+  border-radius:4px;
+  box-shadow:none;
+}
+.fund-panel{overflow:hidden}
+.fund-panel-head{
+  min-height:66px;
+  height:auto;
+  padding:12px 18px 12px 20px;
+  background:var(--cd2);
+  border-color:var(--bd);
+}
+.fund-panel-title{font-family:var(--serif);font-size:21px;font-weight:600;letter-spacing:-.015em}
+.holdings-tools{min-width:280px}
+.holdings-search{width:260px;padding:9px 34px 9px 12px;font-size:14px}
+.icon-btn{
+  width:36px;
+  height:36px;
+  color:var(--mt);
+  background:transparent;
+  border:1px solid var(--bd2);
+  border-radius:4px;
+}
+.icon-btn:hover{color:var(--ac);background:var(--sf);border-color:var(--ac)}
+.tbl-wrap{background:var(--cd);border-top:1px solid var(--bd);border-radius:0}
+table{font-size:14px}
+th{
+  padding:12px 13px;
+  color:var(--mt);
+  background:var(--sf);
+  border-color:var(--bd);
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.07em;
+}
+td{padding:13px;line-height:1.25}
+tr{border-color:var(--bd)}
+tbody tr:nth-child(odd){background:var(--cd)!important}
+tbody tr:nth-child(even){background:var(--sf)!important}
+tbody tr:nth-child(odd) .col-sticky{background:var(--cd)!important}
+tbody tr:nth-child(even) .col-sticky{background:var(--sf)!important}
+tbody tr:hover{background:var(--warm-hover)!important}
+tbody tr:hover .col-sticky{background:var(--warm-hover)!important}
+.col-sticky{border-right:1px solid var(--bd);box-shadow:3px 0 6px rgba(50,43,34,.025)}
+thead .col-sticky{background:var(--sf)!important}
+th.sort:hover{color:var(--tx)}
+th.sort.active,th.sort.active .arr{color:var(--ac)}
+.fund-foot{padding:12px 16px;border-top:1px solid var(--bd);background:var(--cd2);color:var(--mt);font-size:12px}
+.badge{padding:3px 7px;border-radius:3px;font-size:11px;font-weight:700}
+.side-panel{padding:24px;margin-bottom:16px}
+.side-title{margin-bottom:22px;font-family:var(--serif);font-size:22px;font-weight:600;letter-spacing:-.015em}
+.summary-label{margin:19px 0 10px;color:var(--mt);font-size:12px;font-weight:600;letter-spacing:.015em}
+.summary-row{margin:11px 0;gap:10px;font-size:14px}
+.summary-row .ticker{color:var(--ac);font-weight:700}
+.summary-row .value{color:var(--tx);font-size:13px}
+.summary-line{margin:18px 0;background:var(--bd)}
+.summary-up{color:var(--gn)!important;font-weight:700}
+.summary-down{color:var(--rd)!important;font-weight:700}
+.summary-new{color:var(--gn);font-weight:700}
+.summary-list{color:var(--tx);line-height:1.65}
+.fineprint{color:var(--mt);font-size:12px;line-height:1.65}
+.fund-data-footer,.stock-data-footer{margin-top:10px;padding-top:16px;border-color:var(--bd)}
+.fund-sidebar,.stock-sidebar{align-self:start}
+
+.stock-title{gap:22px;margin-bottom:25px;align-items:center}
+.ticker-mark{font-family:var(--serif);font-size:clamp(50px,5.2vw,72px);font-weight:600;letter-spacing:-.055em;color:var(--ac)}
+.stock-title h1{font-size:clamp(30px,3vw,44px);line-height:1.02;letter-spacing:-.035em}
+.stock-title-line{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:7px}
+.stock-largest-name{color:var(--tx);font-size:15px;font-weight:600}
+.stock-largest-meta{color:var(--mt);font-size:12px}
+.stock-icon{color:var(--ac)}
+.stock-table-footer{padding:13px 16px;background:var(--cd2);border-color:var(--bd);color:var(--mt)}
+.page-btn{min-width:32px;height:31px;border:1px solid transparent;border-radius:3px;color:var(--tx)}
+.page-btn:hover{background:var(--sf);border-color:var(--bd);color:var(--ac)}
+.page-btn.active{background:var(--ac);border-color:var(--ac);color:#fff}
+.rows-control select{padding:7px 28px 7px 10px}
+.stock-summary-head{margin:19px 0 10px;color:var(--tx);font-size:13px;font-weight:600}
+.summary-action{color:var(--ac);font-size:12px;text-underline-offset:3px}
+.stock-summary-row{margin:11px 0;color:var(--mt)}
+.stock-summary-name:hover{color:var(--ac)}
+.stock-summary-value{color:var(--tx);font-size:13px;font-weight:600}
+
+.info-note{
+  padding:14px 17px;
+  color:var(--mt);
+  background:var(--cd);
+  border:1px solid var(--bd);
+  border-radius:4px;
+  line-height:1.65;
+}
+.info-note strong{color:var(--tx)}
+@media(max-width:1350px){
+  .stock-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .stock-stat:nth-child(2){border-right:0}
+  .stock-stat:nth-child(-n+2){border-bottom:1px solid var(--bd)}
+}
+@media(max-width:1200px){
+  .stock-page{grid-template-columns:1fr}
+  .stock-sidebar{position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+  .stock-sidebar .side-panel{margin-bottom:0}
+}
+@media(max-width:1100px){
+  .fund-page{grid-template-columns:1fr}
+  .fund-sidebar{position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+  .fund-sidebar .side-panel{margin-bottom:0}
+  .fund-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .fund-stat:nth-child(2){border-right:0}
+  .fund-stat:nth-child(-n+2){border-bottom:1px solid var(--bd)}
+}
+@media(max-width:768px){
+  .hdr{min-height:62px;padding:10px 16px;gap:10px 14px}
+  .logo{gap:9px}.logo-mark{font-size:27px!important}.logo-name{font-size:14px!important}
+  .gsearch-wrap{order:3;flex-basis:100%;max-width:none}
+  .back{padding:6px 11px;margin-left:auto}
+  .wrap{padding:28px 16px 48px}
+  .home-hero{padding:40px 0 60px}
+  .home-copy{margin-bottom:30px}
+  .home-copy h1{font-size:clamp(42px,13vw,58px);line-height:1}
+  .home-subtitle{margin-top:15px;font-size:15px}
+  .search-bar input{height:58px;padding-left:49px;font-size:16px}
+  .search-bar:before{left:19px}
+  .search-bar:after{left:33px;top:30px}
+  #fundBrowse{padding-top:24px}
+  #fundBrowse .grid{grid-template-columns:1fr}
+  #fundBrowse .card:nth-child(2){border-top-color:var(--bd)}
+  #fundBrowse .card{min-height:64px;padding:16px 0}
+  .popular-name{font-size:15px}
+  .fund-title{margin-bottom:20px}
+  .fund-title h1{font-size:clamp(36px,10vw,48px)}
+  .fund-meta,.stock-meta{font-size:12px;gap:5px 10px}
+  .fund-meta span+span:before,.stock-meta span+span:before{display:none}
+  .fund-stat-grid,.stock-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:16px}
+  .fund-stat,.stock-stat{min-height:92px;padding:15px 14px}
+  .fund-stat:nth-child(2),.stock-stat:nth-child(2){border-right:0}
+  .fund-stat:nth-child(-n+2),.stock-stat:nth-child(-n+2){border-bottom:1px solid var(--bd)}
+  .fund-stat-value,.stock-stat-value{font-size:24px}
+  .fund-stat .mini,.stock-stat .mini{max-width:74px}
+  .fund-sidebar,.stock-sidebar{grid-template-columns:1fr;gap:12px}
+  .fund-panel-head,.stock-panel .fund-panel-head{padding:14px;align-items:stretch;flex-direction:column;gap:12px}
+  .holdings-tools,.stock-panel .holdings-tools{width:100%;min-width:0}
+  .holdings-search,.stock-panel .holdings-search{width:100%}
+  .fund-panel-title{font-size:20px}
+  .side-panel{padding:20px}
+  .side-title{font-size:21px}
+  .stock-title{grid-template-columns:1fr;gap:6px;margin-bottom:20px}
+  .ticker-mark{font-size:54px}
+  .stock-title h1{font-size:32px}
+  .stock-stat:last-child{grid-column:auto}
+  .stock-table-footer{grid-template-columns:1fr;justify-items:start}
+  .rows-control{justify-self:start}
+  table{font-size:13px}
+  th{padding:10px;font-size:9.5px}
+  td{padding:11px 10px}
+  #fundTable td.security-label-cell,#fundExitTable td.security-label-cell{white-space:normal!important;line-height:1.2}
+}
+@media(max-width:520px){
+  .logo-name{display:none}
+  .fund-stat-grid,.stock-stat-grid{grid-template-columns:1fr}
+  .fund-stat,.stock-stat{border-right:0;border-bottom:1px solid var(--bd)!important;min-height:82px}
+  .fund-stat:last-child,.stock-stat:last-child{border-bottom:0!important}
+  .stock-title-line{align-items:flex-start}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*:before,*:after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}
+}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="logo" onclick="goHome()">
+    <span class="logo-mark">13F</span>
+    <span class="logo-name">Super Investor Seeker</span>
+  </div>
+  <div class="gsearch-wrap" id="gsearchWrap" style="display:none">
+    <input id="gsearch" class="gsearch-input" placeholder="Search funds or tickers…" autocomplete="off" spellcheck="false"/>
+    <div id="gsearchResults" class="gsearch-results"></div>
+  </div>
+  <button class="back" id="backBtn" style="display:none" onclick="goHome()">← Back</button>
+</div>
+
+<div class="wrap" id="app">
+  <div class="empty"><div><span class="spinner"></span>Loading filings...</div></div>
+</div>
+
+<script src="site-data-loader.js"></script>
+<script>
+const DATA_CONTRACT_VERSION = 5;
+
+class DataContractMismatchError extends Error {
+  constructor(path, actualVersion) {
+    super(
+      `${path} uses data contract ${String(actualVersion)}; ` +
+      `expected ${DATA_CONTRACT_VERSION}`
+    );
+    this.name = "DataContractMismatchError";
+  }
+}
+
+class RequiredSiteDataError extends Error {
+  constructor(path, cause) {
+    super(`${path} is unavailable or invalid`);
+    this.name = "RequiredSiteDataError";
+    this.cause = cause;
+  }
+}
+
+function assertCompatibleDataContract(data, path) {
+  const actualVersion = data?.data_contract_version;
+  if (!Number.isInteger(actualVersion) || actualVersion !== DATA_CONTRACT_VERSION) {
+    throw new DataContractMismatchError(path, actualVersion);
+  }
+}
+
+function assertRequiredSecurityMetadata(data, path) {
+  for (const field of ["labels", "kinds", "product_names"]) {
+    const value = data?.[field];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new RequiredSiteDataError(
+        path,
+        new Error(`${field} must be an object`)
+      );
+    }
+  }
+  if (!Array.isArray(data?.fund_identities)) {
+    throw new RequiredSiteDataError(
+      path,
+      new Error("fund_identities must be an array")
+    );
+  }
+}
+
+// ---------- formatters ----------
+const _tcKeepUpper = new Set(["LLC","LP","LLP","LTD","INC","CORP","CO","PLC","NV","SA","AG","AB","II","III","IV","VI","VII","VIII","IX","XI","XII","ETF","ADR","MSCI","S&P","SPDR","FTSE","ESG","REIT","CLO","MBS","TIPS","US","USD","UK","EU","AI","IPO","EAFE","ACWI","NASDAQ","NYSE","PGIM","PIMCO","FT","IBONDS","N.V.","L.P.","S.A."]);
+const _tcLower = new Set(["OF","AND","THE","A","AN","FOR","TO","WITH","IN","ON","AT","BY","OR","NOR","BUT","AS"]);
+function titleCase(s) {
+  if (!s) return "";
+  return s.replace(/\S+/g, (w, i) => {
+    const up = w.toUpperCase();
+    const bare = up.replace(/[.,]/g, "");
+    if (_tcKeepUpper.has(bare)) return up;
+    if (i > 0 && _tcLower.has(up)) return w.toLowerCase();
+    if (up === w && w.length > 1) return w.charAt(0) + w.slice(1).toLowerCase();
+    return w;
+  });
+}
+const fV = v => {
+  if (!v || v === 0) return "$0";
+  return v >= 1e12 ? `$${(v/1e12).toFixed(2)}T`
+       : v >= 1e9  ? `$${(v/1e9).toFixed(2)}B`
+       : v >= 1e6  ? `$${(v/1e6).toFixed(1)}M`
+       : v >= 1e3  ? `$${(v/1e3).toFixed(0)}K`
+       : `$${v}`;
+};
+const fS = n => {
+  if (!n || n === 0) return "0";
+  return n >= 1e9 ? `${(n/1e9).toFixed(2)}B`
+       : n >= 1e6 ? `${(n/1e6).toFixed(2)}M`
+       : n >= 1e3 ? `${(n/1e3).toFixed(1)}K`
+       : `${n}`;
+};
+const formatShares = (shares, imputed = false) =>
+  `${imputed ? "~" : ""}${fS(shares)}`;
+const fP = n => {
+  if (n == null) return "—";
+  if (n === 0) return "0.0%";
+  if (n < 0.05) return "<0.1%";
+  return `${n.toFixed(1)}%`;
+};
+const esc = s => (s == null ? "" : String(s))
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+
+function sec13fFilingsUrl(fund) {
+  const rawCik = String(fund?.cik ?? "").trim();
+  if (!/^\d{1,10}$/.test(rawCik)) return "";
+  const cik = rawCik.replace(/^0+/, "");
+  if (!cik) return "";
+  return `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${encodeURIComponent(cik)}&type=13F-HR&owner=exclude&count=100`;
+}
+
+// match the pipeline's filename sanitization for stock files
+const safeTicker = t => (t || "").toUpperCase().replace(/[^A-Z0-9._-]/g, "_");
+
+function normalizeInstrumentType(type) {
+  const t = String(type || "EQUITY").trim().toUpperCase();
+  return ["EQUITY", "PREF", "NOTE", "WARRANT", "CALL", "PUT", "OPT"].includes(t) ? t : "EQUITY";
+}
+
+let securityLabels = Object.create(null);
+let securityKinds = Object.create(null);
+let securityProductNames = Object.create(null);
+let securityFundIdentities = new Set();
+let securityLabelsPromise = null;
+const VALID_SECURITY_KINDS = new Set([
+  "COMMON",
+  "PREFERRED",
+  "ETF",
+  "ETN",
+  "MUTUAL FUND",
+  "CLOSED-END FUND",
+  "BOND",
+  "WARRANT",
+  "RIGHT",
+  "UNIT",
+]);
+const FUND_PRODUCT_NAME_KINDS = new Set([
+  "ETF",
+  "ETN",
+  "MUTUAL FUND",
+  "CLOSED-END FUND",
+]);
+
+function normalizeSecurityLabelPayload(data) {
+  const source = data?.labels;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return Object.create(null);
+  }
+  const normalized = Object.create(null);
+  for (const [rawCusip, rawLabel] of Object.entries(source)) {
+    const cusip = String(rawCusip || "").trim().toUpperCase();
+    const label = String(rawLabel || "").trim().replace(/\s+/g, " ");
+    if (!cusip || !label || label.toUpperCase() === cusip) continue;
+    normalized[cusip] = label;
+  }
+  return normalized;
+}
+
+function normalizeSecurityKindPayload(data) {
+  const source = data?.kinds;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return Object.create(null);
+  }
+  const normalized = Object.create(null);
+  for (const [rawCusip, rawKind] of Object.entries(source)) {
+    const cusip = String(rawCusip || "").trim().toUpperCase();
+    const kind = String(rawKind || "").trim().toUpperCase().replace(/\s+/g, " ");
+    if (!cusip || !VALID_SECURITY_KINDS.has(kind)) continue;
+    normalized[cusip] = kind;
+  }
+  return normalized;
+}
+
+function normalizeSecurityProductNamePayload(data) {
+  const source = data?.product_names;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return Object.create(null);
+  }
+  const normalized = Object.create(null);
+  for (const [rawCusip, rawName] of Object.entries(source)) {
+    const cusip = String(rawCusip || "").trim().toUpperCase();
+    const name = String(rawName || "").trim().replace(/\s+/g, " ");
+    if (!cusip || !name || name.toUpperCase() === cusip) continue;
+    normalized[cusip] = name;
+  }
+  return normalized;
+}
+
+function normalizeSecurityFundIdentityPayload(data) {
+  const source = data?.fund_identities;
+  if (!Array.isArray(source)) return new Set();
+  return new Set(
+    source
+      .map(value => String(value || "").trim().toUpperCase())
+      .filter(Boolean)
+  );
+}
+
+async function ensureSecurityLabels() {
+  if (!securityLabelsPromise) {
+    securityLabelsPromise = fetch("data/security_labels.json", { cache: "no-cache" })
+      .then(response => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      })
+      .then(data => {
+        assertCompatibleDataContract(data, "data/security_labels.json");
+        assertRequiredSecurityMetadata(data, "data/security_labels.json");
+        securityLabels = normalizeSecurityLabelPayload(data);
+        securityKinds = normalizeSecurityKindPayload(data);
+        securityProductNames = normalizeSecurityProductNamePayload(data);
+        securityFundIdentities = normalizeSecurityFundIdentityPayload(data);
+        return securityLabels;
+      })
+      .catch(error => {
+        // Kinds now participate in canonical stock routing. Rendering without
+        // this versioned metadata could link a filing row to a removed legacy
+        // option artifact, so a partial or failed load must fail closed.
+        console.error("required security metadata load failed:", error);
+        securityLabels = Object.create(null);
+        securityKinds = Object.create(null);
+        securityProductNames = Object.create(null);
+        securityFundIdentities = new Set();
+        throw (
+          error instanceof DataContractMismatchError
+          || error instanceof RequiredSiteDataError
+        )
+          ? error
+          : new RequiredSiteDataError(
+              "data/security_labels.json",
+              error
+            );
+      });
+  }
+  return securityLabelsPromise;
+}
+
+function holdingInstrumentType(holding) {
+  const putCall = String(holding?.put_call || "").trim().toUpperCase();
+  return ["CALL", "PUT"].includes(putCall)
+    ? putCall
+    : normalizeInstrumentType(
+        holding?.holding_type || holding?.instrument_type || holding?.option_type
+      );
+}
+
+function holdingPublishedInstrumentType(holding) {
+  const rawType = holdingInstrumentType(holding);
+  const kind = securityKindForCusip(holding?.cusip);
+  if (kind === "BOND") return "NOTE";
+  if (
+    securityHasEquityFundIdentity(holding?.cusip)
+    && !["CALL", "PUT", "OPT"].includes(rawType)
+  ) {
+    return "EQUITY";
+  }
+  return rawType;
+}
+
+function securityDisplayTicker(ticker, instrumentType = "EQUITY") {
+  const value = String(ticker || "").trim();
+  if (!value) return "";
+  return normalizeInstrumentType(instrumentType) === "NOTE"
+    ? value
+    : value.split(/\s+/)[0];
+}
+
+function securityLabelForCusip(cusip) {
+  const key = String(cusip || "").trim().toUpperCase();
+  const label = String(securityLabels[key] || "").trim();
+  return label && label.toUpperCase() !== key ? label : "";
+}
+
+function securityKindForCusip(cusip) {
+  const key = String(cusip || "").trim().toUpperCase();
+  const kind = String(securityKinds[key] || "").trim().toUpperCase();
+  return VALID_SECURITY_KINDS.has(kind) ? kind : "";
+}
+
+function securityHasEquityFundIdentity(cusip) {
+  const key = String(cusip || "").trim().toUpperCase();
+  return securityFundIdentities.has(key);
+}
+
+function securityProductNameForCusip(cusip) {
+  const key = String(cusip || "").trim().toUpperCase();
+  const name = String(securityProductNames[key] || "").trim();
+  return name && name.toUpperCase() !== key ? name : "";
+}
+
+function holdingDisplayKind(holding) {
+  const instrumentType = holdingInstrumentType(holding);
+  const mappedKind = securityKindForCusip(holding?.cusip);
+  // A registry-confirmed bond is stronger structural evidence than a legacy
+  // filer row that happened to be parsed as an option.
+  if (mappedKind === "BOND") return "BOND";
+  if (instrumentType === "CALL" || instrumentType === "PUT") {
+    return instrumentType;
+  }
+  if (instrumentType === "OPT") return "OPTION";
+  if (
+    securityHasEquityFundIdentity(holding?.cusip)
+    && !["CALL", "PUT", "OPT"].includes(instrumentType)
+  ) {
+    return mappedKind || "EQUITY";
+  }
+  // Kinds are keyed by CUSIP while holdings are keyed by CUSIP + instrument
+  // type.  A COMMON kind must never override an explicit note, preferred, or
+  // warrant row that happens to reuse the same identifier.
+  const compatibleKind = (
+    mappedKind === "COMMON" && instrumentType !== "EQUITY"
+  ) ? "" : mappedKind;
+  return (
+    compatibleKind
+    || {
+      EQUITY: "EQUITY",
+      PREF: "PREFERRED",
+      NOTE: "NOTE",
+      WARRANT: "WARRANT",
+    }[instrumentType]
+  );
+}
+
+function holdingDisplayKindLabel(holding) {
+  const kind = holdingDisplayKind(holding);
+  return {
+    COMMON: "Common Stock",
+    PREFERRED: "Preferred",
+    ETF: "ETF",
+    ETN: "ETN",
+    "MUTUAL FUND": "Mutual Fund",
+    "CLOSED-END FUND": "Closed-End Fund",
+    BOND: "Bond",
+    WARRANT: "Warrant",
+    RIGHT: "Right",
+    UNIT: "Unit",
+    EQUITY: "Equity",
+    CALL: "Call",
+    PUT: "Put",
+    OPTION: "Option",
+    NOTE: "Note",
+  }[kind] || kind;
+}
+
+function holdingDisplayKindClass(holding) {
+  const instrumentType = holdingInstrumentType(holding);
+  const tagClass = type => (
+    type === "EQUITY" ? "stock" : String(type || "EQUITY").toLowerCase()
+  );
+  const displayKind = holdingDisplayKind(holding);
+  if (displayKind === "BOND") return tagClass("NOTE");
+  if (["CALL", "PUT", "OPT"].includes(instrumentType)) {
+    return tagClass(instrumentType);
+  }
+  const kindType = {
+    COMMON: "EQUITY",
+    PREFERRED: "PREF",
+    ETF: "EQUITY",
+    ETN: "NOTE",
+    "MUTUAL FUND": "EQUITY",
+    "CLOSED-END FUND": "EQUITY",
+    BOND: "NOTE",
+    WARRANT: "WARRANT",
+    RIGHT: "WARRANT",
+    UNIT: "EQUITY",
+  }[displayKind];
+  return tagClass(kindType || instrumentType);
+}
+
+function securityTypeFallbackLabel(instrumentType) {
+  const type = normalizeInstrumentType(instrumentType);
+  return {
+    EQUITY: "Equity security",
+    PREF: "Preferred security",
+    NOTE: "Note security",
+    WARRANT: "Warrant security",
+    CALL: "Call option",
+    PUT: "Put option",
+    OPT: "Option security",
+  }[type];
+}
+
+function holdingTrustedTicker(holding) {
+  const ticker = securityDisplayTicker(
+    holding?.ticker,
+    holdingPublishedInstrumentType(holding)
+  );
+  const cusip = String(holding?.cusip || "").trim().toUpperCase();
+  return ticker && (!cusip || ticker.toUpperCase() !== cusip) ? ticker : "";
+}
+
+function holdingDisplayLabel(holding) {
+  if (!holding) return "—";
+  const cusip = String(holding.cusip || "").trim().toUpperCase();
+  const mappedLabel = securityLabelForCusip(cusip);
+  if (mappedLabel) return mappedLabel;
+
+  const trustedTicker = holdingTrustedTicker(holding);
+  if (trustedTicker) return trustedTicker;
+
+  const informative = value => {
+    const text = String(value || "").trim().replace(/\s+/g, " ");
+    return text && (!cusip || text.toUpperCase() !== cusip) ? text : "";
+  };
+  const classText = informative(holding.class);
+  const issuer = informative(holding.issuer);
+  const genericType = securityTypeFallbackLabel(
+    holdingPublishedInstrumentType(holding)
+  );
+  if (issuer && classText) return `${issuer} · ${classText}`;
+  if (classText) return classText;
+  if (issuer) return `${issuer} · ${genericType}`;
+  return genericType;
+}
+
+function holdingDisplayCompany(holding) {
+  if (!holding) return "";
+  const cusip = String(holding.cusip || "").trim().toUpperCase();
+  const mappedName = securityProductNameForCusip(cusip);
+  if (
+    mappedName
+    && FUND_PRODUCT_NAME_KINDS.has(securityKindForCusip(cusip))
+  ) return mappedName;
+  const issuer = String(holding.issuer || "").trim().replace(/\s+/g, " ");
+  return issuer && (!cusip || issuer.toUpperCase() !== cusip) ? issuer : "";
+}
+
+// Backward-compatible name for callers and persisted frontend tests. This is a
+// display label, never a public security identity.
+function holdingDisplayTicker(holding) {
+  return holdingDisplayLabel(holding);
+}
+
+function securityLabelNeedsWrap(label) {
+  const value = String(label || "").trim();
+  return value.length > 12 || /\s/.test(value);
+}
+
+function securityTickerMark(ticker) {
+  return String(ticker || "").trim().split(/\s+/)[0].slice(0, 6);
+}
+
+function stockLookupId(identifier, instrumentType = "EQUITY") {
+  const symbol = String(identifier || "").trim().toUpperCase();
+  const type = normalizeInstrumentType(instrumentType);
+  if (!symbol) return "";
+  return type === "EQUITY" ? symbol : `${symbol}|${type}`;
+}
+
+function parseStockLookupId(stockId) {
+  const raw = String(stockId || "").trim();
+  const sep = raw.lastIndexOf("|");
+  if (sep === -1) {
+    return { stock_id: raw.toUpperCase(), id_base: raw.toUpperCase(), instrument_type: "EQUITY" };
+  }
+  const idBase = raw.slice(0, sep).toUpperCase();
+  const instrumentType = normalizeInstrumentType(raw.slice(sep + 1));
+  return {
+    stock_id: stockLookupId(idBase, instrumentType),
+    id_base: idBase,
+    instrument_type: instrumentType,
+  };
+}
+
+function canonicalStockLookupId(stockId) {
+  const parsed = parseStockLookupId(stockId);
+  // Canonicalize direct and bookmarked CUSIP routes with the same structural
+  // evidence used for fund-table links. This keeps legacy CALL/PUT debt URLs
+  // from requesting option artifacts removed by the current data build.
+  const kind = securityKindForCusip(parsed.id_base);
+  if (kind === "BOND") return stockLookupId(parsed.id_base, "NOTE");
+  if (
+    securityHasEquityFundIdentity(parsed.id_base)
+    && !["CALL", "PUT", "OPT"].includes(parsed.instrument_type)
+  ) {
+    return stockLookupId(parsed.id_base, "EQUITY");
+  }
+  return parsed.stock_id;
+}
+
+function stockFilePath(stockId) {
+  const parsed = parseStockLookupId(stockId);
+  const base = safeTicker(parsed.id_base);
+  return parsed.instrument_type === "EQUITY"
+    ? `data/stocks/${base}.json`
+    : `data/stocks/${base}__${parsed.instrument_type}.json`;
+}
+
+function holdingHistoryKey(h) {
+  return stockLookupId(
+    h.cusip || h.ticker || "",
+    holdingPublishedInstrumentType(h)
+  );
+}
+
+function groupHoldingsByKey(holdings) {
+  const grouped = new Map();
+  for (const holding of (Array.isArray(holdings) ? holdings : [])) {
+    const key = holdingHistoryKey(holding);
+    const shares = Number(holding?.shares) || 0;
+    const value = Number(holding?.value) || 0;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, { ...holding, shares, value });
+      continue;
+    }
+    existing.shares += shares;
+    existing.value += value;
+    // A grouped position is estimated if any contributing row is estimated.
+    // Dropping this marker would make a partly estimated sum look exact.
+    existing.shares_imputed = Boolean(
+      existing.shares_imputed || holding?.shares_imputed
+    );
+    for (const field of ["ticker", "issuer", "cusip", "holding_type", "option_type"]) {
+      if (!existing[field] && holding?.[field]) existing[field] = holding[field];
+    }
+  }
+  return [...grouped.values()];
+}
+
+function cikKey(cik) {
+  const raw = String(cik ?? "").trim();
+  if (!/^\d+$/.test(raw)) return "";
+  return raw.replace(/^0+/, "") || "0";
+}
+
+function reportQuarterCode(dateStr) {
+  const m = String(dateStr || "").match(/^(\d{4})-(03-31|06-30|09-30|12-31)$/);
+  if (!m) return null;
+  const quarter = { "03-31": 1, "06-30": 2, "09-30": 3, "12-31": 4 }[m[2]];
+  return Number(`${m[1]}${quarter}`);
+}
+
+function quarterCodeLabel(code) {
+  const m = String(code || "").match(/^(\d{4})([1-4])$/);
+  return m ? `Q${m[2]} ${m[1]}` : "—";
+}
+
+function quarterCodeOrdinal(code) {
+  const m = String(code || "").match(/^(\d{4})([1-4])$/);
+  return m ? (Number(m[1]) * 4) + Number(m[2]) : null;
+}
+
+function areAdjacentQuarterCodes(newer, older) {
+  const newerOrdinal = quarterCodeOrdinal(newer);
+  const olderOrdinal = quarterCodeOrdinal(older);
+  return newerOrdinal != null &&
+    olderOrdinal != null &&
+    newerOrdinal - olderOrdinal === 1;
+}
+
+function areAdjacentReportDates(newer, older) {
+  return areAdjacentQuarterCodes(
+    reportQuarterCode(newer),
+    reportQuarterCode(older)
+  );
+}
+
+function hasContiguousQuarterCodes(calendar) {
+  if (!Array.isArray(calendar) || !calendar.length) return false;
+  return calendar.every(
+    (code, i) => i === 0 || areAdjacentQuarterCodes(calendar[i - 1], code)
+  );
+}
+
+function modalLatestReportingQuarter(funds) {
+  const counts = new Map();
+  for (const fund of (Array.isArray(funds) ? funds : [])) {
+    // Withheld and invalid calendars cannot define what "current" means for
+    // the rest of the site.  Otherwise a broad quarantine wave (or one bad
+    // index row) could drag the production baseline backward.
+    if (fundWithheldMetadata(fund)) continue;
+    const latest = validFundCalendar(fund)?.[0] ?? null;
+    if (latest == null) continue;
+    counts.set(latest, (counts.get(latest) || 0) + 1);
+  }
+  let mode = null;
+  let modeCount = 0;
+  for (const [quarter, count] of counts) {
+    // Prefer the newer quarter if an exact tie occurs during a filing-season
+    // transition. A manager ahead of the mode remains current; only older
+    // managers are stale.
+    if (count > modeCount || (count === modeCount && (mode == null || quarter > mode))) {
+      mode = quarter;
+      modeCount = count;
+    }
+  }
+  return mode;
+}
+
+function fundWithheldMetadata(fundIndexEntry) {
+  if (!fundIndexEntry || typeof fundIndexEntry !== "object") return null;
+  const dateFields = [
+    "latest_withheld_report_date",
+    "withheld_report_date",
+    "latest_quarantined_report_date",
+    "quarantined_report_date",
+    "latest_pending_report_date",
+    "pending_report_date",
+  ];
+  const dateField = dateFields.find(field => Boolean(fundIndexEntry[field]));
+  const flagFields = [
+    "withheld",
+    "has_withheld_filing",
+    "quarantined",
+    "has_quarantined_filing",
+  ];
+  const flagged = flagFields.some(field => fundIndexEntry[field] === true);
+  const statusFields = [
+    "status",
+    "filing_status",
+    "data_status",
+    "latest_filing_status",
+    "quarantine_status",
+  ];
+  const status = statusFields
+    .map(field => String(fundIndexEntry[field] || "").trim().toUpperCase())
+    .find(value =>
+      !/^(?:NO|NOT|RESOLVED|CLEARED)_/.test(value) &&
+      /(?:^|_)(?:WITHHELD|QUARANTINED|PENDING|BLOCKED|FAILED|ERROR|UNKNOWN)(?:$|_)/.test(value)
+    ) || "";
+  if (!dateField && !flagged && !status) return null;
+  return {
+    reportDate: dateField ? String(fundIndexEntry[dateField]) : "",
+    reason: String(
+      fundIndexEntry.withheld_reason ||
+      fundIndexEntry.quarantine_reason ||
+      fundIndexEntry.status_reason ||
+      ""
+    ),
+    status: status || "WITHHELD",
+  };
+}
+
+function validFundCalendar(fundIndexEntry) {
+  const rawCalendar = fundIndexEntry?.q;
+  const calendar = Array.isArray(rawCalendar) ? [...rawCalendar] : [];
+  const valid = calendar.length > 0 &&
+    calendar.length <= 4 &&
+    calendar.every(code => Number.isInteger(code) && /^\d{4}[1-4]$/.test(String(code))) &&
+    new Set(calendar).size === calendar.length &&
+    calendar.every((code, i) => i === 0 || calendar[i - 1] > code);
+  return valid ? calendar : null;
+}
+
+function fundUnverifiedReportDates(fundIndexEntry) {
+  if (
+    !fundIndexEntry ||
+    !Object.prototype.hasOwnProperty.call(
+      fundIndexEntry,
+      "unverified_report_dates"
+    )
+  ) {
+    return [];
+  }
+  const dates = fundIndexEntry?.unverified_report_dates;
+  if (!Array.isArray(dates)) return null;
+  if (!dates.length) return [];
+  const calendar = validFundCalendar(fundIndexEntry);
+  if (
+    !calendar ||
+    dates.some(
+      date => typeof date !== "string" || reportQuarterCode(date) == null
+    ) ||
+    new Set(dates).size !== dates.length ||
+    dates.some((date, i) => i > 0 && dates[i - 1] <= date) ||
+    dates.some(date => !calendar.includes(reportQuarterCode(date)))
+  ) {
+    return null;
+  }
+  return [...dates];
+}
+
+function fundIndexFilingState(fundIndexEntry, currentQuarter) {
+  const withheld = fundWithheldMetadata(fundIndexEntry);
+  const unverifiedReportDates = fundUnverifiedReportDates(fundIndexEntry);
+  const safeUnverifiedReportDates = unverifiedReportDates || [];
+  if (withheld) {
+    return {
+      state: "WITHHELD",
+      calendar: validFundCalendar(fundIndexEntry) || [],
+      withheld,
+      unverifiedReportDates: safeUnverifiedReportDates,
+    };
+  }
+  const calendar = validFundCalendar(fundIndexEntry);
+  if (
+    !calendar ||
+    !Number.isInteger(currentQuarter) ||
+    unverifiedReportDates === null
+  ) {
+    return {
+      state: "UNKNOWN",
+      calendar: calendar || [],
+      withheld: null,
+      unverifiedReportDates: safeUnverifiedReportDates,
+    };
+  }
+  return {
+    state: calendar[0] < currentQuarter ? "STALE" : "CURRENT",
+    calendar,
+    withheld: null,
+    unverifiedReportDates: safeUnverifiedReportDates,
+  };
+}
+
+function provenSplitFactorForPeriod(adjustments, previousDate, currentDate) {
+  if (!previousDate || !currentDate) return null;
+  const rows = Array.isArray(adjustments)
+    ? adjustments
+    : (adjustments && typeof adjustments === "object" ? [adjustments] : []);
+  const matches = rows.filter(row =>
+    row?.proven === true &&
+    row.from_report_date === previousDate &&
+    row.to_report_date === currentDate &&
+    typeof row.factor === "number" &&
+    Number.isFinite(row.factor) &&
+    row.factor > 0
+  );
+  return matches.length === 1 ? matches[0].factor : null;
+}
+
+function looksLikeUnverifiedSplit(currentShares, previousShares) {
+  if (!(currentShares > 0) || !(previousShares > 0)) return false;
+  const ratio = Math.max(currentShares, previousShares) /
+    Math.min(currentShares, previousShares);
+  if (ratio < 1.8) return false;
+  const commonFactors = [2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20, 25, 50, 100];
+  return commonFactors.some(factor => Math.abs(ratio - factor) / factor <= 0.05);
+}
+
+function shareTrendIsComparable(records, adjustments) {
+  if (!Array.isArray(records) || !records.length) return false;
+  if (records.some(record =>
+    !record ||
+    record.shares_imputed === true ||
+    typeof record.shares !== "number" ||
+    !Number.isFinite(record.shares)
+  )) {
+    return false;
+  }
+  for (let i = 1; i < records.length; i += 1) {
+    const previous = records[i - 1];
+    const current = records[i];
+    if (
+      provenSplitFactorForPeriod(
+        adjustments,
+        previous.date,
+        current.date
+      ) != null ||
+      looksLikeUnverifiedSplit(current.shares, previous.shares)
+    ) {
+      // Raw share counts are not comparable across a corporate action. Keep
+      // value history visible, but suppress the share sparkline rather than
+      // drawing a false manager trade.
+      return false;
+    }
+  }
+  return true;
+}
+
+function positionChange(current, previous, options = {}) {
+  // An inferred share count cannot support a share-based filing-to-filing
+  // change. Suppress NEW and EXIT too when the only side is estimated.
+  if (current?.shares_imputed || previous?.shares_imputed) return null;
+  if (!current) return previous ? { t: "EXIT", p: 100 } : null;
+  if (!previous) return { t: "NEW" };
+  const currentShares = Number(current.shares) || 0;
+  const rawPreviousShares = Number(previous.shares) || 0;
+  const splitFactor = Number(options?.splitFactor);
+  const hasProvenSplit = Number.isFinite(splitFactor) && splitFactor > 0;
+  if (!hasProvenSplit && looksLikeUnverifiedSplit(currentShares, rawPreviousShares)) {
+    // A near-integer jump could be a corporate action. Until a generated,
+    // explicitly proven adjustment is present, showing a percentage would be
+    // more misleading than showing no comparison.
+    return null;
+  }
+  const previousShares = hasProvenSplit
+    ? rawPreviousShares * splitFactor
+    : rawPreviousShares;
+  const equalTolerance = Math.max(1e-9, Math.abs(previousShares) * 1e-9);
+  if (Math.abs(currentShares - previousShares) <= equalTolerance) return { t: "SAME" };
+  if (previousShares === 0) {
+    return { t: currentShares > 0 ? "UP" : "DOWN", p: null };
+  }
+  const pct = ((currentShares - previousShares) / previousShares) * 100;
+  return { t: pct > 0 ? "UP" : "DOWN", p: Math.abs(pct) };
+}
+
+// Align a sparse positive-position history to a manager's filing calendar and
+// the production-wide current-quarter baseline. Stale, withheld, and invalid
+// managers deliberately fail closed and can never enter current aggregates.
+function alignHolderHistory(history, fundIndexEntry, currentQuarter, options = {}) {
+  const filingState = fundIndexFilingState(fundIndexEntry, currentQuarter);
+  const calendar = filingState.calendar;
+  if (!calendar.length) {
+    return {
+      state: filingState.state === "WITHHELD" ? "WITHHELD" : "UNKNOWN",
+      calendar: [],
+      current: null,
+      previous: null,
+      reference: null,
+      withheld: filingState.withheld,
+      ch: null,
+      sparkQuarters: [],
+      sparkShares: [],
+      sparkValues: [],
+    };
+  }
+
+  const records = Array.isArray(history) ? history : [];
+  const byQuarter = new Map();
+  for (const record of records) {
+    const code = reportQuarterCode(record?.date);
+    if (!code || byQuarter.has(code)) {
+      return { state: "UNKNOWN", calendar: [], current: null, previous: null, ch: null, sparkQuarters: [], sparkShares: [], sparkValues: [] };
+    }
+    byQuarter.set(code, record);
+  }
+
+  const current = byQuarter.get(calendar[0]) || null;
+  const comparisonsVerified = filingState.state !== "UNKNOWN";
+  const unverifiedCodes = new Set(
+    filingState.unverifiedReportDates.map(reportQuarterCode)
+  );
+  const hasAdjacentPrevious = comparisonsVerified &&
+    calendar.length > 1 &&
+    areAdjacentQuarterCodes(calendar[0], calendar[1]) &&
+    !unverifiedCodes.has(calendar[0]) &&
+    !unverifiedCodes.has(calendar[1]);
+  const previous = hasAdjacentPrevious
+    ? (byQuarter.get(calendar[1]) || null)
+    : null;
+  const latestKnown = [...byQuarter.entries()]
+    .sort((a, b) => b[0] - a[0])[0]?.[1] || null;
+  let state;
+  if (filingState.state === "WITHHELD") state = "WITHHELD";
+  else if (filingState.state === "STALE") state = "STALE";
+  else if (filingState.state === "UNKNOWN") state = "UNKNOWN";
+  else {
+    state = current
+      ? "CURRENT"
+      : (calendar.length > 1 && previous ? "EXIT" : "HISTORICAL");
+  }
+  const chronological = [...calendar].reverse();
+  const contiguousCalendar = comparisonsVerified &&
+    hasContiguousQuarterCodes(calendar) &&
+    calendar.every(code => !unverifiedCodes.has(code));
+  const chronologicalRecords = chronological.map(
+    code => byQuarter.get(code) || null
+  );
+  const comparableShareHistory = contiguousCalendar &&
+    shareTrendIsComparable(
+      chronologicalRecords,
+      options?.splitAdjustments
+    );
+  const splitFactor = provenSplitFactorForPeriod(
+    options?.splitAdjustments,
+    previous?.date,
+    current?.date
+  );
+  return {
+    state,
+    calendar,
+    current,
+    previous,
+    reference: current || latestKnown,
+    withheld: filingState.withheld,
+    ch: state === "CURRENT" && hasAdjacentPrevious
+      ? positionChange(current, previous, { splitFactor })
+      : null,
+    // A missing reporting quarter is not an evenly-spaced 4Q trend.  Hide
+    // both series instead of compressing a gap into a misleading sparkline.
+    sparkQuarters: contiguousCalendar ? chronological : [],
+    sparkShares: comparableShareHistory
+      ? chronologicalRecords.map(record => record.shares)
+      : [],
+    sparkValues: contiguousCalendar
+      ? chronological.map(code => Number(byQuarter.get(code)?.value) || 0)
+      : [],
+  };
+}
+
+function partitionHolderStates(classified) {
+  const rows = Array.isArray(classified) ? classified : [];
+  return {
+    current: rows.filter(row => row.state === "CURRENT"),
+    exits: rows.filter(row => row.state === "EXIT"),
+    stale: rows.filter(row => row.state === "STALE"),
+    withheld: rows.filter(row => row.state === "WITHHELD"),
+    historical: rows.filter(row => row.state === "HISTORICAL"),
+    unknown: rows.filter(row => row.state === "UNKNOWN"),
+  };
+}
+
+function exactReportedShareTotal(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter(row => !row.sharesImputed)
+    .reduce((sum, row) => sum + (Number(row.shares) || 0), 0);
+}
+
+function aggregateEligibleHolderTrends(
+  classified,
+  currentQuarter,
+  width = 4
+) {
+  const eligible = (Array.isArray(classified) ? classified : [])
+    .filter(row =>
+      row.state === "CURRENT" ||
+      row.state === "EXIT" ||
+      row.state === "HISTORICAL"
+    );
+  if (!eligible.length || !Number.isInteger(currentQuarter)) {
+    return { quarters: [], values: [], shares: [] };
+  }
+
+  const currentOrdinal = quarterCodeOrdinal(currentQuarter);
+  const quarters = currentOrdinal == null
+    ? []
+    : Array.from({ length: width }, (_, index) => {
+        const ordinal = currentOrdinal - (width - 1 - index);
+        const year = Math.floor((ordinal - 1) / 4);
+        const quarter = ((ordinal - 1) % 4) + 1;
+        return Number(`${year}${quarter}`);
+      });
+
+  // An aggregate trend is only meaningful for a fixed reporting cohort.
+  // Mixing managers on different filing calendars makes coverage changes look
+  // like ownership changes. The window must also end at the page's stated
+  // current-quarter baseline; an ahead-filing cohort cannot silently move the
+  // chart endpoint into a newer quarter.
+  const sameCalendar = quarters.length === width &&
+    eligible.every(row =>
+      Array.isArray(row.sparkQuarters) &&
+      row.sparkQuarters.length === width &&
+      row.sparkQuarters.every((quarter, index) => quarter === quarters[index])
+    );
+  const completeValues = sameCalendar && eligible.every(row =>
+    Array.isArray(row.valueSparkData) &&
+    row.valueSparkData.length === width &&
+    row.valueSparkData.every(
+      value => typeof value === "number" && Number.isFinite(value)
+    )
+  );
+  if (!completeValues) return { quarters: [], values: [], shares: [] };
+
+  const values = Array.from({ length: width }, (_, index) =>
+    eligible.reduce(
+      (sum, row) => sum + Number(row.valueSparkData[index]),
+      0
+    )
+  );
+  const completeShares = eligible.every(row =>
+    Array.isArray(row.sparkData) &&
+    row.sparkData.length === width &&
+    row.sparkData.every(
+      shareCount =>
+        typeof shareCount === "number" && Number.isFinite(shareCount)
+    )
+  );
+  const shares = completeShares
+    ? Array.from({ length: width }, (_, index) =>
+        eligible.reduce(
+          (sum, row) => sum + Number(row.sparkData[index]),
+          0
+        )
+      )
+    : [];
+  return { quarters, values, shares };
+}
+
+function searchTypeRank(type) {
+  const t = normalizeInstrumentType(type);
+  if (t === "EQUITY") return 0;
+  if (t === "PREF") return 1;
+  if (t === "NOTE") return 2;
+  if (t === "WARRANT") return 3;
+  return 4;
+}
+
+function searchEntryTagClass(entry) {
+  return holdingDisplayKindClass({
+    cusip: entry?.cusip,
+    holding_type: entry?.instrument_type,
+  });
+}
+
+function searchEntryTagLabel(entry) {
+  return holdingDisplayKindLabel({
+    cusip: entry?.cusip,
+    holding_type: entry?.instrument_type,
+  });
+}
+
+function tickerSearchSymbol(entry) {
+  const mappedLabel = securityLabelForCusip(entry?.cusip);
+  const mappedSymbol = /^[A-Z][A-Z0-9.-]{0,15}(?:\/(?:W|WS|RT))?$/i.test(
+    mappedLabel
+  ) ? mappedLabel : "";
+  return String(
+    mappedSymbol
+    || entry?.ticker
+    || entry?.cusip
+    || entry?.stock_id
+    || ""
+  ).trim();
+}
+
+function tickerSearchVisualKey(entry) {
+  return JSON.stringify([
+    searchEntryTagClass(entry),
+    searchEntryTagLabel(entry),
+    tickerSearchSymbol(entry).toUpperCase(),
+  ]);
+}
+
+function tickerSearchHolderCount(entry) {
+  const count = entry?.holder_count;
+  return Number.isInteger(count) && count >= 0 ? count : -1;
+}
+
+function tickerSearchCurrentHolderCount(entry) {
+  const count = entry?.current_holder_count;
+  return Number.isInteger(count) && count >= 0 ? count : -1;
+}
+
+function tickerSearchLastSeen(entry) {
+  const value = String(entry?.last_seen || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
+}
+
+function tickerSearchIsActive(entry) {
+  const baseline = (
+    typeof currentReportingQuarter === "number"
+      ? currentReportingQuarter
+      : null
+  );
+  const lastSeenQuarter = reportQuarterCode(tickerSearchLastSeen(entry));
+  return baseline != null &&
+    lastSeenQuarter != null &&
+    lastSeenQuarter >= baseline;
+}
+
+function compareTickerAliasRepresentative(a, b) {
+  const activeCmp =
+    Number(tickerSearchIsActive(b)) - Number(tickerSearchIsActive(a));
+  if (activeCmp !== 0) return activeCmp;
+  const currentHolderCountCmp =
+    tickerSearchCurrentHolderCount(b) -
+    tickerSearchCurrentHolderCount(a);
+  if (currentHolderCountCmp !== 0) return currentHolderCountCmp;
+  const holderCountCmp =
+    tickerSearchHolderCount(b) - tickerSearchHolderCount(a);
+  if (holderCountCmp !== 0) return holderCountCmp;
+  return String(a?.stock_id || "").localeCompare(
+    String(b?.stock_id || "")
+  );
+}
+
+function dedupeVisuallyIdenticalTickerMatches(matches) {
+  const orderedKeys = [];
+  const winners = new Map();
+  for (const entry of matches) {
+    const key = tickerSearchVisualKey(entry);
+    const incumbent = winners.get(key);
+    if (!incumbent) {
+      orderedKeys.push(key);
+      winners.set(key, entry);
+    } else if (compareTickerAliasRepresentative(entry, incumbent) < 0) {
+      winners.set(key, entry);
+    }
+  }
+  return orderedKeys.map(key => winners.get(key));
+}
+
+function isCommonStockSearchEntry(entry) {
+  if (normalizeInstrumentType(entry.instrument_type) !== "EQUITY") return false;
+  if (["PREFERRED", "RIGHT", "UNIT", "WARRANT", "BOND"].includes(
+    securityKindForCusip(entry.cusip)
+  )) return false;
+  const ticker = tickerSearchSymbol(entry).toUpperCase();
+  if (/\b(?:WT|WARRANT|WARRANTS|RIGHT|RIGHTS)\b/.test(ticker)) return false;
+  if (/(?:[-./](?:R|RT|RIGHT|RIGHTS|W|WS|WT|WTS))$/.test(ticker)) return false;
+  return true;
+}
+
+function normalizeTickerEntry(entry) {
+  if (!entry) return null;
+  if (typeof entry === "string") {
+    return {
+      ticker: entry,
+      issuer: "",
+      cusip: "",
+      instrument_type: "EQUITY",
+      stock_id: stockLookupId(entry, "EQUITY"),
+      last_seen: null,
+      current_holder_count: null,
+      holder_count: null,
+    };
+  }
+  const ticker = String(entry.ticker || entry.symbol || "").trim();
+  const instrumentType = normalizeInstrumentType(entry.instrument_type || entry.type);
+  const stockId = String(entry.stock_id || stockLookupId(entry.cusip || ticker, instrumentType)).trim().toUpperCase();
+  const parsed = parseStockLookupId(stockId);
+  if (!ticker && !parsed.id_base) return null;
+  const currentHolderCount = tickerSearchCurrentHolderCount(entry);
+  const holderCount = tickerSearchHolderCount(entry);
+  const lastSeen = tickerSearchLastSeen(entry);
+  return {
+    ticker,
+    issuer: entry.issuer || "",
+    cusip: parsed.id_base,
+    instrument_type: parsed.instrument_type,
+    stock_id: parsed.stock_id,
+    last_seen: lastSeen || null,
+    current_holder_count:
+      currentHolderCount >= 0 ? currentHolderCount : null,
+    holder_count: holderCount >= 0 ? holderCount : null,
+  };
+}
+
+function compareTickerMatch(a, b) {
+  const typeCmp = searchTypeRank(a.instrument_type) - searchTypeRank(b.instrument_type);
+  if (typeCmp !== 0) return typeCmp;
+  if (a._matchRank !== b._matchRank) return a._matchRank - b._matchRank;
+  const aSymbol = tickerSearchSymbol(a);
+  const bSymbol = tickerSearchSymbol(b);
+  if (aSymbol.length !== bSymbol.length) return aSymbol.length - bSymbol.length;
+  const tickerCmp = aSymbol.localeCompare(bSymbol);
+  if (tickerCmp !== 0) return tickerCmp;
+  return (a.stock_id || "").localeCompare(b.stock_id || "");
+}
+
+function resolveStockEntry(stockId) {
+  const raw = String(stockId || "").trim();
+  if (!raw) return null;
+  const exact = (idx.tickers || []).find(entry => String(entry.stock_id || "").toUpperCase() === raw.toUpperCase());
+  if (exact) return exact;
+  const legacy = parseStockLookupId(raw);
+  const matches = (idx.tickers || []).filter(entry =>
+    String(entry.ticker || "").toUpperCase() === legacy.id_base &&
+    normalizeInstrumentType(entry.instrument_type) === legacy.instrument_type
+  );
+  if (!matches.length) return null;
+  matches.sort(compareTickerAliasRepresentative);
+  return matches[0];
+}
+
+// ---------- sparkline + badge helpers ----------
+function spark(arr) {
+  if (!arr || !arr.length || arr.every(v => !v)) {
+    return `<span style="color:var(--mt);font-size:11px">—</span>`;
+  }
+  const positives = arr.filter(v => v > 0);
+  const mx = positives.length ? Math.max(...positives) : 0;
+  if (!mx) return `<span style="color:var(--mt);font-size:11px">—</span>`;
+  const w = 8;
+  let s = `<svg width="${arr.length * w + 2}" height="20" style="vertical-align:middle">`;
+  arr.forEach((v, i) => {
+    if (!v || v <= 0) return;
+    const bh = Math.max(1, (v / mx) * 18);
+    const pv = i > 0 ? (arr[i - 1] || 0) : v;
+    const col = v > pv ? "var(--gn)" : v < pv ? "var(--rd)" : "var(--mt)";
+    s += `<rect x="${i * w}" y="${20 - bh}" width="6" height="${bh}" fill="${col}" rx="1"/>`;
+  });
+  return s + "</svg>";
+}
+
+function badge(ch) {
+  if (!ch) return `<span class="badge mono" style="color:var(--mt)">—</span>`;
+  const m = {
+    NEW:  ["var(--gn-soft)", "var(--gn)", "NEW"],
+    UP:   ["var(--gn-soft)", "var(--gn)", Number.isFinite(ch.p) ? `+${Math.abs(ch.p).toFixed(1)}%` : "INCREASED"],
+    DOWN: ["var(--rd-soft)", "var(--rd)", Number.isFinite(ch.p) ? `-${Math.abs(ch.p).toFixed(1)}%` : "REDUCED"],
+    EXIT: ["var(--rd-soft)", "var(--rd)", "EXIT"],
+    SAME: ["transparent",    "var(--mt)", "—"]
+  };
+  const [bg, co, tx] = m[ch.t] || m.SAME;
+  return `<span class="badge mono" style="background:${bg};color:${co}">${tx}</span>`;
+}
+
+function displayDate(dateStr) {
+  if (!dateStr) return "—";
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function fundTicker(h) {
+  return holdingDisplayLabel(h);
+}
+
+// Display-only cleanup for SEC legal names; stored names remain untouched.
+const _legalEntitySuffixes = new Set([
+  "INC", "INCORPORATED", "CORP", "CORPORATION", "CO",
+  "LTD", "LIMITED", "LLC", "LLP", "LLLP", "LP", "PLC",
+  "AG", "SA", "NV", "BV", "GMBH", "LTDA",
+]);
+const _entityTailMarkers = new Set([
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+  "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+  "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+  "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+  "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+  "DC", "PR", "DEL", "DELAWARE", "NEW", "N Y", "ADV", "BD", "UK",
+  "UNITED KINGDOM", "CAN", "CANADA", "ON", "FI", "CN",
+  "MARSHALL ISLANDS", "BERMUDA", "CAYMAN ISLANDS",
+]);
+const _bareEntityTailMarkers = new Set([
+  "DE", "DEL", "DELAWARE", "NEW", "N Y", "NY", "CA", "MA", "IL", "PA", "OH",
+]);
+
+function normalizeTerminalLegalInitialism(value) {
+  return value
+    .replace(/\bL\s*\.?\s*L\s*\.?\s*C\s*\.?$/i, "LLC")
+    .replace(/\bL\s*\.?\s*L\s*\.?\s*P\s*\.?$/i, "LLP")
+    .replace(/\bP\s*\.?\s*L\s*\.?\s*C\s*\.?$/i, "PLC")
+    .replace(/\bL\s*\.?\s*P\s*\.?$/i, "LP");
+}
+
+function legalSuffixAtEnd(value) {
+  const normalized = normalizeTerminalLegalInitialism(value)
+    .replace(/[\s,.;:]+$/g, "")
+    .trim();
+  return normalized.match(/([A-Za-z.]+)$/)?.[1]?.replace(/\./g, "").toUpperCase() || "";
+}
+
+function stripKnownEntityTailMarker(value) {
+  const match = value.match(/^(.*?)(?:\s*[\\/]\s*([^\\/()]+?)\s*\/?|\s*\(\s*([^()]+?)\s*\))\s*$/);
+  if (!match) return value;
+  const marker = String(match[2] || match[3] || "")
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+  return _entityTailMarkers.has(marker) ? match[1].trim() : value;
+}
+
+function stripLegalEntitySuffixes(name) {
+  const raw = String(name || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+
+  let cleaned = stripKnownEntityTailMarker(raw)
+    .replace(/[\s,.;:]+$/g, "")
+    .trim();
+  cleaned = normalizeTerminalLegalInitialism(cleaned);
+
+  cleaned = cleaned.replace(/\bN\s+Y$/i, "NY");
+  const jurisdiction = cleaned.match(/^(.*)\s+([A-Za-z]+)$/);
+  if (jurisdiction) {
+    const candidate = normalizeTerminalLegalInitialism(jurisdiction[1].trim());
+    const marker = jurisdiction[2].replace(/\s+/g, " ").trim().toUpperCase();
+    if (_bareEntityTailMarkers.has(marker) && _legalEntitySuffixes.has(legalSuffixAtEnd(candidate))) {
+      cleaned = candidate;
+    }
+  }
+
+  while (cleaned) {
+    cleaned = normalizeTerminalLegalInitialism(cleaned);
+    const match = cleaned.match(/^(.*?)(?:\s*,\s*|\s+)([A-Za-z.]+)$/);
+    if (!match) break;
+    const prefix = match[1].trim();
+    const suffix = match[2].replace(/\./g, "").toUpperCase();
+    if (!_legalEntitySuffixes.has(suffix)) break;
+    if (suffix === "CO" && /&\s*$/.test(prefix)) break;
+    cleaned = prefix.replace(/[\s,.;:]+$/g, "").trim();
+  }
+
+  return cleaned || raw.replace(/[\s,.;:]+$/g, "").trim();
+}
+
+function displayEntityName(name) {
+  return titleCase(stripLegalEntitySuffixes(name))
+    .replace(/\bINC\b\.*/g, "Inc.")
+    .replace(/\bCORP\b\.*/g, "Corp.")
+    .replace(/\bCO\b\.*/g, "Co.")
+    .replace(/\bLTD\b\.*/g, "Ltd.");
+}
+
+function displayFundName(name) {
+  return displayEntityName(name);
+}
+
+function displayIssuer(name) {
+  return displayEntityName(name)
+    .replace(/\bIshares\b/g, "iShares")
+    .replace(/\bIBONDS\b/g, "iBonds")
+    .replace(/\bIpath\b/g, "iPath")
+    .replace(/\/([a-z]{2,})\//g, (_, part) => `/${part.toUpperCase()}/`);
+}
+
+function displayHolderName(name) {
+  return displayFundName(name);
+}
+
+function changeText(ch) {
+  if (!ch) return "—";
+  if (ch.t === "NEW") return "NEW";
+  if (ch.t === "EXIT") return "EXIT";
+  if (ch.t === "UP") return Number.isFinite(ch.p) ? `+${Math.abs(ch.p).toFixed(1)}%` : "INCREASED";
+  if (ch.t === "DOWN") return Number.isFinite(ch.p) ? `-${Math.abs(ch.p).toFixed(1)}%` : "REDUCED";
+  return "—";
+}
+
+function changeClass(ch) {
+  if (!ch) return "";
+  if (ch.t === "UP") return "summary-up";
+  if (ch.t === "DOWN") return "summary-down";
+  if (ch.t === "NEW") return "summary-new";
+  if (ch.t === "EXIT") return "summary-exit";
+  return "";
+}
+
+function miniLine(values) {
+  const nums = (values || []).map(v => Number(v) || 0);
+  if (!nums.length || nums.every(v => !v)) return "";
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const span = max - min || 1;
+  const w = 114, h = 42, pad = 3;
+  const step = nums.length > 1 ? (w - pad * 2) / (nums.length - 1) : 0;
+  const points = nums.map((v, i) => {
+    const x = pad + i * step;
+    const y = h - pad - ((v - min) / span) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return `<svg class="mini" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">
+    <polygon points="${pad},${h-pad} ${points} ${w-pad},${h-pad}" fill="var(--ac-soft)"/>
+    <polyline points="${points}" fill="none" stroke="var(--ac)" stroke-width="1.8"/>
+  </svg>`;
+}
+
+function miniBars(values) {
+  const nums = (values || []).map(v => Number(v) || 0);
+  if (!nums.length || nums.every(v => !v)) return "";
+  const mx = Math.max(...nums) || 1;
+  const bars = nums.map((v, i) => {
+    const bh = Math.max(5, (v / mx) * 36);
+    const x = i * 13;
+    return `<rect x="${x}" y="${40 - bh}" width="8" height="${bh}" fill="${i === nums.length - 1 ? "var(--ac)" : "var(--bd2)"}" rx="1"/>`;
+  }).join("");
+  return `<svg class="mini" width="${nums.length * 13}" height="42" viewBox="0 0 ${nums.length * 13} 42" aria-hidden="true">${bars}</svg>`;
+}
+
+function donut(pct) {
+  const clamped = Math.max(0, Math.min(100, pct || 0));
+  return `<div class="mini-donut mini" style="--pct:${clamped}%"></div>`;
+}
+
+function bankIcon() {
+  return `<svg class="stock-icon" viewBox="0 0 40 40" aria-hidden="true">
+    <path d="M5 15h30L20 7 5 15Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M8 31h24M6 35h28M10 15v16M17 15v16M23 15v16M30 15v16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function holdersIcon() {
+  return `<svg class="stock-icon" viewBox="0 0 40 40" aria-hidden="true">
+    <path d="M15 18a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm10 1a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM6 31c1.2-6 4.3-9 9-9s7.8 3 9 9M21 23c5.4.2 8.6 2.8 9.6 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function summaryEvent(label, row, emptyText, change = false) {
+  if (!row) {
+    return `<div class="summary-label">${label}</div><div class="summary-list">${emptyText}</div>`;
+  }
+  return `<div class="summary-label">${label}</div>
+    <div class="summary-row">
+      <span class="ticker">${esc(fundTicker(row))}</span>
+      <span class="summary-company">${esc(displayIssuer(holdingDisplayCompany(row)))}</span>
+      <span class="value ${change ? esc(changeClass(row.ch)) : ""}">${change ? esc(changeText(row.ch)) : fP(row.pct)}</span>
+    </div>`;
+}
+
+
+// ---------- curated browse lists ----------
+// Stable identities that should always lead the popular-filer list when they
+// are present. CIK matching keeps placement intact if an SEC filer name changes.
+const PINNED_POPULAR_FUND_CIKS = [1615982]; // Venrock Adviser, LLC
+
+// Popular investors that users are likely to look up first. We match the rest
+// by substring against the actual index fund names, so any name that isn't in
+// the pulled data silently drops out (rather than producing a dead card).
+const POPULAR_FUND_NEEDLES = [
+  "BERKSHIRE HATHAWAY",
+  "PERSHING SQUARE",
+  "RENAISSANCE TECHNOLOGIES",
+  "CITADEL ADVISORS",
+  "BRIDGEWATER ASSOCIATES",
+  "SOROS FUND MANAGEMENT",
+  "BAUPOST GROUP",
+  "GREENLIGHT CAPITAL",
+  "APPALOOSA",
+  "TIGER GLOBAL",
+  "COATUE",
+  "D1 CAPITAL",
+  "ARK INVESTMENT",
+  "RTW INVESTMENTS",
+  "SEQUOIA FINANCIAL",
+  "TWO SIGMA",
+  "MILLENNIUM MANAGEMENT",
+  "POINT72",
+  "THIRD POINT",
+  "DUQUESNE",
+  "ICAHN",
+  "VIKING GLOBAL",
+  "OAKTREE",
+  "LONE PINE",
+];
+
+// Top 20 by market cap, loosely — matched against idx.tickers so anything
+// the pipeline couldn't resolve (e.g. ticker renames, CUSIP-only holdings)
+// silently drops out.
+// ---------- global state ----------
+let idx = null;                  // lightweight fund bootstrap + lazy ticker search
+let fundIndexByCik = new Map();  // one O(1) reporting-calendar lookup per holder
+let currentReportingQuarter = null; // modal latest quarter across valid fund calendars
+let searchDebounce = null;
+let searchIndexPromise = null;
+let searchIndexError = null;
+let dataContractBlocked = false;
+// Cap the in-memory JSON caches so a long browsing session can't grow
+// unbounded — fund and stock payloads can be ~100KB+ each and a visitor
+// jumping through hundreds of filers would otherwise pin all of them in RAM.
+// Same .get/.set surface as Map, with LRU eviction on overflow.
+class LRUCache {
+  constructor(max) { this.max = max; this.m = new Map(); }
+  get(k) {
+    if (!this.m.has(k)) return undefined;
+    const v = this.m.get(k);
+    this.m.delete(k); this.m.set(k, v);  // mark most-recently-used
+    return v;
+  }
+  set(k, v) {
+    if (this.m.has(k)) this.m.delete(k);
+    else if (this.m.size >= this.max) this.m.delete(this.m.keys().next().value);
+    this.m.set(k, v);
+  }
+  has(k) { return this.m.has(k); }
+}
+const fundCache = new LRUCache(50);
+const stockCache = new LRUCache(50);
+
+// Sort state persists across navigations so users who like a particular
+// ordering keep it. Default: largest % holder first.
+let fundSort  = { col: "pct",   dir: "desc" };   // % of portfolio, descending
+let stockSort = { col: "value", dir: "desc" };   // dollar value, descending (see note in renderStock)
+
+// Current table rows — kept in outer scope so header clicks can re-sort
+// without needing to re-fetch or re-enrich.
+let curFundRows  = [];
+let curStockRows = [];
+let fundHoldingsFilter = "";
+let stockHoldersFilter = "";
+let stockPage = 1;
+let stockRowsPerPage = 15;
+
+const $ = id => document.getElementById(id);
+const app = () => $("app");
+
+function showLoadingMessage(message) {
+  if (dataContractBlocked) {
+    showDataMaintenance();
+    return;
+  }
+  app().innerHTML = `
+    <div class="empty">
+      <div><span class="spinner"></span>${esc(message)}</div>
+    </div>`;
+}
+
+function showLoadError(title, path) {
+  if (dataContractBlocked) {
+    showDataMaintenance();
+    return;
+  }
+  app().innerHTML = `
+    <div class="empty">
+      <h1>${esc(title)}</h1>
+      <p>The file <span class="mono">${esc(path)}</span> is missing or unreachable.</p>
+      <p style="margin-top:16px"><a onclick="goHome()">← Back to search</a></p>
+    </div>`;
+}
+
+function showDataMaintenance() {
+  dataContractBlocked = true;
+  $("gsearchWrap").style.display = "none";
+  $("backBtn").style.display = "none";
+  app().innerHTML = `
+    <div class="empty">
+      <h1>Data update in progress</h1>
+      <p>The site is publishing a compatible filings data build. Please check back shortly.</p>
+    </div>`;
+}
+
+function handleDataContractError(error) {
+  if (
+    !(error instanceof DataContractMismatchError)
+    && !(error instanceof RequiredSiteDataError)
+  ) return false;
+  console.error("required site data is incompatible or unavailable:", error);
+  showDataMaintenance();
+  return true;
+}
+
+function enterDetailView(kind, id, opts = {}) {
+  if (dataContractBlocked) {
+    showDataMaintenance();
+    return false;
+  }
+  clearAllSearchInputs();
+  $("gsearchWrap").style.display = "";
+  $("backBtn").style.display = "";
+  if (opts.updateUrl !== false) setUrl(kind, id);
+  return true;
+}
+
+async function loadCachedJson({
+  cache,
+  cacheKey,
+  url,
+  loadingMessage,
+  errorTitle,
+  errorPath,
+  logLabel,
+}) {
+  let data = cache.get(cacheKey);
+  if (data) return data;
+
+  showLoadingMessage(loadingMessage);
+  try {
+    const r = await fetch(url, { cache: "no-cache" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    data = await r.json();
+    cache.set(cacheKey, data);
+    return data;
+  } catch (e) {
+    console.error(`${logLabel} fetch failed:`, e);
+    showLoadError(errorTitle, errorPath);
+    return null;
+  }
+}
+
+function sortableHeader(handlerName, col, label, align) {
+  return `<th class="sort" data-col="${col}" onclick="${handlerName}('${col}')" style="text-align:${align}">${label}<span class="arr"></span></th>`;
+}
+
+// ---------- sort helpers ----------
+function chgToNum(ch) {
+  // Maps filing-to-filing badge states to a sortable number. NEW is "infinitely
+  // up" (+Inf), while exits are "infinitely down" (-Inf).
+  if (!ch) return 0;
+  if (ch.t === "NEW")  return Number.POSITIVE_INFINITY;
+  if (ch.t === "EXIT") return Number.NEGATIVE_INFINITY;
+  if (ch.t === "UP")   return  (ch.p || 0);
+  if (ch.t === "DOWN") return -(ch.p || 0);
+  return 0;
+}
+
+function sortRows(rows, col, dir, kind) {
+  // kind: "fund" or "stock" — same function body, but the field accessors differ
+  const mul = dir === "asc" ? 1 : -1;
+  const key = (r) => {
+    if (kind === "fund") {
+      switch (col) {
+        case "ticker":  return (holdingDisplayLabel(r) || "~~~").toUpperCase();
+        case "issuer":  return (holdingDisplayCompany(r) || "~~~").toUpperCase();
+        case "pct":     return r.pct      || 0;
+        case "prevPct": return r.prevPct  || 0;
+        case "pctChg":  return chgToNum(r.ch);
+        case "holdingType": return holdingDisplayKind(r);
+        case "value":   return r.value    || 0;
+        case "shares":  return r.shares   || 0;
+      }
+    } else {
+      switch (col) {
+        case "name":    return (r.name    || "~~~").toUpperCase();
+        case "shares":  return r.shares   || 0;
+        case "value":   return r.value    || 0;
+        case "pct":     return r.pctOfFund || 0;    // pre-computed in stock JSON
+        case "qoq":     return chgToNum(r.ch);
+        case "asOfDate": return r.asOfDate || "";
+      }
+    }
+    return 0;
+  };
+  return [...rows].sort((a, b) => {
+    const va = key(a), vb = key(b);
+    if (va < vb) return -1 * mul;
+    if (va > vb) return  1 * mul;
+    return 0;
+  });
+}
+
+function updateSortArrows(tableId, sort) {
+  const table = $(tableId);
+  if (!table) return;
+  table.querySelectorAll("th.sort").forEach(th => {
+    const col = th.dataset.col;
+    const arr = th.querySelector(".arr");
+    if (col === sort.col) {
+      th.classList.add("active");
+      arr.textContent = sort.dir === "asc" ? "↑" : "↓";
+    } else {
+      th.classList.remove("active");
+      arr.textContent = "";
+    }
+  });
+}
+
+// Default direction when switching to a new column: text cols → asc, numbers → desc
+const DEFAULT_DIR = {
+  ticker: "asc", issuer: "asc", name: "asc",
+  pct: "desc", prevPct: "desc", pctChg: "desc",
+  value: "desc", shares: "desc", qoq: "desc",
+};
+
+function onFundSort(col) {
+  if (fundSort.col === col) {
+    fundSort.dir = fundSort.dir === "asc" ? "desc" : "asc";
+  } else {
+    fundSort.col = col;
+    fundSort.dir = DEFAULT_DIR[col] || "desc";
+  }
+  curFundRows = sortRows(curFundRows, fundSort.col, fundSort.dir, "fund");
+  renderFundTbody();
+  updateSortArrows("fundTable", fundSort);
+}
+
+function onStockSort(col) {
+  if (stockSort.col === col) {
+    stockSort.dir = stockSort.dir === "asc" ? "desc" : "asc";
+  } else {
+    stockSort.col = col;
+    stockSort.dir = DEFAULT_DIR[col] || "desc";
+  }
+  curStockRows = sortRows(curStockRows, stockSort.col, stockSort.dir, "stock");
+  stockPage = 1;
+  renderStockTbody();
+  updateSortArrows("stockTable", stockSort);
+}
+
+function setStockPage(page) {
+  stockPage = Math.max(1, parseInt(page, 10) || 1);
+  renderStockTbody();
+}
+
+function setStockRowsPerPage(value) {
+  const next = parseInt(value, 10);
+  stockRowsPerPage = [15, 25, 50, 100].includes(next) ? next : 15;
+  stockPage = 1;
+  renderStockTbody();
+}
+
+function focusStockSort(col, dir = "desc") {
+  stockSort = { col, dir };
+  curStockRows = sortRows(curStockRows, col, dir, "stock");
+  stockPage = 1;
+  renderStockTbody();
+  updateSortArrows("stockTable", stockSort);
+  const panel = $("stockPanel");
+  if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function stockPaginationPages(totalPages, currentPage) {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+  if (currentPage <= 4) return [1, 2, 3, 4, 5, "ellipsis", totalPages];
+  if (currentPage >= totalPages - 3) {
+    return [1, "ellipsis", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  }
+  return [1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", totalPages];
+}
+
+// ---------- bootstrap + lazy search index ----------
+function normalizeSearchTickers(data) {
+  return Array.isArray(data?.tickers)
+    ? data.tickers.map(normalizeTickerEntry).filter(Boolean)
+    : [];
+}
+
+async function fetchBootstrapIndex() {
+  try {
+    const r = await fetch("data/funds-index.json", { cache: "no-cache" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    assertCompatibleDataContract(data, "data/funds-index.json");
+    if (!data || !Array.isArray(data.funds) || data.funds.length === 0) {
+      throw new Error("funds-index.json has no funds");
+    }
+    data.tickers = [];
+    return data;
+  } catch (error) {
+    if (error instanceof DataContractMismatchError) throw error;
+    // Safe rollout fallback for a stale Pages deployment or an older checkout.
+    console.warn("funds-index.json load failed; falling back to index.json:", error);
+    const r = await fetch("data/index.json", { cache: "no-cache" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    assertCompatibleDataContract(data, "data/index.json");
+    data.tickers = normalizeSearchTickers(data);
+    return data;
+  }
+}
+
+async function ensureSearchIndex() {
+  if (Array.isArray(idx?.tickers) && idx.tickers.length) return idx.tickers;
+  if (!searchIndexPromise) {
+    searchIndexError = null;
+    searchIndexPromise = fetch("data/index.json", { cache: "no-cache" })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(data => {
+        assertCompatibleDataContract(data, "data/index.json");
+        const tickers = normalizeSearchTickers(data);
+        if (!tickers.length) throw new Error("index.json has no ticker entries");
+        idx.tickers = tickers;
+        return tickers;
+      })
+      .catch(error => {
+        searchIndexError = error;
+        searchIndexPromise = null;
+        throw error;
+      });
+  }
+  return searchIndexPromise;
+}
+
+function warmSearchIndex() {
+  if (Array.isArray(idx?.tickers) && idx.tickers.length) return;
+  const load = () => ensureSearchIndex().catch(error => {
+    if (!handleDataContractError(error)) {
+      console.error("background search index load failed:", error);
+    }
+  });
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(load, { timeout: 1500 });
+  } else {
+    setTimeout(load, 0);
+  }
+}
+
+function stockIdNeedsSearchIndex(stockId) {
+  const parsed = parseStockLookupId(stockId);
+  return !/^[A-Z0-9]{9}$/.test(parsed.id_base);
+}
+
+// ---------- init ----------
+(async function init() {
+  try {
+    const securityLabelsReady = ensureSecurityLabels();
+    idx = await fetchBootstrapIndex();
+    if (!idx || !Array.isArray(idx.funds) || idx.funds.length === 0) {
+      showEmpty();
+      return;
+    }
+    fundIndexByCik = new Map(
+      idx.funds
+        .map(fund => [cikKey(fund?.cik), fund])
+        .filter(([key]) => key)
+    );
+    currentReportingQuarter = modalLatestReportingQuarter(idx.funds);
+    if (!currentReportingQuarter) {
+      throw new Error("funds-index.json has no valid reporting-quarter baseline");
+    }
+    await securityLabelsReady;
+    wireGlobalSearch();
+    wireUrlRouting();
+    // Fund pages and the home page no longer wait for the full ticker index.
+    // Direct ticker hashes resolve through ensureSearchIndex() in loadStock().
+    routeFromHash();
+    warmSearchIndex();
+  } catch (e) {
+    if (!handleDataContractError(e)) {
+      console.error("bootstrap index load failed:", e);
+      showEmpty();
+    }
+  }
+})();
+
+// ---------- URL routing ----------
+// Hash-based routing: #fund/1067983, #stock/AAPL, or no hash for home.
+// We use the URL fragment rather than real paths because GitHub Pages serves
+// the same index.html for any path, and real paths would require a 404.html
+// redirect trick. The fragment is invisible to the server and lets us route
+// client-side cleanly.
+function wireUrlRouting() {
+  // User pressed back/forward, or edited the hash in the URL bar
+  window.addEventListener("hashchange", () => routeFromHash());
+  window.addEventListener("popstate",   () => routeFromHash());
+}
+
+function routeFromHash() {
+  if (dataContractBlocked) {
+    showDataMaintenance();
+    return;
+  }
+  const hash = (location.hash || "").replace(/^#/, "");
+  const m = hash.match(/^(fund|stock)\/(.+)$/);
+  if (!m) {
+    // No hash → home. Don't push another history entry for this (it's the
+    // current URL already).
+    goHome({ updateUrl: false });
+    return;
+  }
+  const [, kind, id] = m;
+  if (kind === "fund") {
+    const cik = parseInt(id, 10);
+    if (Number.isFinite(cik)) loadFund(cik, { updateUrl: false });
+    else goHome({ updateUrl: false });
+  } else if (kind === "stock") {
+    loadStock(decodeURIComponent(id), { updateUrl: false });
+  }
+}
+
+function setUrl(kind, id) {
+  // Push a new history entry so browser back works. replaceState would
+  // swallow the previous entry, which is wrong semantically.
+  const newHash = kind === "home" ? "" : `#${kind}/${encodeURIComponent(id)}`;
+  const newUrl = location.pathname + location.search + newHash;
+  if (location.pathname + location.search + (location.hash || "") !== newUrl) {
+    history.pushState({ kind, id }, "", newUrl);
+  }
+}
+
+// ---------- curated browse lookups ----------
+// Run once per index load; results are cached so home-page renders are free.
+let _popularFundsCache = null;
+function getPopularFunds() {
+  if (_popularFundsCache) return _popularFundsCache;
+  const out = [];
+  const seen = new Set();
+  for (const cik of PINNED_POPULAR_FUND_CIKS) {
+    const match = idx.funds.find(f => f.cik === cik);
+    if (match) {
+      out.push(match);
+      seen.add(match.cik);
+    }
+  }
+  for (const needle of POPULAR_FUND_NEEDLES) {
+    const match = idx.funds.find(
+      f => !seen.has(f.cik) && (f.name || "").toUpperCase().includes(needle)
+    );
+    if (match) {
+      out.push(match);
+      seen.add(match.cik);
+    }
+    if (out.length >= 24) break;
+  }
+  _popularFundsCache = out;
+  return out;
+}
+
+// ---------- global unified search ----------
+// Header search that finds both funds and tickers in one dropdown. Debounced
+// input, click-to-navigate, Enter picks the first result, Escape closes,
+// outside click closes.
+function wireGlobalSearch() {
+  const inp = $("gsearch");
+  const results = $("gsearchResults");
+  if (!inp || !results) return;
+
+  inp.addEventListener("input", () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => globalSearch(inp.value), 150);
+  });
+
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const first = results.querySelector(".gsearch-item");
+      if (first) first.click();
+    } else if (e.key === "Escape") {
+      closeGlobalSearch();
+      inp.blur();
+    }
+  });
+
+  // Outside click closes the dropdown
+  document.addEventListener("click", (e) => {
+    if (!inp.parentElement.contains(e.target)) closeGlobalSearch();
+  });
+
+  // Auto-focus: typing anywhere focuses the visible search input
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key.length !== 1) return;
+    const active = document.activeElement;
+    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+    // Find the first visible search input on the page
+    for (const el of document.querySelectorAll(".search-bar input, .gsearch-input")) {
+      if (el.offsetParent !== null) { el.focus(); return; }
+    }
+  });
+}
+
+function closeGlobalSearch() {
+  document.querySelectorAll(".gsearch-results").forEach(el => {
+    el.classList.remove("open");
+    el.innerHTML = "";
+  });
+}
+
+function clearAllSearchInputs() {
+  document.querySelectorAll(".search-bar input, .gsearch-input").forEach(el => { el.value = ""; });
+  closeGlobalSearch();
+}
+
+function getVisibleResults() {
+  for (const el of document.querySelectorAll(".gsearch-results")) {
+    if (el.offsetParent !== null || el.parentElement?.offsetParent !== null) return el;
+  }
+  return $("gsearchResults");
+}
+
+function currentSearchQueryMatches(q) {
+  return Array.from(document.querySelectorAll(".search-bar input, .gsearch-input"))
+    .some(el => (el.value || "").trim().toUpperCase() === q);
+}
+
+function globalSearch(q) {
+  const results = getVisibleResults();
+  if (!results) return;
+  q = (q || "").trim().toUpperCase();
+  if (!q) { closeGlobalSearch(); return; }
+
+  // Fund matching is available from the lightweight bootstrap immediately.
+  const fundMatches = [];
+  for (const f of idx.funds) {
+    if ((f.name || "").toUpperCase().includes(q)) {
+      fundMatches.push(f);
+      if (fundMatches.length >= 8) break;
+    }
+  }
+  const fundBlock = fundMatches.length ? `
+    <div class="gsearch-section">Funds</div>
+    ${fundMatches.map(f => `
+      <div class="gsearch-item" onclick="closeGlobalSearch(); loadFund(${f.cik})">
+        <span class="gsearch-tag fund">FUND</span>
+        <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayFundName(f.name))}</span>
+      </div>
+    `).join("")}` : "";
+
+  // The larger ticker index warms after first paint. If a visitor searches
+  // before it is ready, show fund results now and refresh this same query once
+  // stock search becomes available.
+  if (!Array.isArray(idx.tickers) || idx.tickers.length === 0) {
+    const stockStatus = searchIndexError
+      ? "Stock search is temporarily unavailable."
+      : "Loading stock search…";
+    results.innerHTML = fundBlock + `<div class="gsearch-empty">${stockStatus}</div>`;
+    results.classList.add("open");
+    if (!searchIndexError) {
+      ensureSearchIndex()
+        .then(() => {
+          if (currentSearchQueryMatches(q)) globalSearch(q);
+        })
+        .catch(error => {
+          if (handleDataContractError(error)) return;
+          console.error("search index load failed:", error);
+          if (currentSearchQueryMatches(q)) globalSearch(q);
+        });
+    }
+    return;
+  }
+
+  // Tickers: surface common equities plus ticker-based funds and ETNs.
+  // Options and non-common capital-structure rows remain reachable from fund
+  // pages, but showing them here is noisy for the primary search workflow.
+  const tickerMatches = [];
+  for (const entry of idx.tickers) {
+    if (!isCommonStockSearchEntry(entry)) continue;
+    const symbol = tickerSearchSymbol(entry).toUpperCase();
+    const productName = securityProductNameForCusip(entry.cusip).toUpperCase();
+    if (!symbol) continue;
+    if (symbol === q) tickerMatches.push({ ...entry, _matchRank: 0 });
+    else if (symbol.startsWith(q)) tickerMatches.push({ ...entry, _matchRank: 1 });
+    else if (symbol.includes(q)) tickerMatches.push({ ...entry, _matchRank: 2 });
+    else if (productName.includes(q)) tickerMatches.push({ ...entry, _matchRank: 3 });
+  }
+  tickerMatches.sort(compareTickerMatch);
+  const topTickerMatches = dedupeVisuallyIdenticalTickerMatches(
+    tickerMatches
+  ).slice(0, 8);
+
+  if (!topTickerMatches.length && !fundMatches.length) {
+    results.innerHTML = `<div class="gsearch-empty">No matches for "${esc(q)}"</div>`;
+    results.classList.add("open");
+    return;
+  }
+
+  const tickerBlock = topTickerMatches.length ? `
+    <div class="gsearch-section">Tickers</div>
+    ${topTickerMatches.map(t => `
+      <div class="gsearch-item" onclick="closeGlobalSearch(); loadStock('${esc(t.stock_id || t.ticker)}')">
+        <span class="gsearch-tag ${esc(searchEntryTagClass(t))}">${esc(searchEntryTagLabel(t))}</span>
+        <div style="min-width:0;display:flex;flex-direction:column">
+          <span class="mono" style="font-weight:700;color:var(--ac)">${esc(tickerSearchSymbol(t))}</span>
+          <span title="${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}" style="font-size:12px;color:var(--mt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}</span>
+        </div>
+      </div>
+    `).join("")}` : "";
+
+  // Exact ticker hits lead; otherwise funds lead.
+  const tickersFirst = topTickerMatches.some(t => t._matchRank === 0);
+  results.innerHTML = tickersFirst ? tickerBlock + fundBlock : fundBlock + tickerBlock;
+  results.classList.add("open");
+}
+
+function showEmpty() {
+  app().innerHTML = `
+    <div class="empty">
+      <h1>No data yet</h1>
+      <p>The pipeline is running for the first time. Check back in a few hours — this site is fed by weekly SEC EDGAR downloads, and the initial backfill can take a while.</p>
+    </div>`;
+}
+
+// ---------- navigation ----------
+function goHome(opts = {}) {
+  if (dataContractBlocked) {
+    showDataMaintenance();
+    return;
+  }
+  $("backBtn").style.display = "none";
+  $("gsearchWrap").style.display = "none";
+  clearTimeout(searchDebounce);
+  clearAllSearchInputs();
+  if (opts.updateUrl !== false) setUrl("home", "");
+  if (!idx) { showEmpty(); return; }
+  renderFundsHome();
+}
+
+// ---------- FUND: home ----------
+function renderFundsHome() {
+  const n = idx.funds.length;
+  const updated = idx.last_updated ? new Date(idx.last_updated).toLocaleDateString() : "—";
+  const popular = getPopularFunds();
+
+  app().innerHTML = `
+    <div class="home-hero">
+      <div class="home-copy">
+        <h1>Track What Institutional Funds Are Buying</h1>
+        <p class="home-subtitle">
+          Searchable portfolios from <span class="mono home-filer-count">${n.toLocaleString()}</span>
+          institutional 13F filers · updated ${esc(updated)}
+        </p>
+      </div>
+      <div class="search-bar-wrap">
+        <div class="search-bar">
+          <input id="homeSearch" placeholder="Search funds or tickers…" autocomplete="off" spellcheck="false"
+            oninput="$('gsearch').value=this.value; clearTimeout(searchDebounce); searchDebounce=setTimeout(()=>globalSearch(this.value),150)"
+            onkeydown="if(event.key==='Escape'){this.value='';$('gsearch').value='';closeGlobalSearch()}
+              else if(event.key==='Enter'){const f=document.querySelector('.gsearch-results.open .gsearch-item');if(f)f.click()}"
+            onfocus="if(this.value) globalSearch(this.value)"/>
+        </div>
+        <div class="gsearch-results"></div>
+      </div>
+    </div>
+    <div id="fundBrowse"></div>`;
+
+  if (!popular.length) {
+    $("fundBrowse").innerHTML = `
+      <div style="text-align:center;color:var(--mt);padding:30px;font-size:13px">
+        No popular filers found in this snapshot — use the search above.
+      </div>`;
+    return;
+  }
+
+  $("fundBrowse").innerHTML = `
+    <div class="lbl">Popular filers</div>
+    <div class="grid">
+      ${popular.map(f => `
+        <div class="card" onclick="loadFund(${f.cik})">
+          <div class="popular-name">${esc(displayFundName(f.name))}</div>
+          <div class="mono popular-cik">CIK ${f.cik}</div>
+        </div>
+      `).join("")}
+    </div>`;
+}
+
+// ---------- FUND: detail ----------
+async function loadFund(cik, opts = {}) {
+  if (!enterDetailView("fund", cik, opts)) return;
+  const securityLabelsReady = ensureSecurityLabels();
+  const fund = await loadCachedJson({
+    cache: fundCache,
+    cacheKey: cik,
+    url: `data/funds/${cik}.json`,
+    loadingMessage: `Loading fund ${cik}...`,
+    errorTitle: `Couldn't load fund ${cik}`,
+    errorPath: `data/funds/${cik}.json`,
+    logLabel: "fund",
+  });
+  await securityLabelsReady;
+  if (dataContractBlocked) {
+    showDataMaintenance();
+    return;
+  }
+  if (!fund) return;
+  renderFund(fund);
+}
+
+function renderFund(f) {
+  $("backBtn").style.display = "block";
+  fundHoldingsFilter = "";
+
+  const fundIndexEntry = fundIndexByCik.get(cikKey(f.cik));
+  const filingState = fundIndexFilingState(
+    fundIndexEntry,
+    currentReportingQuarter
+  );
+  let fundStatusNotice = "";
+  if (filingState.state === "WITHHELD") {
+    const withheldDate = filingState.withheld?.reportDate;
+    fundStatusNotice = `
+      <div class="info-note"><strong>Newer filing data is withheld from current statistics.</strong>
+      ${withheldDate ? `The unresolved filing reports through ${esc(displayDate(withheldDate))}. ` : ""}
+      Holdings shown below are the last published snapshot and remain excluded from sitewide current-holder totals until validation succeeds.</div>`;
+  } else if (filingState.state === "STALE") {
+    fundStatusNotice = `
+      <div class="info-note"><strong>Stale filing snapshot.</strong>
+      This manager's latest published quarter is ${esc(quarterCodeLabel(filingState.calendar[0]))}, behind the current site baseline of ${esc(quarterCodeLabel(currentReportingQuarter))}.
+      These holdings remain available for historical reference but are excluded from sitewide current-holder totals.</div>`;
+  } else if (filingState.state === "UNKNOWN") {
+    fundStatusNotice = `
+      <div class="info-note"><strong>Reporting status could not be verified.</strong>
+      This fund's filing calendar is missing or invalid, so its holdings are excluded from sitewide current-holder totals.</div>`;
+  }
+  if (
+    filingState.state !== "WITHHELD" &&
+    filingState.unverifiedReportDates.length
+  ) {
+    fundStatusNotice += `
+      <div class="info-note"><strong>Some historical filing data is unverified.</strong>
+      Quarter-over-quarter changes and 4Q trends crossing ${esc(filingState.unverifiedReportDates.map(displayDate).join(", "))} are hidden until SEC replay succeeds. Current verified holdings remain available.</div>`;
+  }
+
+  const rawQuarters = Array.isArray(f.quarters) ? f.quarters : [];
+  if (!rawQuarters.length) {
+    app().innerHTML = `
+      <div style="margin-bottom:20px">
+        <h2>${esc(displayFundName(f.name || ""))}</h2>
+        <span class="mono" style="color:var(--mt);font-size:13px">CIK ${esc(f.cik)}</span>
+      </div>
+      ${fundStatusNotice}
+      <div class="info-note">No quarter data available for this fund yet.</div>`;
+    return;
+  }
+
+  // Canonicalize duplicate instrument rows before every comparison. All fund
+  // page counts, changes, exits, and trends then share the same position key.
+  const quarters = rawQuarters
+    .slice(0, 4)
+    .map(q => ({
+      ...q,
+      holdings: groupHoldingsByKey(q.holdings),
+    }));
+
+  // Pipeline emits quarters newest-first; reverse for chart axis (oldest-first)
+  const cur = quarters[0];
+  const priorCandidate = quarters[1] || null;
+  const comparisonsVerified = filingState.state !== "UNKNOWN";
+  const unverifiedReportDates = new Set(
+    filingState.unverifiedReportDates
+  );
+  const prev = comparisonsVerified &&
+    priorCandidate &&
+    areAdjacentReportDates(cur.report_date, priorCandidate.report_date) &&
+    !unverifiedReportDates.has(cur.report_date) &&
+    !unverifiedReportDates.has(priorCandidate.report_date)
+    ? priorCandidate
+    : null;
+  const quartersAsc = [...quarters].reverse();
+  const contiguousQuarterHistory = comparisonsVerified &&
+    quarters.every(
+    (q, i) => i === 0 ||
+      areAdjacentReportDates(quarters[i - 1].report_date, q.report_date)
+  ) && quarters.every(
+    q => !unverifiedReportDates.has(q.report_date)
+  );
+
+  // Build per-security history across filings for changes and sparklines.
+  const hh = {}; // key -> { ticker, issuer, cusip, history: {date: {shares,value}} }
+  quarters.forEach(q => {
+    (q.holdings || []).forEach(h => {
+      const key = holdingHistoryKey(h);
+      if (!hh[key]) {
+        hh[key] = {
+          ticker: h.ticker,
+          issuer: h.issuer,
+          cusip: h.cusip,
+          holding_type: h.holding_type,
+          option_type: h.option_type,
+          history: {},
+        };
+      }
+      hh[key].history[q.report_date] = {
+        date: q.report_date,
+        shares: h.shares || 0,
+        value: h.value || 0,
+        shares_imputed: h.shares_imputed === true,
+      };
+    });
+  });
+
+  // Enrich current quarter's holdings
+  const enriched = (cur.holdings || []).map(h => {
+    const key = holdingHistoryKey(h);
+    const hist = hh[key] || { history: {} };
+    const prevRec = prev ? hist.history[prev.report_date] : null;
+    const pct = cur.total_value > 0 ? (h.value / cur.total_value) * 100 : 0;
+    const prevPct = (prevRec && prev && prev.total_value > 0)
+      ? (prevRec.value / prev.total_value) * 100
+      : 0;
+
+    // Use the same independently proven, exact-date split adjustment that is
+    // published on stock pages. The bootstrap map avoids one network request
+    // per holding while keeping unproven corporate actions fail-closed.
+    const splitFactor = provenSplitFactorForPeriod(
+      idx?.proven_split_adjustments?.[key],
+      prev?.report_date,
+      cur.report_date
+    );
+    const ch = prev
+      ? positionChange(h, prevRec, { splitFactor })
+      : null;
+
+    const shareHistory = quartersAsc.map(
+      q => hist.history[q.report_date] || null
+    );
+    const sparkData = contiguousQuarterHistory &&
+      shareTrendIsComparable(
+        shareHistory,
+        idx?.proven_split_adjustments?.[key]
+      )
+      ? shareHistory.map(record => record.shares)
+      : [];
+    return { ...h, pct, prevPct, ch, sparkData, _key: key };
+  });
+  enriched.sort((a, b) => (b.value || 0) - (a.value || 0));
+
+  // A position present in the immediately prior published filing but absent
+  // from the latest one is an exit. Keep these rows separate so they cannot
+  // leak into current position counts, values, or concentration statistics.
+  const currentKeys = new Set((cur.holdings || []).map(holdingHistoryKey));
+  const exited = prev
+    ? (prev.holdings || [])
+        .filter(h => !currentKeys.has(holdingHistoryKey(h)))
+        .map(h => {
+          const key = holdingHistoryKey(h);
+          const hist = hh[key] || { history: {} };
+          const prevPct = prev.total_value > 0 ? ((h.value || 0) / prev.total_value) * 100 : 0;
+          const shareHistory = quartersAsc.map(
+            q => hist.history[q.report_date] || null
+          );
+          return {
+            ...h,
+            pct: 0,
+            prevPct,
+            ch: positionChange(null, h),
+            sparkData: contiguousQuarterHistory &&
+              shareTrendIsComparable(
+                shareHistory,
+                idx?.proven_split_adjustments?.[key]
+              )
+              ? shareHistory.map(record => record.shares)
+              : [],
+            exitReportDate: cur.report_date,
+            _key: key,
+          };
+        })
+        .sort((a, b) => (b.value || 0) - (a.value || 0))
+    : [];
+
+  const top5 = enriched.slice(0, 5);
+  const top5Pct = top5.reduce((sum, h) => sum + (h.pct || 0), 0);
+  const top = top5[0] || null;
+  const valuesAsc = contiguousQuarterHistory
+    ? quartersAsc.map(q => q.total_value || 0)
+    : [];
+  const positionsAsc = contiguousQuarterHistory
+    ? quartersAsc.map(q => (q.holdings || []).length)
+    : [];
+  const largestIncrease = enriched.filter(h => h.ch?.t === "UP")
+    .sort((a, b) => (b.ch.p || 0) - (a.ch.p || 0))[0];
+  const largestReduction = [
+    ...enriched.filter(h => h.ch?.t === "DOWN"),
+    ...exited,
+  ].sort((a, b) =>
+    ((b.ch?.p || 0) - (a.ch?.p || 0)) ||
+    ((b.value || 0) - (a.value || 0))
+  )[0];
+  const newPositions = enriched.filter(h => h.ch?.t === "NEW").slice(0, 5);
+  const reducedPositions = enriched.filter(h => h.ch?.t === "DOWN").slice(0, 8);
+
+  // Save the enriched rows into outer scope so header clicks can re-sort
+  // without needing to re-run the whole fund-enrichment pipeline.
+  curFundRows = sortRows(enriched, fundSort.col, fundSort.dir, "fund");
+  const sec13fUrl = sec13fFilingsUrl(f);
+  const fundExitRows = exited.map((h, i) => {
+    const ht = holdingPublishedInstrumentType(h);
+    const displayLabel = fundTicker(h);
+    const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
+    const lookupId = stockLookupId(h.cusip || h.ticker, ht);
+    const securityCell = lookupId
+      ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;white-space:nowrap" onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}</td>`
+      : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;white-space:nowrap">${esc(displayLabel)}</td>`;
+    return `<tr>
+      <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:11px">${i + 1}</td>
+      ${securityCell}
+      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>
+      <td class="mono" style="text-align:right;color:var(--mt)">${fP(h.prevPct)}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
+      <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed)}</td>
+      <td style="text-align:center">${badge(h.ch)}</td>
+      <td style="text-align:center">${spark(h.sparkData)}</td>
+      <td style="color:var(--tx);white-space:nowrap">${esc(holdingDisplayKindLabel(h))}</td>
+    </tr>`;
+  }).join("");
+  const fundExitPanel = prev ? `
+        <section class="fund-panel exit-panel">
+          <div class="fund-panel-head">
+            <div class="fund-panel-title">Exited in Latest Filing<span class="panel-count">${exited.length.toLocaleString()}</span></div>
+          </div>
+          <div class="tbl-wrap"><table id="fundExitTable"><thead><tr style="background:var(--sf)">
+            <th class="col-rank" style="text-align:center;width:36px">#</th>
+            <th class="col-sticky" style="text-align:left;background:var(--sf)">Security</th>
+            <th style="text-align:left">Company</th>
+            <th style="text-align:right">Prior %</th>
+            <th style="text-align:right">Prior Value</th>
+            <th style="text-align:right">Prior Shares</th>
+            <th style="text-align:center">Change</th>
+            <th style="text-align:center">Trend (4Q)</th>
+            <th style="text-align:left">Type</th>
+          </tr></thead><tbody>${fundExitRows || `<tr><td colspan="9" style="text-align:center;color:var(--mt);padding:30px">No positions exited in this filing.</td></tr>`}</tbody></table></div>
+          <div class="fund-foot">Compared with the immediately prior published filing (${esc(displayDate(prev.report_date))}). Prior values are shown for context and are not included in current totals.</div>
+        </section>` : "";
+
+  let html = `
+    <div class="fund-page">
+      <main class="fund-main">
+        <div class="fund-title">
+          <h1>${esc(displayFundName(f.name || ""))}</h1>
+          <div class="fund-meta">
+            <span>CIK ${esc(f.cik)}</span>
+            <span>Source date ${esc(displayDate(cur.report_date))}</span>
+            <span>Filed ${esc(displayDate(cur.filing_date))}</span>
+            <span>Quarterly 13F</span>
+            ${sec13fUrl ? `<span><a href="${esc(sec13fUrl)}" target="_blank" rel="noopener noreferrer">View SEC 13F filings ↗</a></span>` : ""}
+          </div>
+        </div>
+
+        ${fundStatusNotice}
+        <div class="fund-stat-grid">
+          <div class="fund-stat">
+            <div>
+              <div class="fund-stat-label">13F Equity Value</div>
+              <div class="fund-stat-value mono">${fV(cur.total_value)}</div>
+            </div>
+            ${miniLine(valuesAsc)}
+          </div>
+          <div class="fund-stat">
+            <div>
+              <div class="fund-stat-label">Positions</div>
+              <div class="fund-stat-value mono">${enriched.length.toLocaleString()}</div>
+            </div>
+            ${miniBars(positionsAsc)}
+          </div>
+          <div class="fund-stat">
+            <div class="top-position-copy">
+              <div class="fund-stat-label">Top Position</div>
+              <div class="fund-stat-value mono top-position-value ${top && securityLabelNeedsWrap(fundTicker(top)) ? "security-label-position" : ""}"><span class="top-position-symbol">${esc(fundTicker(top))}</span><span class="top-position-percent">${top ? fP(top.pct) : "—"}</span></div>
+            </div>
+          </div>
+          <div class="fund-stat">
+            <div>
+              <div class="fund-stat-label">Top 5 Concentration</div>
+              <div class="fund-stat-value mono">${fP(top5Pct)}</div>
+            </div>
+            ${donut(top5Pct)}
+          </div>
+        </div>
+
+        <section class="fund-panel">
+          <div class="fund-panel-head">
+            <div class="fund-panel-title">Holdings</div>
+            <div class="holdings-tools">
+              <input id="fundHoldingsSearch" class="holdings-search" placeholder="Search holdings..." autocomplete="off" spellcheck="false"
+                oninput="fundHoldingsFilter=this.value;renderFundTbody()"/>
+              <button class="icon-btn" title="Clear holdings search" aria-label="Clear holdings search"
+                onclick="fundHoldingsFilter='';$('fundHoldingsSearch').value='';renderFundTbody()">×</button>
+            </div>
+          </div>
+          <div class="tbl-wrap"><table id="fundTable"><thead><tr style="background:var(--sf)">
+            <th class="col-rank" style="text-align:center;width:36px">#</th>
+            <th class="sort col-sticky" data-col="ticker" onclick="onFundSort('ticker')" style="text-align:left;background:var(--sf)">Security<span class="arr"></span></th>
+            ${sortableHeader("onFundSort", "issuer", "Company", "left")}
+            ${sortableHeader("onFundSort", "pct", "% Portfolio", "right")}
+            ${sortableHeader("onFundSort", "value", "Value", "right")}
+            ${sortableHeader("onFundSort", "shares", "Shares", "right")}
+            ${sortableHeader("onFundSort", "pctChg", "Change vs Prior", "center")}
+            ${sortableHeader("onFundSort", "prevPct", "Prev %", "right")}
+            <th style="text-align:center">Trend (4Q)</th>
+            ${sortableHeader("onFundSort", "holdingType", "Type", "left")}
+          </tr></thead><tbody id="fundTbody"></tbody></table></div>
+          <div id="fundFoot" class="fund-foot"></div>
+        </section>
+        ${fundExitPanel}
+      </main>
+
+      <aside class="fund-sidebar">
+        <section class="side-panel">
+          <div class="side-title">Portfolio Summary</div>
+          <div class="summary-label">Top 5 Holdings <span class="value" style="float:right">${fP(top5Pct)}</span></div>
+          ${top5.map(h => `
+            <div class="summary-row">
+              <span class="ticker">${esc(fundTicker(h))}</span>
+              <span></span>
+              <span class="value">${fP(h.pct)}</span>
+            </div>
+          `).join("")}
+          <div class="summary-line"></div>
+          ${summaryEvent("Largest Increase", largestIncrease, "No increased positions", true)}
+          <div class="summary-line"></div>
+          ${summaryEvent("Largest Reduction", largestReduction, "No reduced or exited positions", true)}
+          <div class="summary-line"></div>
+          <div class="summary-label">New Position</div>
+          <div class="summary-list">${newPositions.length ? newPositions.map(h => `<span class="summary-new">${esc(fundTicker(h))}</span> ${esc(displayIssuer(holdingDisplayCompany(h)))}`).join("<br>") : "No new positions"}</div>
+          <div class="summary-line"></div>
+          <div class="summary-label">Positions Reduced</div>
+          <div class="summary-list">${reducedPositions.length ? reducedPositions.map(h => `<span class="summary-down">${esc(fundTicker(h))}</span>`).join(", ") : "No reduced positions"}</div>
+          <div class="summary-line"></div>
+          <div class="summary-label">Positions Exited</div>
+          <div class="summary-list">${exited.length ? exited.slice(0, 8).map(h => `<span class="summary-exit">${esc(fundTicker(h))}</span>`).join(", ") : "No exited positions"}</div>
+        </section>
+
+      </aside>
+      <div class="fineprint fund-data-footer">Data note: 13F filings primarily report US equities, ADRs, options, and certain reportable convertible notes; cash, T-bills, most bonds, foreign securities, and private investments are excluded. Large swings in total value can reflect position sales into cash, not AUM loss. All values are in USD and numbers may not sum to 100% due to rounding.</div>
+    </div>`;
+
+  app().innerHTML = html;
+  renderFundTbody();
+  updateSortArrows("fundTable", fundSort);
+}
+
+function renderFundTbody() {
+  // Called on initial render AND on every header click to re-sort. Reads
+  // curFundRows (already sorted by the caller) and writes #fundTbody.
+  const tbody = $("fundTbody");
+  if (!tbody) return;
+  const needle = fundHoldingsFilter.trim().toUpperCase();
+  const visibleRows = needle
+    ? curFundRows.filter(h => {
+        const haystack = `${fundTicker(h)} ${h.ticker || ""} ${holdingDisplayCompany(h)} ${h.issuer || ""} ${h.class || ""} ${h.cusip || ""}`.toUpperCase();
+        return haystack.includes(needle);
+      })
+    : curFundRows;
+
+  const rows = visibleRows.map((h, i) => {
+    const ht = holdingPublishedInstrumentType(h);
+    const rowBg = i%2 ? "var(--sf)" : "#06101a";
+    const displayLabel = fundTicker(h);
+    const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
+    const lookupId = stockLookupId(h.cusip || h.ticker, ht);
+    const securityCell = lookupId
+      ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;background:${rowBg};white-space:nowrap" onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}</td>`
+      : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;background:${rowBg};white-space:nowrap">${esc(displayLabel)}</td>`;
+    return `<tr style="background:${i%2 ? "var(--sf)" : "transparent"}">
+      <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:11px">${i+1}</td>
+      ${securityCell}
+      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>
+      <td class="mono" style="text-align:right;color:${h.pct >= 5 ? "var(--ac)" : "var(--mt)"}">${fP(h.pct)}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
+      <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed)}</td>
+      <td class="mono ${esc(changeClass(h.ch))}" style="text-align:center;font-weight:800">${esc(changeText(h.ch))}</td>
+      <td class="mono" style="text-align:right;color:var(--mt)">${h.prevPct > 0 ? fP(h.prevPct) : "—"}</td>
+      <td style="text-align:center">${spark(h.sparkData)}</td>
+      <td style="color:var(--tx);white-space:nowrap">${esc(holdingDisplayKindLabel(h))}</td>
+    </tr>`;
+  }).join("");
+  tbody.innerHTML = rows || `<tr><td colspan="10" style="text-align:center;color:var(--mt);padding:34px">No holdings match this search.</td></tr>`;
+  const foot = $("fundFoot");
+  if (foot) {
+    const total = curFundRows.length.toLocaleString();
+    const shown = visibleRows.length.toLocaleString();
+    foot.textContent = needle ? `${shown} of ${total} positions shown` : `${total} positions total`;
+  }
+}
+
+// ---------- STOCK: home ----------
+// ---------- STOCK: detail ----------
+async function loadStock(stockId, opts = {}) {
+  if (dataContractBlocked) {
+    showDataMaintenance();
+    return;
+  }
+  const securityLabelsReady = ensureSecurityLabels();
+  if ((!Array.isArray(idx?.tickers) || idx.tickers.length === 0) && stockIdNeedsSearchIndex(stockId)) {
+    showLoadingMessage("Loading security...");
+    try {
+      await ensureSearchIndex();
+    } catch (error) {
+      if (handleDataContractError(error)) return;
+      console.error("ticker resolution index load failed:", error);
+    }
+  }
+  await securityLabelsReady;
+  const canonicalId = canonicalStockLookupId(stockId);
+  const parsed = parseStockLookupId(canonicalId);
+  const stockEntry = resolveStockEntry(canonicalId);
+  const resolvedId = stockEntry ? stockEntry.stock_id : canonicalId;
+  if (!enterDetailView("stock", resolvedId, opts)) return;
+  const stockPath = stockFilePath(resolvedId);
+  const loadingSecurityLabel = securityLabelForCusip(parsed.id_base)
+    || holdingTrustedTicker({
+      ...stockEntry,
+      cusip: parsed.id_base,
+      instrument_type: parsed.instrument_type,
+    })
+    || securityTypeFallbackLabel(parsed.instrument_type);
+  const stock = await loadCachedJson({
+    cache: stockCache,
+    cacheKey: resolvedId,
+    url: stockPath,
+    loadingMessage: `Loading ${loadingSecurityLabel}...`,
+    errorTitle: `Couldn't load ${loadingSecurityLabel}`,
+    errorPath: stockPath,
+    logLabel: "stock",
+  });
+  if (dataContractBlocked) {
+    showDataMaintenance();
+    return;
+  }
+  if (!stock) return;
+  renderStock(stock, stockEntry);
+}
+
+function renderStock(sd, stockEntry = null) {
+  $("backBtn").style.display = "block";
+  stockHoldersFilter = "";
+  stockPage = 1;
+
+  const holders = Array.isArray(sd.holders) ? sd.holders : [];
+  const stockMeta = stockEntry || normalizeTickerEntry(sd) || {
+    stock_id: String(sd.stock_id || ""),
+    ticker: String(sd.ticker || ""),
+    issuer: String(sd.issuer || ""),
+    cusip: String(sd.cusip || ""),
+    instrument_type: normalizeInstrumentType(sd.instrument_type),
+  };
+
+  // Managers must be at least as recent as the production-wide modal quarter.
+  // Stale, withheld, and invalid calendars are visible for reference but fail
+  // closed: none can enter current counts, totals, or ownership trends.
+  const classified = holders.map(h => {
+    const aligned = alignHolderHistory(
+      h.history,
+      fundIndexByCik.get(cikKey(h.cik)),
+      currentReportingQuarter,
+      { splitAdjustments: sd.split_adjustments }
+    );
+    const base = {
+      cik: h.cik,
+      name: h.name,
+      state: aligned.state,
+      ch: aligned.ch,
+      sparkQuarters: aligned.sparkQuarters,
+      sparkData: aligned.sparkShares,
+      valueSparkData: aligned.sparkValues,
+      reportQuarter: aligned.calendar[0] || null,
+      withheld: aligned.withheld || null,
+    };
+
+    if (aligned.state === "CURRENT") {
+      const current = aligned.current;
+      return {
+        ...base,
+        shares: Number(current?.shares) || 0,
+        sharesImputed: current?.shares_imputed === true,
+        value: Number(current?.value) || 0,
+        pctOfFund: Number(current?.pct_of_fund) || 0,
+        asOfDate: current?.date || null,
+      };
+    }
+    if (aligned.state === "EXIT") {
+      const previous = aligned.previous;
+      return {
+        ...base,
+        shares: 0,
+        value: 0,
+        pctOfFund: 0,
+        priorShares: Number(previous?.shares) || 0,
+        priorSharesImputed: previous?.shares_imputed === true,
+        priorValue: Number(previous?.value) || 0,
+        priorPctOfFund: Number(previous?.pct_of_fund) || 0,
+        priorAsOfDate: previous?.date || null,
+      };
+    }
+    if (aligned.state === "STALE" || aligned.state === "WITHHELD") {
+      const reference = aligned.reference;
+      return {
+        ...base,
+        shares: Number(reference?.shares) || 0,
+        sharesImputed: reference?.shares_imputed === true,
+        value: Number(reference?.value) || 0,
+        pctOfFund: Number(reference?.pct_of_fund) || 0,
+        asOfDate: reference?.date || null,
+      };
+    }
+    return base;
+  });
+
+  const partitions = partitionHolderStates(classified);
+  const currentHolders = partitions.current
+    .sort((a, b) => (b.value || 0) - (a.value || 0));
+  const recentExits = partitions.exits
+    .sort((a, b) => (b.priorValue || 0) - (a.priorValue || 0));
+  const staleRecords = partitions.stale
+    .sort((a, b) => (b.value || 0) - (a.value || 0));
+  const withheldRecords = partitions.withheld
+    .sort((a, b) => (b.value || 0) - (a.value || 0));
+  const historicalCount = partitions.historical.length;
+  const unknownCount = partitions.unknown.length;
+  const estimatedCurrentSharesCount = currentHolders
+    .filter(h => h.sharesImputed).length;
+
+  const totV = currentHolders.reduce((s, h) => s + (h.value || 0), 0);
+  const totS = exactReportedShareTotal(currentHolders);
+  const {
+    values: aggregateValues,
+    shares: aggregateShares,
+  } = aggregateEligibleHolderTrends(
+    classified,
+    currentReportingQuarter
+  );
+
+  const topByValue = [...currentHolders].sort((a, b) => (b.value || 0) - (a.value || 0));
+  const topHolder = topByValue[0] || null;
+  const topConviction = [...currentHolders]
+    .filter(h => (h.pctOfFund || 0) > 0)
+    .sort((a, b) => (b.pctOfFund || 0) - (a.pctOfFund || 0))
+    .slice(0, 5);
+  const largestIncreases = currentHolders
+    .filter(h => h.ch?.t === "UP")
+    .sort((a, b) => (b.ch.p || 0) - (a.ch.p || 0))
+    .slice(0, 5);
+  const largestReductions = currentHolders
+    .filter(h => h.ch?.t === "DOWN")
+    .sort((a, b) => (b.ch.p || 0) - (a.ch.p || 0))
+    .slice(0, 5);
+
+  // The display date is informational; current classification is governed by
+  // the modal reporting-quarter baseline and then retains each source date.
+  const dateCounts = {};
+  for (const h of currentHolders) {
+    if (h.asOfDate) dateCounts[h.asOfDate] = (dateCounts[h.asOfDate] || 0) + 1;
+  }
+  const modeDate = Object.keys(dateCounts)
+    .sort((a, b) => dateCounts[b] - dateCounts[a])[0] || null;
+
+  const instrumentType = normalizeInstrumentType(
+    stockMeta.instrument_type || sd.instrument_type
+  );
+  const cusipText = sd.cusip || stockMeta.cusip || "";
+  const securityHolding = {
+    ...sd,
+    ...stockMeta,
+    ticker: stockMeta.ticker || sd.ticker,
+    issuer: sd.issuer || stockMeta.issuer,
+    cusip: cusipText,
+    instrument_type: instrumentType,
+  };
+  const issuerText = displayIssuer(
+    holdingDisplayCompany(securityHolding)
+  );
+  const securityText = holdingDisplayLabel(securityHolding);
+  const securityKindText = holdingDisplayKindLabel(securityHolding);
+  const securityKindClass = holdingDisplayKindClass(securityHolding);
+  const mappedSecurityLabel = securityLabelForCusip(cusipText);
+  const trustedTicker = holdingTrustedTicker(securityHolding);
+  const tickerMark = securityTickerMark(
+    mappedSecurityLabel || trustedTicker || instrumentType
+  );
+  const securityMetadataLabel = (
+    mappedSecurityLabel
+    || instrumentType !== "EQUITY"
+    || !trustedTicker
+  ) ? securityText : "";
+  const latestDateText = modeDate ? displayDate(modeDate) : "Most recent filings";
+
+  const summaryRows = (rows, valueFn, classFn = () => "") => {
+    if (!rows.length) return `<div class="summary-list">No matching holders</div>`;
+    return rows.map((h, i) => `
+      <div class="stock-summary-row">
+        <span class="mono stock-summary-rank">${i + 1}</span>
+        <span class="stock-summary-name" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</span>
+        <span class="stock-summary-value ${esc(classFn(h) || "")}">${esc(valueFn(h))}</span>
+      </div>`).join("");
+  };
+  const summarySection = (label, rows, valueFn, sortCol, dir = "desc", classFn = () => "") => `
+    <div class="stock-summary-head">
+      <span>${esc(label)}</span>
+      <button class="summary-action" onclick="focusStockSort('${esc(sortCol)}','${esc(dir)}')">View all</button>
+    </div>
+    ${summaryRows(rows, valueFn, classFn)}`;
+  const stockExitRows = recentExits.map((h, i) => `
+    <tr>
+      <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${i + 1}</td>
+      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${fV(h.priorValue)}</td>
+      <td class="mono" style="text-align:right">${formatShares(h.priorShares, h.priorSharesImputed)}</td>
+      <td class="mono" style="text-align:right;color:var(--mt)">${h.priorPctOfFund > 0 ? fP(h.priorPctOfFund) : "—"}</td>
+      <td style="text-align:center">${badge(h.ch)}</td>
+      <td style="text-align:center">${spark(h.sparkData)}</td>
+      <td class="mono" style="text-align:right;color:var(--mt);font-size:11px">${esc(quarterCodeLabel(h.reportQuarter))}</td>
+    </tr>`).join("");
+  const stockExitPanel = recentExits.length ? `
+        <section class="fund-panel stock-panel exit-panel">
+          <div class="fund-panel-head">
+            <div class="fund-panel-title">Exited in Latest Filing<span class="panel-count">${recentExits.length.toLocaleString()}</span></div>
+          </div>
+          <div class="tbl-wrap"><table id="stockExitTable"><thead><tr style="background:var(--sf)">
+            <th class="col-rank" style="text-align:center;width:36px">#</th>
+            <th class="col-sticky" style="text-align:left;background:var(--sf)">Fund</th>
+            <th style="text-align:right">Prior Value</th>
+            <th style="text-align:right">Prior Shares</th>
+            <th style="text-align:right">Prior % of Fund</th>
+            <th style="text-align:center">Change</th>
+            <th style="text-align:center">Trend (4Q)</th>
+            <th style="text-align:right">Exit Report</th>
+          </tr></thead><tbody>${stockExitRows}</tbody></table></div>
+          <div class="fund-foot">Each exit is an immediately prior-filing position absent from that manager's latest published filing. Prior values are shown for context and are not included in current totals.</div>
+        </section>` : "";
+  const excludedRows = (rows, stateLabel) => rows.map((h, i) => `
+    <tr>
+      <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${i + 1}</td>
+      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${h.asOfDate ? fV(h.value) : "—"}</td>
+      <td class="mono" style="text-align:right">${h.asOfDate ? formatShares(h.shares, h.sharesImputed) : "—"}</td>
+      <td class="mono" style="text-align:right;color:var(--mt);font-size:11px">${esc(h.asOfDate || "—")}</td>
+      <td class="mono" style="text-align:right;color:var(--mt);font-size:11px">${esc(quarterCodeLabel(h.reportQuarter))}</td>
+      <td style="text-align:center"><span class="badge mono" style="color:var(--mt)">${esc(stateLabel(h))}</span></td>
+    </tr>`).join("");
+  const excludedPanel = (title, rows, stateLabel, note, className) => rows.length ? `
+        <section class="fund-panel stock-panel ${className}">
+          <div class="fund-panel-head">
+            <div class="fund-panel-title">${esc(title)}<span class="panel-count">${rows.length.toLocaleString()}</span></div>
+          </div>
+          <div class="tbl-wrap"><table><thead><tr style="background:var(--sf)">
+            <th class="col-rank" style="text-align:center;width:36px">#</th>
+            <th class="col-sticky" style="text-align:left;background:var(--sf)">Fund</th>
+            <th style="text-align:right">Last Reported Value</th>
+            <th style="text-align:right">Last Reported Shares</th>
+            <th style="text-align:right">Last Positive Date</th>
+            <th style="text-align:right">Manager Latest</th>
+            <th style="text-align:center">Status</th>
+          </tr></thead><tbody>${excludedRows(rows, stateLabel)}</tbody></table></div>
+          <div class="fund-foot">${note}</div>
+        </section>` : "";
+  const stalePanel = excludedPanel(
+    "Stale / Excluded Records",
+    staleRecords,
+    () => "STALE",
+    `These managers' latest published quarter predates the current site baseline (${quarterCodeLabel(currentReportingQuarter)}). Last-reported values are historical context only and are excluded from every current count, total, and trend.`,
+    "stale-panel"
+  );
+  const withheldPanel = excludedPanel(
+    "Withheld / Unverified Records",
+    withheldRecords,
+    h => h.withheld?.reportDate ? `WITHHELD ${h.withheld.reportDate}` : "WITHHELD",
+    "A newer or unresolved filing is quarantined. Last-published values are reference only and are excluded from every current count, total, and trend until validation succeeds.",
+    "withheld-panel"
+  );
+  const warningParts = [];
+  if (unknownCount) {
+    warningParts.push(`<strong>${unknownCount.toLocaleString()} holder ${unknownCount === 1 ? "record could" : "records could"} not be classified.</strong> Their fund reporting calendar is missing or invalid.`);
+  }
+  if (estimatedCurrentSharesCount) {
+    warningParts.push(`<strong>${estimatedCurrentSharesCount.toLocaleString()} current share ${estimatedCurrentSharesCount === 1 ? "count is" : "counts are"} estimated.</strong> Estimated rows are marked with ~, excluded from exact-share totals, and receive no quarter-over-quarter share comparison.`);
+  }
+  const classificationWarning = warningParts.length ? `
+        <div class="info-note">${warningParts.join(" ")} Excluded or estimated data is never silently treated as exact current data.</div>` : "";
+  const aggregateTrendNotice = currentHolders.length &&
+    !aggregateValues.length
+    ? `<div class="info-note">Aggregate 4Q trends are hidden because manager histories do not share one complete reporting calendar ending at ${esc(quarterCodeLabel(currentReportingQuarter))}.</div>`
+    : "";
+
+  let html = `
+    <div class="stock-page">
+      <main class="stock-main">
+        <div class="stock-title">
+          <div class="ticker-mark">${esc(tickerMark)}</div>
+          <div>
+            <div class="stock-title-line">
+              <h1>${esc(issuerText || securityText)}</h1>
+              <span class="ht-tag ${esc(securityKindClass)}">${esc(securityKindText)}</span>
+            </div>
+            <div class="stock-meta">
+              ${securityMetadataLabel ? `<span>Security <span class="mono">${esc(securityMetadataLabel)}</span></span>` : ""}
+              <span>CUSIP <span class="mono">${esc(cusipText || "—")}</span></span>
+              <span>Institutional Holder View</span>
+              <span>Latest 13F Positions</span>
+            </div>
+          </div>
+        </div>
+
+        ${classificationWarning}
+        ${aggregateTrendNotice}
+        <div class="stock-stat-grid">
+          <div class="stock-stat">
+            <div>
+              <div class="stock-stat-label">Current Institutional Holders</div>
+              <div class="stock-stat-value mono">${currentHolders.length.toLocaleString()}</div>
+            </div>
+            ${holdersIcon()}
+          </div>
+          <div class="stock-stat">
+            <div>
+              <div class="stock-stat-label">Total Held Value</div>
+              <div class="stock-stat-value mono">${fV(totV)}</div>
+            </div>
+            ${miniLine(aggregateValues)}
+          </div>
+          <div class="stock-stat">
+            <div>
+              <div class="stock-stat-label">Total Exact Shares</div>
+              <div class="stock-stat-value mono">${fS(totS)}</div>
+            </div>
+            ${miniBars(aggregateShares)}
+          </div>
+          <div class="stock-stat">
+            <div class="stock-largest">
+              ${bankIcon()}
+              <div style="min-width:0">
+                <div class="stock-stat-label">Largest Holder</div>
+                <div class="stock-largest-name">${esc(displayHolderName(topHolder?.name || "—"))}</div>
+                <div class="stock-largest-meta">${topHolder ? `${formatShares(topHolder.shares, topHolder.sharesImputed)} shares  •  ${fV(topHolder.value)}` : "—"}</div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+
+  // Only currently reported holders enter the sortable table.
+  curStockRows = sortRows(currentHolders, stockSort.col, stockSort.dir, "stock");
+
+  html += `<section class="fund-panel stock-panel" id="stockPanel">
+          <div class="fund-panel-head">
+            <div class="fund-panel-title">Current Holders<span class="panel-count">${currentHolders.length.toLocaleString()}</span></div>
+            <div class="holdings-tools">
+              <input id="stockHoldersSearch" class="holdings-search" placeholder="Search holders..." autocomplete="off" spellcheck="false"
+                oninput="stockHoldersFilter=this.value;stockPage=1;renderStockTbody()"/>
+              <button class="icon-btn" title="Clear holder search" aria-label="Clear holder search"
+                onclick="stockHoldersFilter='';$('stockHoldersSearch').value='';stockPage=1;renderStockTbody()">×</button>
+            </div>
+          </div>
+          <div class="tbl-wrap"><table id="stockTable"><thead><tr style="background:var(--sf)">
+    <th class="col-rank" style="text-align:center;width:36px">#</th>
+    <th class="sort col-sticky" data-col="name" onclick="onStockSort('name')" style="text-align:left;background:var(--sf)">Fund<span class="arr"></span></th>
+    ${sortableHeader("onStockSort", "value", "Value", "right")}
+    ${sortableHeader("onStockSort", "shares", "Shares", "right")}
+    ${sortableHeader("onStockSort", "pct", "% of Fund", "right")}
+    ${sortableHeader("onStockSort", "qoq", "Change vs Prior", "center")}
+    <th style="text-align:center">Trend (4Q)</th>
+    ${sortableHeader("onStockSort", "asOfDate", "Source Date", "right")}
+    </tr></thead><tbody id="stockTbody"></tbody></table></div>
+          <div id="stockFoot" class="stock-table-footer"></div>
+        </section>
+        ${stockExitPanel}
+        ${stalePanel}
+        ${withheldPanel}
+        <div class="fineprint" style="padding:18px 0 0">${currentHolders.length.toLocaleString()} current holders&nbsp;&nbsp; • &nbsp;&nbsp;${recentExits.length.toLocaleString()} latest-filing exits&nbsp;&nbsp; • &nbsp;&nbsp;${staleRecords.length.toLocaleString()} stale records&nbsp;&nbsp; • &nbsp;&nbsp;${withheldRecords.length.toLocaleString()} withheld records&nbsp;&nbsp; • &nbsp;&nbsp;Values in USD</div>
+      </main>
+
+      <aside class="stock-sidebar">
+        <section class="side-panel">
+          <div class="side-title">Ownership Summary</div>
+          ${summarySection("Top Holders by Value", topByValue.slice(0, 5), h => fV(h.value), "value")}
+          <div class="summary-line"></div>
+          ${summarySection("Highest Conviction (% of Fund)", topConviction, h => fP(h.pctOfFund), "pct")}
+          <div class="summary-line"></div>
+          ${summarySection("Largest Increases vs Prior Filing", largestIncreases, h => changeText(h.ch), "qoq", "desc", h => changeClass(h.ch))}
+          <div class="summary-line"></div>
+          ${summarySection("Largest Reductions vs Prior Filing", largestReductions, h => changeText(h.ch), "qoq", "asc", h => changeClass(h.ch))}
+        </section>
+
+      </aside>
+      <div class="fineprint stock-data-footer">Data note: 13F aggregates only include institutional managers that file Form 13F-HR; retail and smaller institutions are not captured. Current holders must have a valid, non-withheld filing calendar at least as recent as the modal site baseline (${esc(quarterCodeLabel(currentReportingQuarter))}). Source dates can still differ during filing season. Latest common current-holder date: ${esc(latestDateText)}.${historicalCount ? ` ${historicalCount.toLocaleString()} older former-holder ${historicalCount === 1 ? "record is" : "records are"} omitted.` : ""}</div>
+    </div>`;
+
+  app().innerHTML = html;
+  renderStockTbody();
+  updateSortArrows("stockTable", stockSort);
+  // pct_of_fund and fund calendars are already in generated JSON; no per-fund
+  // fetches are needed to classify or render this stock page.
+}
+
+function renderStockTbody() {
+  // curStockRows contains current holders only; exits render in their own
+  // explicitly historical table.
+  const tbody = $("stockTbody");
+  if (!tbody) return;
+  const needle = stockHoldersFilter.trim().toUpperCase();
+  const visibleRows = needle
+    ? curStockRows.filter(h => String(h.name || "").toUpperCase().includes(needle))
+    : curStockRows;
+  const totalPages = Math.max(1, Math.ceil(visibleRows.length / stockRowsPerPage));
+  stockPage = Math.min(Math.max(1, stockPage), totalPages);
+  const start = (stockPage - 1) * stockRowsPerPage;
+  const pageRows = visibleRows.slice(start, start + stockRowsPerPage);
+
+  const rows = pageRows.map((h, i) => {
+    const rowNumber = start + i + 1;
+    const pctText = h.pctOfFund > 0 ? fP(h.pctOfFund) : "—";
+    const pctColor = h.pctOfFund >= 5 ? "var(--ac)" : "var(--mt)";
+    const rowBg = i%2 ? "var(--sf)" : "var(--bg)";
+    return `<tr style="background:${i%2 ? "var(--sf)" : "transparent"}">
+      <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${rowNumber}</td>
+      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:${rowBg}" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
+      <td class="mono" style="text-align:right">${formatShares(h.shares, h.sharesImputed)}</td>
+      <td class="mono" style="text-align:right;color:${pctColor}">${pctText}</td>
+      <td style="text-align:center">${badge(h.ch)}</td>
+      <td style="text-align:center">${spark(h.sparkData)}</td>
+      <td class="mono" style="text-align:right;color:var(--mt);font-size:11px">${esc(h.asOfDate || "—")}</td>
+    </tr>`;
+  }).join("");
+  const emptyText = needle ? "No current holders match this search." : "No current holders reported.";
+  tbody.innerHTML = rows || `<tr><td colspan="8" style="text-align:center;color:var(--mt);padding:34px">${emptyText}</td></tr>`;
+
+  const foot = $("stockFoot");
+  if (!foot) return;
+  const startLabel = visibleRows.length ? (start + 1).toLocaleString() : "0";
+  const endLabel = (start + pageRows.length).toLocaleString();
+  const totalLabel = visibleRows.length.toLocaleString();
+  const pageButtons = stockPaginationPages(totalPages, stockPage).map((p, i) => {
+    if (p === "ellipsis") return `<button class="page-btn" disabled aria-hidden="true" key="${i}">...</button>`;
+    return `<button class="page-btn ${p === stockPage ? "active" : ""}" onclick="setStockPage(${p})">${p}</button>`;
+  }).join("");
+  const rowsOptions = [15, 25, 50, 100].map(n =>
+    `<option value="${n}" ${n === stockRowsPerPage ? "selected" : ""}>${n}</option>`
+  ).join("");
+  foot.innerHTML = `
+    <div>${needle ? `${totalLabel} matching current holders` : `Showing ${startLabel} to ${endLabel} of ${totalLabel} current holders`}</div>
+    <div class="stock-pagination">
+      ${pageButtons}
+      <button class="page-btn" ${stockPage >= totalPages ? "disabled" : ""} onclick="setStockPage(${stockPage + 1})">›</button>
+    </div>
+    <label class="rows-control">Rows per page:
+      <select onchange="setStockRowsPerPage(this.value)">${rowsOptions}</select>
+    </label>`;
+}
+
+</script>
+<script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "0429f89d9eff4c318772691e3853e997"}'></script>
+</body>
+</html>

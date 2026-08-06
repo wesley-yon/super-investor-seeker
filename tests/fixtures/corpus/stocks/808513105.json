@@ -1,0 +1,38 @@
+{
+  "instrument_type": "EQUITY",
+  "holders": [
+    {
+      "cik": 912938,
+      "history": [
+        {
+          "date": "2026-06-30",
+          "shares": 13356306,
+          "value": 2129335613,
+          "pct_of_fund": 0.676
+        }
+      ]
+    },
+    {
+      "cik": 1407543,
+      "history": [
+        {
+          "date": "2026-06-30",
+          "shares": 5571968,
+          "value": 514124031,
+          "pct_of_fund": 0.121
+        }
+      ]
+    },
+    {
+      "cik": 1140436,
+      "history": [
+        {
+          "date": "2026-06-30",
+          "shares": 3716441,
+          "value": 342916011,
+          "pct_of_fund": 7.188
+        }
+      ]
+    }
+  ]
+}

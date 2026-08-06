@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/thirteenffiler">
+  <headerData>
+    <filerInfo>
+      <periodOfReport>12-31-2022</periodOfReport>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPage>
+      <reportCalendarOrQuarter>12-31-2022</reportCalendarOrQuarter>
+      <isAmendment>false</isAmendment>
+    </coverPage>
+    <summaryPage>
+      <tableEntryTotal>3</tableEntryTotal>
+      <tableValueTotal>4500</tableValueTotal>
+    </summaryPage>
+  </formData>
+</edgarSubmission>

@@ -1,0 +1,366 @@
+{
+  "cik": 1854423,
+  "name": "Lepercq De Neuflize Asset Management LLC",
+  "quarters": [
+    {
+      "report_date": "2026-03-31",
+      "filing_date": "2026-05-12",
+      "accession": "0001420506-26-000942",
+      "total_value": 137977850,
+      "num_holdings": 26,
+      "holdings": [
+        {
+          "ticker": "SPY",
+          "issuer": "SPDR S&P 500 ETF TRUST",
+          "cusip": "78462F103",
+          "class": "TR UNIT",
+          "value": 70702363,
+          "shares": 108716,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "VOO",
+          "issuer": "VANGUARD INDEX FDS",
+          "cusip": "922908363",
+          "class": "S&P 500 ETF SHS",
+          "value": 45526139,
+          "shares": 76188,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "EFA",
+          "issuer": "ISHARES TR",
+          "cusip": "464287465",
+          "class": "MSCI EAFE ETF",
+          "value": 17797130,
+          "shares": 183230,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "CTWO",
+          "issuer": "COTWO ADVISORS PHYSICAL EUROPEAN CARBON ALLOWANCE TRUST",
+          "cusip": "222067100",
+          "class": "COMMON UNITS",
+          "value": 904381,
+          "shares": 57330,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "SVCO",
+          "issuer": "Silvaco Group, Inc.",
+          "cusip": "82728C102",
+          "class": "COM",
+          "value": 677747,
+          "shares": 95727,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "QRVO",
+          "issuer": "Qorvo, Inc.",
+          "cusip": "74736K101",
+          "class": "COM",
+          "value": 673380,
+          "shares": 8700,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "POWI",
+          "issuer": "POWER INTEGRATIONS INC",
+          "cusip": "739276103",
+          "class": "COM",
+          "value": 512000,
+          "shares": 10000,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "ENPH",
+          "issuer": "Enphase Energy, Inc.",
+          "cusip": "29355A107",
+          "class": "COM",
+          "value": 378100,
+          "shares": 10000,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "WETH",
+          "issuer": "Wetouch Technology Inc.",
+          "cusip": "961881208",
+          "class": "COM NEW",
+          "value": 210681,
+          "shares": 163954,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "CLAR",
+          "issuer": "Clarus Corp",
+          "cusip": "18270P109",
+          "class": "COM",
+          "value": 146064,
+          "shares": 53700,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "OBAWW",
+          "issuer": "Oxley Bridge Acquisition Ltd",
+          "cusip": "G6858G115",
+          "class": "*W EXP 06/17/203",
+          "value": 74000,
+          "shares": 370000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "PACHW",
+          "issuer": "Pioneer Acquisition I Corp",
+          "cusip": "G7117W115",
+          "class": "*W EXP 06/16/203",
+          "value": 47880,
+          "shares": 266000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "FIGXW",
+          "issuer": "FIGX Capital Acquisition Corp.",
+          "cusip": "G3473K118",
+          "class": "*W EXP 06/17/203",
+          "value": 40530,
+          "shares": 150000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "CHECW",
+          "issuer": "Chenghe Acquisition III Co.",
+          "cusip": "G2086N121",
+          "class": "*W EXP 09/09/203",
+          "value": 36000,
+          "shares": 150000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "CCAQW",
+          "issuer": "COLLECTIVE ACQUISITION CORP.",
+          "cusip": "G2867S117",
+          "class": "*W EXP 04/04/203",
+          "value": 35122,
+          "shares": 121237,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "SOCAW",
+          "issuer": "Solarius Capital Acquisition Corp.",
+          "cusip": "G82617112",
+          "class": "*W EXP 07/10/203",
+          "value": 31200,
+          "shares": 120000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": null,
+          "issuer": "TGE VALUE CREATIVE SOLUTIONS",
+          "cusip": "G8773E118",
+          "class": "*W EXP 09/16/203",
+          "value": 29000,
+          "shares": 100000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "GPACW",
+          "issuer": "General Purpose Acquisition Corp.",
+          "cusip": "G3810N114",
+          "class": "*W EXP 12/03/203",
+          "value": 24010,
+          "shares": 100000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "ITHAW",
+          "issuer": "ITHAX Acquisition Corp III",
+          "cusip": "G4977S110",
+          "class": "*W EXP 11/17/203",
+          "value": 24000,
+          "shares": 100000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "CUBWW",
+          "issuer": "Lionheart Holdings",
+          "cusip": "G5501C117",
+          "class": "*W EXP 06/07/203",
+          "value": 23020,
+          "shares": 200000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "GTERW",
+          "issuer": "Globa Terra Acquisition Corp",
+          "cusip": "G3933N124",
+          "class": "*W EXP 06/17/203",
+          "value": 21354,
+          "shares": 167348,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "GPATW",
+          "issuer": "GP-Act III Acquisition Corp.",
+          "cusip": "G4035N129",
+          "class": "*W EXP 05/13/202",
+          "value": 21030,
+          "shares": 150000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": null,
+          "issuer": "COPLEY ACQUISITION CORP",
+          "cusip": "G24243126",
+          "class": "*W EXP 99/99/999",
+          "value": 15000,
+          "shares": 100000,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "LWACW",
+          "issuer": "LightWave Acquisition Corp.",
+          "cusip": "G5490M126",
+          "class": "*W EXP 06/06/203",
+          "value": 12879,
+          "shares": 53640,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "NOEMW",
+          "issuer": "CO2 Energy Transition Corp.",
+          "cusip": "12664M111",
+          "class": "*W EXP 08/17/202",
+          "value": 10335,
+          "shares": 93953,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        },
+        {
+          "ticker": "VNMEW",
+          "issuer": "Vendome Acquisition Corp I",
+          "cusip": "G9580A117",
+          "class": "*W EXP 07/03/202",
+          "value": 4505,
+          "shares": 18018,
+          "holding_type": "WARRANT",
+          "share_amount_type": "SH"
+        }
+      ],
+      "composition_version": 2,
+      "security_identity_version": 1,
+      "is_complete": true,
+      "base_accession": "0001420506-26-000942",
+      "applied_accessions": [
+        "0001420506-26-000942"
+      ],
+      "source_filings": [
+        {
+          "accession": "0001420506-26-000823",
+          "form_type": "13F-HR",
+          "filing_date": "2026-05-07",
+          "accepted_at": "2026-05-07T14:10:00.000Z",
+          "amendment_number": null,
+          "amendment_kind": "ORIGINAL",
+          "source_hash": "df68482f308c4d7062c56070bd09e6296e165ceca32f90e7deeb9eb4cade3aba",
+          "reported_entry_total": 26,
+          "reported_value_total": 138334595,
+          "normalized_value_total": 138334595,
+          "value_unit_policy_version": 1,
+          "value_multiplier": 1,
+          "value_unit_method": "same_quarter_peer_dollars",
+          "value_unit_confidence": "high",
+          "value_unit_evidence": {
+            "eligible_positions": 10,
+            "low_price_positions": 0,
+            "low_price_cusips": 0,
+            "eligible_value": 137884730,
+            "low_price_value": 0,
+            "low_price_value_share": 0.0,
+            "prior_multiplier": 1,
+            "raw_value_total": 138334595,
+            "peer": {
+              "matched_positions": 10,
+              "matched_cusips": 10,
+              "matched_value_coverage": 1.0,
+              "dollar_value_support": 1.0,
+              "thousands_value_support": 0.0,
+              "exact_matched_positions": 9,
+              "exact_matched_value_coverage": 0.993441,
+              "exact_dollar_value_support": 1.0,
+              "exact_thousands_value_support": 0.0
+            }
+          },
+          "security_identity_version": 1,
+          "composition_action": "SUPERSEDED",
+          "applied": false
+        },
+        {
+          "accession": "0001420506-26-000942",
+          "form_type": "13F-HR/A",
+          "filing_date": "2026-05-12",
+          "accepted_at": "2026-05-12T18:37:53.000Z",
+          "amendment_number": 1,
+          "amendment_kind": "RESTATEMENT",
+          "source_hash": "b7e2fb1dca2e7c4eceb8c72cb79d2ebb175e1a9ff073cc6ac52b265a06ff4748",
+          "reported_entry_total": 26,
+          "reported_value_total": 137977850,
+          "normalized_value_total": 137977850,
+          "value_unit_policy_version": 1,
+          "value_multiplier": 1,
+          "value_unit_method": "same_quarter_peer_dollars",
+          "value_unit_confidence": "high",
+          "value_unit_evidence": {
+            "eligible_positions": 10,
+            "low_price_positions": 0,
+            "low_price_cusips": 0,
+            "eligible_value": 137527985,
+            "low_price_value": 0,
+            "low_price_value_share": 0.0,
+            "prior_multiplier": 1,
+            "raw_value_total": 137977850,
+            "peer": {
+              "matched_positions": 10,
+              "matched_cusips": 10,
+              "matched_value_coverage": 1.0,
+              "dollar_value_support": 1.0,
+              "thousands_value_support": 0.0,
+              "exact_matched_positions": 9,
+              "exact_matched_value_coverage": 0.993424,
+              "exact_dollar_value_support": 1.0,
+              "exact_thousands_value_support": 0.0
+            }
+          },
+          "security_identity_version": 1,
+          "composition_action": "BASE",
+          "applied": true
+        }
+      ],
+      "composition_hash": "124c337bc702bcf9cda5b04d75bae6a6cdf42f4e6cf8c196b428080ab40ee558",
+      "composition_hash_version": 2
+    }
+  ]
+}

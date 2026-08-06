@@ -1,0 +1,782 @@
+name: Deploy validated data to Pages
+
+on:
+  workflow_call:
+    inputs:
+      code_sha:
+        description: Exact public repository commit to publish
+        required: true
+        type: string
+      release_tag:
+        description: Exact private dataset release to publish
+        required: true
+        type: string
+      dataset_id:
+        description: Exact private dataset digest to publish
+        required: true
+        type: string
+    outputs:
+      page_url:
+        description: URL returned by the completed Pages deployment
+        value: ${{ jobs.deploy.outputs.page_url }}
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Private dataset release for rollback; blank uses latest
+        required: false
+        default: ''
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - '.nojekyll'
+      - 'CNAME'
+      - 'index.html'
+      - 'site-data-loader.js'
+      - 'scripts/build_pages_artifact.py'
+      - 'scripts/data_snapshot.py'
+      - 'scripts/pages_deploy_needed.sh'
+      - '.github/workflows/deploy-pages.yml'
+  schedule:
+    - cron: '17 */6 * * *'
+
+concurrency:
+  group: pages-production
+  cancel-in-progress: false
+
+env:
+  DATA_REPOSITORY: wesley-yon/super-investor-seeker-data
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: read
+      pages: read
+    outputs:
+      code_sha: ${{ steps.target.outputs.code_sha }}
+      release_tag: ${{ steps.target.outputs.release_tag }}
+      dataset_id: ${{ steps.target.outputs.dataset_id }}
+      deploy_needed: ${{ steps.target.outputs.deploy_needed }}
+      allow_older_release: ${{ steps.target.outputs.allow_older_release }}
+    steps:
+      - name: Checkout explicitly requested code target
+        if: inputs.code_sha != ''
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.code_sha }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            CNAME
+            scripts/pages_deploy_needed.sh
+
+      - name: Checkout push code target
+        if: inputs.code_sha == '' && github.event_name == 'push'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            CNAME
+            scripts/pages_deploy_needed.sh
+
+      - name: Checkout live main recovery target
+        if: inputs.code_sha == '' && github.event_name != 'push'
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            CNAME
+            scripts/pages_deploy_needed.sh
+
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Resolve exact code and private dataset target
+        id: target
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          PUBLIC_GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_CODE_SHA: ${{ inputs.code_sha }}
+          REQUESTED_DATASET_ID: ${{ inputs.dataset_id }}
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          code_sha=$(git rev-parse HEAD)
+          if [[ ! "$code_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid resolved code SHA: $code_sha"
+            exit 1
+          fi
+          if [ -n "$REQUESTED_CODE_SHA" ]; then
+            if [[ ! "$REQUESTED_CODE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+               [ "$code_sha" != "$REQUESTED_CODE_SHA" ]; then
+              echo "::error::Checked out $code_sha, expected $REQUESTED_CODE_SHA"
+              exit 1
+            fi
+          elif [ "$EVENT_NAME" = push ] && [ "$code_sha" != "$EVENT_SHA" ]; then
+            echo "::error::Checked out $code_sha, expected push commit $EVENT_SHA"
+            exit 1
+          fi
+
+          allow_older_release=false
+          release_tag="$REQUESTED_RELEASE_TAG"
+          if [ -z "$release_tag" ]; then
+            # The GitHub latest-release pointer is the durable Pages target.
+            # It changes for a new publication or a verified manual rollback,
+            # rather than merely because another release has a newer date.
+            release_tag=$(gh api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name')
+          elif [ -z "$REQUESTED_CODE_SHA" ]; then
+            # Only an explicit manual dispatch may intentionally roll Pages
+            # back to an older validated private release.
+            allow_older_release=true
+          fi
+          if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::No valid published dataset release was resolved"
+            exit 1
+          fi
+
+          release_json=$(gh api "/repos/$DATA_REPOSITORY/releases/tags/$release_tag")
+          if [ "$(jq -r '.draft or .prerelease' <<<"$release_json")" != false ]; then
+            echo "::error::Dataset target must be a published, non-prerelease release"
+            exit 1
+          fi
+          manifest_dir=$(mktemp -d "$RUNNER_TEMP/snapshot-manifest.XXXXXX")
+          gh release download "$release_tag" \
+            --repo "$DATA_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --dir "$manifest_dir"
+          if [ "$(find "$manifest_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 1 ]; then
+            echo "::error::Dataset release must contain exactly one snapshot manifest"
+            exit 1
+          fi
+          manifest_path=$(find "$manifest_dir" -maxdepth 1 -type f)
+          dataset_id=$(jq -er '.dataset_id' "$manifest_path")
+          if [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Dataset release contains an invalid dataset ID"
+            exit 1
+          fi
+          if [ -n "$REQUESTED_DATASET_ID" ] &&
+             [ "$dataset_id" != "$REQUESTED_DATASET_ID" ]; then
+            echo "::error::Release $release_tag contains $dataset_id, expected $REQUESTED_DATASET_ID"
+            exit 1
+          fi
+
+          deploy_needed=$(
+            GH_TOKEN="$PUBLIC_GITHUB_TOKEN" \
+              DATA_ARCHIVE_TOKEN="$DATA_ARCHIVE_TOKEN" \
+              DATA_REPOSITORY="$DATA_REPOSITORY" \
+              bash scripts/pages_deploy_needed.sh \
+                "$code_sha" "$dataset_id" "$release_tag"
+          )
+          echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
+          echo "deploy_needed=$deploy_needed" >> "$GITHUB_OUTPUT"
+          echo "allow_older_release=$allow_older_release" >> "$GITHUB_OUTPUT"
+          if [ "$deploy_needed" = true ]; then
+            echo "Pages must publish code $code_sha with dataset $dataset_id"
+          else
+            echo "Live Pages already serves code $code_sha with dataset $dataset_id"
+          fi
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.deploy_needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pages: write
+    steps:
+      - name: Checkout exact public code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.code_sha }}
+          fetch-depth: 1
+
+      - name: Verify exact code checkout
+        env:
+          ALLOW_OLDER_RELEASE: ${{ needs.resolve.outputs.allow_older_release }}
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha=$(git rev-parse HEAD)
+          if [ "$checked_out_sha" != "$EXPECTED_CODE_SHA" ]; then
+            echo "::error::Checked out $checked_out_sha, expected $EXPECTED_CODE_SHA"
+            exit 1
+          fi
+
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install validation dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore exact validated private snapshot
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          EXPECTED_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          restore_json=$(
+            python scripts/data_snapshot.py pull \
+              --repository "$DATA_REPOSITORY" \
+              --release-tag "$EXPECTED_RELEASE_TAG" \
+              --root "$GITHUB_WORKSPACE" \
+              --replace
+          )
+          restored_tag=$(jq -er '.release_tag' <<<"$restore_json")
+          restored_id=$(jq -er '.dataset_id' <<<"$restore_json")
+          if [ "$restored_tag" != "$EXPECTED_RELEASE_TAG" ] ||
+             [ "$restored_id" != "$EXPECTED_DATASET_ID" ]; then
+            echo "::error::Restored snapshot does not match the resolved Pages target"
+            exit 1
+          fi
+
+      - name: Validate restored snapshot against current code
+        # A code-only change or manual rollback can pair today's validator and
+        # frontend with an older retained dataset. Re-run the full corpus gate
+        # before building so an incompatible combination cannot go live.
+        run: python validate_data.py
+
+      - name: Build bounded public Pages artifact
+        env:
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+        run: |
+          set -euo pipefail
+          artifact_dir=$(mktemp -d "$RUNNER_TEMP/pages-site.XXXXXX")
+          python scripts/build_pages_artifact.py \
+            --output "$artifact_dir" \
+            --source-sha "$EXPECTED_CODE_SHA" \
+            --dataset-id "$EXPECTED_DATASET_ID" \
+            --max-archive-bytes 1000000000
+          if [ "$(jq -er '.source_sha' "$artifact_dir/deployment-manifest.json")" != "$EXPECTED_CODE_SHA" ] ||
+             [ "$(jq -er '.dataset_id' "$artifact_dir/deployment-manifest.json")" != "$EXPECTED_DATASET_ID" ]; then
+            echo "::error::Pages manifest does not identify the exact code and dataset inputs"
+            exit 1
+          fi
+          echo "ARTIFACT_DIR=$artifact_dir" >> "$GITHUB_ENV"
+
+      - name: Audit the public artifact allowlist
+        run: |
+          set -euo pipefail
+          if find "$ARTIFACT_DIR" -type l -print -quit | grep -q .; then
+            echo "::error::Pages artifact contains a symlink"
+            exit 1
+          fi
+          while IFS= read -r -d '' path; do
+            relative=${path#"$ARTIFACT_DIR"/}
+            case "$relative" in
+              .nojekyll|CNAME|index.html|site-data-loader.js|deployment-manifest.json|data/funds-index.json|data/index.json|data/security_labels.json|data/funds/*.json.gz|data/stocks/*.json.gz)
+                ;;
+              *)
+                echo "::error::Unexpected public Pages file: $relative"
+                exit 1
+                ;;
+            esac
+          done < <(find "$ARTIFACT_DIR" -type f -print0)
+
+      - name: Ensure Actions is the Pages publishing source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          build_type=$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$GITHUB_REPOSITORY/pages" \
+              --jq '.build_type'
+          )
+          if [ "$build_type" != workflow ]; then
+            gh api \
+              --method PUT \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$GITHUB_REPOSITORY/pages" \
+              -f build_type=workflow >/dev/null
+          fi
+          verified_type=$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$GITHUB_REPOSITORY/pages" \
+              --jq '.build_type'
+          )
+          if [ "$verified_type" != workflow ]; then
+            echo "::error::Set Settings > Pages > Source to GitHub Actions"
+            exit 1
+          fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload bounded Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ env.ARTIFACT_DIR }}
+          include-hidden-files: true
+
+  deploy:
+    needs: [resolve, build]
+    if: >-
+      ${{ needs.resolve.outputs.deploy_needed == 'true' &&
+          needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      deployments: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout live main for stale-deploy guard
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            scripts/pages_deploy_needed.sh
+
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Refuse an artifact superseded by newer public or private inputs
+        env:
+          ALLOW_OLDER_RELEASE: ${{ needs.resolve.outputs.allow_older_release }}
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          EXPECTED_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          GH_TOKEN: ${{ steps.data-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          current_sha=$(git rev-parse refs/remotes/origin/main)
+          if [ "$current_sha" != "$EXPECTED_CODE_SHA" ]; then
+            public_inputs_changed=$(
+              bash scripts/pages_deploy_needed.sh \
+                --between "$EXPECTED_CODE_SHA" "$current_sha"
+            )
+            if [ "$public_inputs_changed" = true ]; then
+              echo "::error::Refusing stale Pages artifact; main now has newer public inputs"
+              exit 1
+            fi
+            echo "::notice::main advanced only in non-Pages state; built public content remains current"
+          fi
+
+          release_json=$(gh api "/repos/$DATA_REPOSITORY/releases/tags/$EXPECTED_RELEASE_TAG")
+          if [ "$(jq -r '.draft or .prerelease' <<<"$release_json")" != false ]; then
+            echo "::error::Expected dataset release is no longer published"
+            exit 1
+          fi
+          manifest_dir=$(mktemp -d "$RUNNER_TEMP/deploy-manifest.XXXXXX")
+          gh release download "$EXPECTED_RELEASE_TAG" \
+            --repo "$DATA_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --dir "$manifest_dir"
+          manifest_path=$(find "$manifest_dir" -maxdepth 1 -type f)
+          if [ "$(find "$manifest_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 1 ] ||
+             [ "$(jq -er '.dataset_id' "$manifest_path")" != "$EXPECTED_DATASET_ID" ]; then
+            echo "::error::Expected private release no longer matches the built dataset"
+            exit 1
+          fi
+
+          if [ "$ALLOW_OLDER_RELEASE" != true ]; then
+            active_release_tag=$(
+              gh api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name'
+            )
+            if [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+              echo "::error::Refusing stale Pages artifact; the active private release changed"
+              exit 1
+            fi
+          fi
+
+      - name: Deploy exact validated artifact
+        id: deployment
+        uses: actions/deploy-pages@v5
+        with:
+          timeout: 600000
+
+      - name: Verify live deployment manifest
+        env:
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          set -euo pipefail
+          manifest_url="${PAGE_URL%/}/deployment-manifest.json"
+          headers_file=$(mktemp "$RUNNER_TEMP/pages-manifest-headers.XXXXXX")
+          body_file=$(mktemp "$RUNNER_TEMP/pages-manifest-body.XXXXXX")
+          trap 'rm -f "$headers_file" "$body_file"' EXIT
+          saw_mismatched_identity=false
+          saw_non_challenge_http=false
+          for attempt in $(seq 1 24); do
+            : > "$headers_file"
+            : > "$body_file"
+            observed_code_sha=""
+            observed_dataset_id=""
+            if curl \
+                --fail \
+                --silent \
+                --show-error \
+                --location \
+                --max-time 5 \
+                --dump-header "$headers_file" \
+                --output "$body_file" \
+                -H "Cache-Control: no-cache" \
+                "${manifest_url}?code=${EXPECTED_CODE_SHA}&dataset=${EXPECTED_DATASET_ID}&attempt=${attempt}" \
+                2>/dev/null; then
+              observed_code_sha=$(jq -r '.source_sha // empty' "$body_file" 2>/dev/null || true)
+              observed_dataset_id=$(jq -r '.dataset_id // empty' "$body_file" 2>/dev/null || true)
+            fi
+            http_status=$(
+              awk '/^HTTP\// { status=$2 } END { print status }' "$headers_file" |
+                tr -d '\r'
+            )
+            if [ "$observed_code_sha" = "$EXPECTED_CODE_SHA" ] &&
+               [ "$observed_dataset_id" = "$EXPECTED_DATASET_ID" ]; then
+              echo "Live Pages serves code $EXPECTED_CODE_SHA with dataset $EXPECTED_DATASET_ID"
+              exit 0
+            fi
+            if [ -n "$observed_code_sha" ] || [ -n "$observed_dataset_id" ]; then
+              saw_mismatched_identity=true
+            fi
+            if [ "$http_status" = 403 ] &&
+               grep -qiE '^server:[[:space:]]*cloudflare[[:space:]]*$' "$headers_file" &&
+               grep -qiE '^cf-mitigated:[[:space:]]*challenge[[:space:]]*$' "$headers_file"; then
+              if [ "$saw_mismatched_identity" = false ] &&
+                 [ "$saw_non_challenge_http" = false ]; then
+                # deploy-pages already polled this exact uploaded artifact to
+                # success; only independent public readback is unavailable.
+                echo "::notice::Exact Pages artifact deployed; Cloudflare requires a browser challenge for public manifest readback"
+                exit 0
+              fi
+            elif [ -n "$http_status" ]; then
+              saw_non_challenge_http=true
+            fi
+            if [ "$attempt" -lt 24 ]; then
+              sleep 5
+            fi
+          done
+          echo "::error::Pages completed but did not serve the expected code and dataset"
+          exit 1
+
+  finalize-private-snapshots:
+    needs: [resolve, deploy]
+    if: >-
+      ${{ always() &&
+          needs.resolve.result == 'success' &&
+          (needs.resolve.outputs.deploy_needed == 'false' ||
+           needs.deploy.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: read
+      pages: read
+    steps:
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: write
+
+      - name: Repair deployment marker and finalize active snapshot set
+        env:
+          ALLOW_OLDER_RELEASE: ${{ needs.resolve.outputs.allow_older_release }}
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          EXPECTED_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          GH_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          PUBLIC_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Revalidate the exact private input before recording or deleting
+          # anything. The resolve/deploy gates establish that this target is
+          # live; the newest successful Pages deployment is therefore the
+          # deployment that currently serves this manifest.
+          release_json=$(gh api "/repos/$DATA_REPOSITORY/releases/tags/$EXPECTED_RELEASE_TAG")
+          if [ "$(jq -r '.draft or .prerelease' <<<"$release_json")" != false ]; then
+            echo "::error::Active dataset target is no longer published"
+            exit 1
+          fi
+          manifest_dir=$(mktemp -d "$RUNNER_TEMP/finalize-manifest.XXXXXX")
+          gh release download "$EXPECTED_RELEASE_TAG" \
+            --repo "$DATA_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --dir "$manifest_dir"
+          if [ "$(find "$manifest_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 1 ]; then
+            echo "::error::Active dataset release must contain exactly one manifest"
+            exit 1
+          fi
+          manifest_path=$(find "$manifest_dir" -maxdepth 1 -type f)
+          if [ "$(jq -er '.dataset_id' "$manifest_path")" != "$EXPECTED_DATASET_ID" ]; then
+            echo "::error::Active dataset manifest changed before finalization"
+            exit 1
+          fi
+
+          deployment_json=$(
+            GH_TOKEN="$PUBLIC_GITHUB_TOKEN" gh api \
+              "/repos/$GITHUB_REPOSITORY/deployments?environment=github-pages&per_page=20"
+          )
+          deployment_id=""
+          mapfile -t deployment_ids < <(jq -r '.[].id' <<<"$deployment_json")
+          for candidate_id in "${deployment_ids[@]}"; do
+            if [[ ! "$candidate_id" =~ ^[0-9]+$ ]]; then
+              echo "::error::Pages deployment API returned an invalid identity"
+              exit 1
+            fi
+            candidate_status=$(
+              GH_TOKEN="$PUBLIC_GITHUB_TOKEN" gh api \
+                "/repos/$GITHUB_REPOSITORY/deployments/$candidate_id/statuses?per_page=1" \
+                --jq '.[0].state // empty'
+            )
+            if [ "$candidate_status" = success ]; then
+              deployment_id="$candidate_id"
+              break
+            fi
+          done
+          if [[ ! "$deployment_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not associate the active target with a successful Pages deployment"
+            exit 1
+          fi
+
+          marker_path="$RUNNER_TEMP/pages-deployment.json"
+          jq -n \
+            --arg code_sha "$EXPECTED_CODE_SHA" \
+            --arg dataset_id "$EXPECTED_DATASET_ID" \
+            --arg release_tag "$EXPECTED_RELEASE_TAG" \
+            --arg deployment_id "$deployment_id" \
+            --arg deployed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{code_sha: $code_sha, dataset_id: $dataset_id, release_tag: $release_tag, deployment_id: ($deployment_id | tonumber), deployed_at: $deployed_at}' \
+            > "$marker_path"
+          gh release upload "$EXPECTED_RELEASE_TAG" "$marker_path" \
+            --repo "$DATA_REPOSITORY" \
+            --clobber
+
+          marker_dir=$(mktemp -d "$RUNNER_TEMP/verified-marker.XXXXXX")
+          gh release download "$EXPECTED_RELEASE_TAG" \
+            --repo "$DATA_REPOSITORY" \
+            --pattern pages-deployment.json \
+            --dir "$marker_dir"
+          remote_marker="$marker_dir/pages-deployment.json"
+          if [ "$(jq -er '.code_sha' "$remote_marker")" != "$EXPECTED_CODE_SHA" ] ||
+             [ "$(jq -er '.dataset_id' "$remote_marker")" != "$EXPECTED_DATASET_ID" ] ||
+             [ "$(jq -er '.release_tag' "$remote_marker")" != "$EXPECTED_RELEASE_TAG" ] ||
+             [ "$(jq -er '.deployment_id' "$remote_marker")" != "$deployment_id" ]; then
+            echo "::error::Private Pages deployment marker did not round-trip exactly"
+            exit 1
+          fi
+
+          active_release_tag=$(gh api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name')
+          if [ "$ALLOW_OLDER_RELEASE" = true ]; then
+            # Persist an explicitly requested rollback only after its exact
+            # target is verified live and associated with a successful Pages
+            # deployment. A future genuinely new publication advances this
+            # pointer again.
+            gh release edit "$EXPECTED_RELEASE_TAG" \
+              --repo "$DATA_REPOSITORY" \
+              --latest
+            active_release_tag=$(gh api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name')
+          elif [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+            # A new dataset may have published while a scheduled recovery run
+            # was finishing. Never let that stale run roll the pointer back.
+            echo "::error::The active release changed before finalization"
+            exit 1
+          fi
+          if [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+            echo "::error::Could not persist the verified Pages target as the active release"
+            exit 1
+          fi
+
+          releases_json=$(
+            gh api --paginate --slurp \
+              "/repos/$DATA_REPOSITORY/releases?per_page=100"
+          )
+          stale_draft_cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          fallback_tag=$(
+            jq -r --arg active "$EXPECTED_RELEASE_TAG" '
+              add
+              | map(
+                  select(
+                    ((.draft or .prerelease) | not)
+                    and (.tag_name | startswith("dataset-"))
+                    and .tag_name != $active
+                  )
+                )
+              | sort_by(.published_at // .created_at)
+              | reverse
+              | .[0].tag_name // empty
+            ' <<<"$releases_json"
+          )
+          mapfile -t delete_tags < <(
+            jq -r \
+              --arg active "$EXPECTED_RELEASE_TAG" \
+              --arg fallback "$fallback_tag" \
+              --arg stale_draft_cutoff "$stale_draft_cutoff" '
+              add
+              | map(select(.tag_name | startswith("dataset-")))
+              | .[]
+              | select(
+                  (
+                    (.draft or .prerelease)
+                    and .created_at < $stale_draft_cutoff
+                  )
+                  or
+                  (
+                    ((.draft or .prerelease) | not)
+                    and .tag_name != $active
+                    and ($fallback == "" or .tag_name != $fallback)
+                  )
+                )
+              | .tag_name
+            ' <<<"$releases_json"
+          )
+          for release_tag in "${delete_tags[@]}"; do
+            if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+              echo "::error::Refusing to delete unexpected release tag: $release_tag"
+              exit 1
+            fi
+            gh release delete "$release_tag" \
+              --repo "$DATA_REPOSITORY" \
+              --cleanup-tag \
+              --yes
+          done
+
+          # Fail closed if cleanup did not leave precisely the active release
+          # plus the newest available fallback (or only active when no fallback
+          # exists yet).
+          retained_json=$(
+            gh api --paginate --slurp \
+              "/repos/$DATA_REPOSITORY/releases?per_page=100"
+          )
+          mapfile -t retained_tags < <(
+            jq -r '
+              add
+              | map(
+                  select(
+                    ((.draft or .prerelease) | not)
+                    and (.tag_name | startswith("dataset-"))
+                  )
+                )
+              | .[].tag_name
+            ' <<<"$retained_json"
+          )
+          expected_count=1
+          if [ -n "$fallback_tag" ]; then
+            expected_count=2
+          fi
+          if [ "${#retained_tags[@]}" -ne "$expected_count" ] ||
+             ! printf '%s\n' "${retained_tags[@]}" | grep -Fxq "$EXPECTED_RELEASE_TAG" ||
+             { [ -n "$fallback_tag" ] && ! printf '%s\n' "${retained_tags[@]}" | grep -Fxq "$fallback_tag"; }; then
+            echo "::error::Snapshot retention did not leave the active release and one fallback"
+            exit 1
+          fi
+
+  cleanup-public-pages-artifacts:
+    needs: [resolve, build, deploy]
+    # Cleanup must also run when artifact upload succeeds but deployment or
+    # live verification fails. Workflow concurrency prevents this job from
+    # deleting an artifact belonging to another in-flight Pages run.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Remove temporary public Pages bulk artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # upload-pages-artifact is necessarily readable while deploy-pages
+          # consumes it. Remove every leftover Pages artifact as soon as the
+          # deploy attempt finishes, regardless of success. A later scheduled
+          # run retries this cleanup if the workflow itself was interrupted.
+          artifacts_json=$(
+            gh api --paginate --slurp \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"
+          )
+          pages_artifact_ids_json=$(
+            jq -ce '
+              [map(.artifacts // []) | add | .[]
+                | select(.name == "github-pages" and .expired == false)
+                | .id]
+              | if all(.[]; type == "number") then .
+                else error("invalid artifact identity") end
+            ' <<<"$artifacts_json"
+          )
+          pages_artifact_count=$(jq -er 'length' <<<"$pages_artifact_ids_json")
+          for ((index = 0; index < pages_artifact_count; index++)); do
+            artifact_id=$(jq -er ".[${index}]" <<<"$pages_artifact_ids_json")
+            if [[ ! "$artifact_id" =~ ^[0-9]+$ ]]; then
+              echo "::error::Refusing to delete unexpected Pages artifact ID: $artifact_id"
+              exit 1
+            fi
+            gh api --method DELETE \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          done
+          remaining_artifacts_json=$(
+            gh api --paginate --slurp \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"
+          )
+          remaining_pages_count=$(
+            jq -er '
+              [map(.artifacts // []) | add | .[]
+                | select(.name == "github-pages" and .expired == false)]
+              | length
+            ' <<<"$remaining_artifacts_json"
+          )
+          if [ "$remaining_pages_count" -ne 0 ]; then
+            echo "::error::Public Pages artifacts remain downloadable after cleanup"
+            exit 1
+          fi

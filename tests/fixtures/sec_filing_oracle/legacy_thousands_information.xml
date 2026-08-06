@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+  <infoTable>
+    <nameOfIssuer>LEGACY ISSUER A</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>100000001</cusip>
+    <value>1000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>10000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>LEGACY ISSUER B</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>100000002</cusip>
+    <value>1500</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>15000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>LEGACY ISSUER C</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>100000003</cusip>
+    <value>2000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>20000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+  </infoTable>
+</informationTable>

@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "provenance": "Minimal frozen SEC-compatible XML shapes distilled from existing parser tests and production edge-case classes. Expected values are declared here and are not generated from parser output.",
+  "filings": {
+    "post_2023_dollars": {
+      "form_type": "13F-HR",
+      "primary": "post_2023_dollars_primary.xml",
+      "information_table": "post_2023_dollars_information.xml",
+      "accession": "0000123456-26-000001",
+      "accepted_at": "2026-02-14T12:00:00Z",
+      "expected_metadata": {
+        "report_date": "2025-12-31",
+        "is_amendment": false,
+        "amendment_number": null,
+        "amendment_kind": "ORIGINAL",
+        "reported_entry_total": 4,
+        "reported_value_total": 1000000,
+        "metadata_errors": []
+      },
+      "expected_rows": [
+        {
+          "ticker": null,
+          "issuer": "APPLE INC",
+          "cusip": "037833100",
+          "class": "COM",
+          "value": 400000,
+          "shares": 4000,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH",
+          "investment_discretion": "SOLE"
+        },
+        {
+          "ticker": null,
+          "issuer": "APPLE INC",
+          "cusip": "037833100",
+          "class": "COM",
+          "value": 200000,
+          "shares": 2000,
+          "holding_type": "CALL",
+          "share_amount_type": "SH",
+          "put_call": "CALL",
+          "investment_discretion": "SOLE"
+        },
+        {
+          "ticker": null,
+          "issuer": "APPLE INC",
+          "cusip": "037833100",
+          "class": "COM",
+          "value": 100000,
+          "shares": 1000,
+          "holding_type": "PUT",
+          "share_amount_type": "SH",
+          "put_call": "PUT",
+          "investment_discretion": "SOLE"
+        },
+        {
+          "ticker": null,
+          "issuer": "CISCO SYSTEMS INC",
+          "cusip": "172967KA8",
+          "class": "NOTE 2.50% 2029",
+          "value": 300000,
+          "shares": 300000,
+          "holding_type": "NOTE",
+          "share_amount_type": "PRN",
+          "investment_discretion": "SOLE"
+        }
+      ],
+      "expected_raw_total": 1000000,
+      "expected_multiplier": 1,
+      "expected_unit_method": "weighted_equity_dollars",
+      "expected_normalized_values": [
+        400000,
+        200000,
+        100000,
+        300000
+      ],
+      "expected_normalized_total": 1000000,
+      "expected_security_ids": [
+        "037833100",
+        "037833100|CALL",
+        "037833100|PUT",
+        "172967KA8|NOTE"
+      ]
+    },
+    "legacy_thousands": {
+      "form_type": "13F-HR",
+      "primary": "legacy_thousands_primary.xml",
+      "information_table": "legacy_thousands_information.xml",
+      "accession": "0000123456-23-000001",
+      "accepted_at": "2023-02-14T12:00:00Z",
+      "expected_metadata": {
+        "report_date": "2022-12-31",
+        "is_amendment": false,
+        "amendment_number": null,
+        "amendment_kind": "ORIGINAL",
+        "reported_entry_total": 3,
+        "reported_value_total": 4500,
+        "metadata_errors": []
+      },
+      "expected_rows": [
+        {
+          "ticker": null,
+          "issuer": "LEGACY ISSUER A",
+          "cusip": "100000001",
+          "class": "COM",
+          "value": 1000,
+          "shares": 10000,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH",
+          "investment_discretion": "SOLE"
+        },
+        {
+          "ticker": null,
+          "issuer": "LEGACY ISSUER B",
+          "cusip": "100000002",
+          "class": "COM",
+          "value": 1500,
+          "shares": 15000,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH",
+          "investment_discretion": "SOLE"
+        },
+        {
+          "ticker": null,
+          "issuer": "LEGACY ISSUER C",
+          "cusip": "100000003",
+          "class": "COM",
+          "value": 2000,
+          "shares": 20000,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH",
+          "investment_discretion": "SOLE"
+        }
+      ],
+      "expected_raw_total": 4500,
+      "peer_prices": {
+        "100000001": 100,
+        "100000002": 100,
+        "100000003": 100
+      },
+      "expected_multiplier": 1000,
+      "expected_unit_method": "same_quarter_peer_thousands",
+      "expected_normalized_values": [
+        1000000,
+        1500000,
+        2000000
+      ],
+      "expected_normalized_total": 4500000
+    },
+    "new_holdings": {
+      "form_type": "13F-HR/A",
+      "primary": "new_holdings_primary.xml",
+      "information_table": "new_holdings_information.xml",
+      "accession": "0000123456-26-000002",
+      "accepted_at": "2026-02-15T12:00:00Z",
+      "expected_metadata": {
+        "report_date": "2025-12-31",
+        "is_amendment": true,
+        "amendment_number": 1,
+        "amendment_kind": "NEW_HOLDINGS",
+        "reported_entry_total": 1,
+        "reported_value_total": 250000,
+        "metadata_errors": []
+      },
+      "expected_rows": [
+        {
+          "ticker": null,
+          "issuer": "MICROSOFT CORP",
+          "cusip": "594918104",
+          "class": "COM",
+          "value": 250000,
+          "shares": 2500,
+          "holding_type": "EQUITY",
+          "share_amount_type": "SH",
+          "investment_discretion": "SOLE"
+        }
+      ],
+      "expected_raw_total": 250000,
+      "expected_multiplier": 1,
+      "expected_unit_method": "weighted_equity_dollars",
+      "expected_normalized_values": [
+        250000
+      ],
+      "expected_normalized_total": 250000,
+      "base_case": "post_2023_dollars",
+      "expected_composed_total": 1250000,
+      "expected_composed_holdings": 5,
+      "expected_applied_accessions": [
+        "0000123456-26-000001",
+        "0000123456-26-000002"
+      ],
+      "expected_composition_actions": [
+        "BASE",
+        "APPEND"
+      ]
+    }
+  },
+  "temporal_anomaly": {
+    "current_information_table": "mixed_unit_current_information.xml",
+    "adjacent_information_table": "mixed_unit_adjacent_information.xml",
+    "expected_current_rows": [
+      ["900000001", 1000000, 10000],
+      ["900000002", 100, 1000],
+      ["900000003", 100, 1000],
+      ["900000004", 100, 1000],
+      ["900000005", 100, 1000],
+      ["900000006", 100, 1000],
+      ["900000007", 100, 1000],
+      ["900000008", 100, 1000],
+      ["900000009", 100, 1000],
+      ["900000010", 100, 1000]
+    ],
+    "expected_adjacent_rows": [
+      ["900000001", 1000000, 10000],
+      ["900000002", 100000, 1000],
+      ["900000003", 100000, 1000],
+      ["900000004", 100000, 1000],
+      ["900000005", 100000, 1000],
+      ["900000006", 100000, 1000],
+      ["900000007", 100000, 1000],
+      ["900000008", 100000, 1000],
+      ["900000009", 100000, 1000],
+      ["900000010", 100000, 1000]
+    ],
+    "expected_current_total": 1000900,
+    "expected_adjacent_total": 1900000,
+    "expected_evidence": {
+      "status": "mixed_scale_clusters",
+      "matched_positions": 10,
+      "matched_raw_value": 1000900,
+      "aligned_positions": 1,
+      "aligned_count_support": 0.1,
+      "aligned_raw_value_support": 0.999101,
+      "understated_positions": 9,
+      "understated_count_support": 0.9,
+      "understated_raw_value_support": 0.000899
+    }
+  }
+}

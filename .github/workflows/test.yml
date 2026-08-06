@@ -1,0 +1,56 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile pipeline entry points
+        run: python -m py_compile data_contract.py pipeline.py quarter_health.py security_identity.py value_units.py validate_data.py scripts/build_pages_artifact.py scripts/data_snapshot.py scripts/refresh_recent_13f_filings.py scripts/repair_value_units.py
+
+      - name: Reject tracked generated data
+        run: |
+          set -euo pipefail
+          tracked=$(git ls-files -- data/)
+          if [ -n "$tracked" ]; then
+            printf '%s\n' "$tracked"
+            echo "::error::Generated data must be restored from private snapshots, not tracked in Git"
+            exit 1
+          fi
+
+      - name: Test compressed site loader
+        run: node --test tests/test_site_data_loader.mjs
+
+      - name: Run data-integrity regression tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Prove tests did not create generated data
+        run: |
+          set -euo pipefail
+          # data/ is intentionally ignored, so git status cannot detect a
+          # leaked test corpus. A code-only checkout must still have no data
+          # path at all after the suite.
+          if [ -e data ]; then
+            find data -maxdepth 2 -type f -print | head -100 || true
+            echo "::error::Tests left generated data in the code-only checkout"
+            exit 1
+          fi

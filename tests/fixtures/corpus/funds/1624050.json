@@ -1,0 +1,40 @@
+{
+  "cik": 1624050,
+  "name": "University of Maryland Foundation, Inc.",
+  "quarters": [
+    {
+      "report_date": "2026-03-31",
+      "filing_date": "2026-05",
+      "total_value": 5101000,
+      "num_holdings": 2,
+      "holdings": [
+        {
+          "ticker": "BRK-A",
+          "issuer": "BERKSHIRE HATHAWAY INC",
+          "cusip": "084670108",
+          "class": "CL A",
+          "value": 2873000,
+          "shares": 4,
+          "holding_type": "EQUITY"
+        },
+        {
+          "ticker": "CRBN",
+          "issuer": "ISHARES",
+          "cusip": "46434V464",
+          "class": "MSCI LW CRB TG",
+          "value": 2228000,
+          "shares": 10000,
+          "holding_type": "EQUITY"
+        }
+      ],
+      "value_unit_policy_version": 1,
+      "value_multiplier": 1000,
+      "value_unit_method": "peer_consensus_migration",
+      "value_unit_confidence": "high",
+      "value_unit_evidence": {
+        "migration": true,
+        "repair_status": "understated_1000x"
+      }
+    }
+  ]
+}
