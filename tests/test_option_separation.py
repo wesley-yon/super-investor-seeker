@@ -1515,7 +1515,7 @@ class PipelineIdentityTests(unittest.TestCase):
             self.assertEqual("KEEP2", rebuilt_fund["quarters"][0]["holdings"][1]["ticker"])
             self.assertEqual({"111111111": "NEW1", "222222222": "KEEP2"}, rebuilt_map)
 
-    def test_state_stays_public_and_cusip_cache_stays_private(self) -> None:
+    def test_state_and_cusip_cache_migrate_to_snapshot_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             data_dir = tmp / "data"

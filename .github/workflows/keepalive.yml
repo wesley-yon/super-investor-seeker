@@ -1,0 +1,50 @@
+name: Keep scheduled workflows active
+
+on:
+  schedule:
+    # Public-repository schedules are disabled after 60 days without activity.
+    # Two tiny off-main commits per month keep unattended schedules enabled.
+    - cron: '37 5 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automation-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository metadata
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+          token: ${{ github.token }}
+
+      - name: Add an empty commit to the dedicated keepalive branch
+        env:
+          KEEPALIVE_BRANCH: automation-keepalive
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin "$KEEPALIVE_BRANCH" >/dev/null; then
+            git fetch --depth=1 origin "$KEEPALIVE_BRANCH"
+            git switch --detach FETCH_HEAD
+          else
+            # An empty orphan branch cannot contain workflow definitions, so
+            # the GITHUB_TOKEN push cannot alter main or start another run.
+            git switch --orphan "$KEEPALIVE_BRANCH"
+            git rm -rf --ignore-unmatch .
+          fi
+
+          git commit --allow-empty -m "chore: keep scheduled workflows active"
+          git push origin "HEAD:refs/heads/$KEEPALIVE_BRANCH"

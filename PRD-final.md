@@ -2,7 +2,7 @@
 
 ## Vision
 
-A free, public web app where anyone can search and browse institutional fund holdings from **all** SEC 13F filings. Users can search by fund name or stock ticker across the full universe of ~5,000+ institutional managers that file 13F-HR forms. The app shows portfolio breakdowns, position changes over time, historical trends, and cross-fund ownership analysis.
+A free, public web app where anyone can search and browse institutional fund holdings from **all** SEC 13F filings. Users can search by fund name or stock ticker across the current universe of roughly 9,400 institutional 13F-HR filers. The app shows portfolio breakdowns, position changes over time, historical trends, and cross-fund ownership analysis.
 
 This is a WhaleWisdom-style product — not limited to a curated list of investors, but covering every 13F filer.
 
@@ -12,41 +12,56 @@ This is a WhaleWisdom-style product — not limited to a curated list of investo
 
 ## Architecture
 
-### Fully Static — No Server, No Database, $0/Month
+### Static Public Site, Private Durable Dataset
 
 ```
-┌─────────────────────────┐       ┌────────────────┐       ┌─────────────────┐
-│  GitHub Actions          │ ───>  │  JSON files    │ <──── │  GitHub Pages   │
-│  (scheduled pipeline)    │ write │  in /data      │ read  │  (static site)  │
-│  Fetches ALL 13F filers  │ +     │  ~5,000 fund   │ via   │  HTML/JS/CSS    │
-│  from SEC EDGAR          │ commit│  files + index │ fetch │  loads on demand │
-└─────────────────────────┘       └────────────────┘       └─────────────────┘
+┌──────────────────────┐   authenticated snapshot   ┌────────────────────────┐
+│ GitHub Actions       │ <────────────────────────> │ private data repository│
+│ pipeline + validators│                            │ full corpus + caches   │
+└──────────┬───────────┘                            └────────────────────────┘
+           │ exact validated, bounded Pages artifact
+           v
+┌──────────────────────┐
+│ GitHub Pages         │  public indexes plus individually compressed
+│ static HTML/JS/CSS   │  fund and stock payloads loaded on demand
+└──────────────────────┘
 ```
 
-**Why static:** No server to crash, no database to manage, no hosting bills, nothing to maintain. If the pipeline fails, old data stays up. All data is visible as files in the repo.
+**Why this split:** The website remains static and inexpensive, with no server
+or database to operate. The complete generated corpus, pipeline state,
+registries, reports, and operational caches are not stored in the public code
+repository. If an update or validation fails, the last validated snapshot and
+live Pages deployment remain unchanged.
 
 ### How It Works
 
-1. **GitHub Actions** runs a Python pipeline on a weekly schedule (and can be triggered manually)
-2. The pipeline downloads SEC EDGAR's quarterly index to discover **all** 13F filers
-3. For each filer, it fetches their holdings XML and parses it into structured JSON
-4. JSON files are committed back to the repo
-5. **GitHub Pages** serves the static HTML/JS site, which loads JSON files on demand via `fetch()`
-6. The site has a search index (~500KB) that enables instant client-side search across all ~5,000 fund names
+1. **GitHub Actions** restores the newest authenticated private snapshot.
+2. Weekday maintenance runs inspect SEC EDGAR throughout the filing day; a
+   separate weekly pass fully refreshes the CUSIP/OpenFIGI registry.
+3. The pipeline discovers all 13F filers, fetches new filings, rebuilds derived
+   data, and runs complete corpus validation plus regression tests.
+4. Changed data is published as a new private, content-addressed snapshot.
+5. Pages restores that exact snapshot, rebuilds a bounded public artifact, and
+   refuses stale code or dataset inputs before deployment.
+6. Finalization retains the active snapshot plus one fallback and immediately
+   removes the temporary public Pages bulk artifact.
+7. The browser loads public indexes and individual compressed fund or stock
+   payloads on demand. Those public payloads can be enumerated or scraped; the
+   private source archive is not exposed as a persistent bulk download.
 
 ### Key Numbers
 
 | Metric | Value |
 |--------|-------|
-| Active 13F filers per quarter | ~5,000-6,000 |
+| Searchable 13F filers | ~9,400 |
 | API calls per filer per quarter | ~2-3 (submissions + index + XML) |
 | Time to fetch 1 quarter for all filers | ~55-80 minutes |
-| Time to backfill 4 quarters | ~3.5-5 hours (fits in a single pipeline run) |
-| Weekly update (new filings only) | ~5-15 minutes |
-| Total data size | ~60-100MB of JSON |
-| GitHub Pages limit | 1GB (we're well under) |
-| GitHub Actions free minutes/month | 2,000 (first month uses ~300-360 for backfill, then ~60/month ongoing) |
-| Monthly cost | $0 |
+| Full backfill or replay | resumable across runs; each hosted ingestion pass has a 210-minute cooperative budget |
+| Normal incremental workflow | roughly 40-70 minutes including full rebuild and validation |
+| Complete private dataset | approximately 4.6GB before compression |
+| Private snapshot archive | approximately 540MB |
+| Public code repository | code and tests only; generated data is forbidden |
+| Rollback retention | active snapshot plus one validated fallback |
 
 ---
 
@@ -64,53 +79,61 @@ This single file contains every 13F-HR filing for that quarter — company name,
 
 ### Data Fetching Strategy
 
-**Initial backfill (first run):**
+**Initial backfill:**
 1. Download the company.idx for the most recent 4 quarters
 2. Parse to extract all unique CIKs that filed 13F-HR
 3. For each CIK × quarter, fetch the filing index and holdings XML
-4. This takes ~3.5-5 hours and fits within GitHub Actions' 6-hour limit in a single run
-5. The pipeline tracks what's already been fetched and resumes if interrupted
+4. Checkpoint durable progress before the hosted workflow's cooperative ingestion cutoff
+5. Resume from the private snapshot on later runs until the backfill is complete
 
-**Ongoing weekly updates:**
+**Ongoing incremental updates:**
 1. Download the company.idx for the current quarter
-2. Check which filings are new (not already in the JSON files)
-3. Fetch only new filings — typically a few hundred per week during filing season, near zero otherwise
-4. Drop any holdings data older than 4 quarters (rolling window)
-5. Takes 5-15 minutes
+2. Replay recently accepted filings so late index publication does not create a blind spot
+3. Fetch only filings absent from durable pipeline state
+4. Preserve verified historical report dates already in the private snapshot
+5. Rebuild registries and browser-facing data, then run full validation before publication
 
 ### Resume Capability
 
 The pipeline must track what has been fetched. Strategy:
 
-- Maintain a `data/pipeline_state.json` file listing all accession numbers already processed
+- Maintain `data/pipeline_state.json` inside the private snapshot, listing all
+  accession numbers already processed
 - On each run, skip any filing already in the state file
-- This means the pipeline can be interrupted and restarted safely
+- Restore that state transactionally at the start of each hosted run
+- This means an interrupted run can resume without losing progress or
+  publishing an inconsistent snapshot
 
-### Rolling 4-Quarter Window
+### Four-Quarter Discovery and Display Window
 
-The site only shows 4 quarters of data. On each weekly run, the pipeline:
+The site shows the newest 4 quarters for charts and comparisons. On each
+incremental run, the pipeline:
 
-1. Determines the 4 most recent reporting quarters (e.g. Q1'25, Q2'25, Q3'25, Q4'25)
-2. Fetches any new filings for those quarters
-3. Removes holdings data from quarters older than the window from each fund JSON file
-4. Removes stale accession numbers from pipeline_state.json
-5. This keeps the data size stable over time and prevents unbounded growth
+1. Searches the configured recent SEC filing quarters (4 by default)
+2. Fetches new filings and amendments found there or in recent-feed replay
+3. Replaces matching report dates but never prunes unrelated verified fund history
+4. Regenerates stock-level aggregations and browser payloads
+5. Limits fund-page charts and comparisons to the newest 4 stored quarters
 
 ### Output Structure
 
 ```
-data/
+data/                     # Private snapshot input; ignored by Git
   index.json              # Master search index: all fund names + CIKs + all tickers
-  pipeline_state.json     # Tracks which filings have been processed
+  pipeline_state.json     # Durable processed-filing and retry state
   funds/
-    1067983.json          # Berkshire Hathaway — 4 quarters of holdings
+    1067983.json          # Berkshire Hathaway — retained verified history
     1336528.json          # Pershing Square
-    ...                   # ~5,000 fund files
+    ...                   # ~9,400 fund files
   stocks/
-    AAPL.json             # Every fund holding AAPL, with per-quarter history
-    AMZN.json
-    ...                   # ~5,000-10,000 stock files
+    037833100.json        # AAPL equity, keyed by canonical security identity
+    29273V100__CALL.json  # Option family kept separate from its underlying
+    ...                   # tens of thousands of stock/security files
 ```
+
+Only the three browser indexes and individually gzip-compressed files from
+`data/funds/` and `data/stocks/` enter the Pages artifact. Pipeline state,
+health reports, registries, and operational caches remain private.
 
 ### Fund JSON Format (`data/funds/{cik}.json`)
 
@@ -120,18 +143,19 @@ data/
   "name": "BERKSHIRE HATHAWAY INC",
   "quarters": [
     {
-      "report_date": "2025-12-31",
-      "filing_date": "2026-02-17",
-      "total_value": 274160087,
-      "num_holdings": 42,
+      "report_date": "2026-03-31",
+      "filing_date": "2026-05-15",
+      "total_value": 263095703570,
+      "num_holdings": 29,
       "holdings": [
         {
           "ticker": "AAPL",
-          "issuer": "APPLE INC",
+          "issuer": "Apple Inc.",
           "cusip": "037833100",
           "class": "COM",
-          "value": 61960000,
-          "shares": 227920000
+          "value": 57843260493,
+          "shares": 227917808,
+          "holding_type": "EQUITY"
         }
       ]
     }
@@ -139,21 +163,26 @@ data/
 }
 ```
 
-The website computes derived fields (% of portfolio, QoQ changes, sparkline data) client-side from this raw data. This keeps the JSON files simple and the pipeline fast.
+All `value` and `total_value` fields are normalized dollars, never SEC
+thousands. The website computes derived fields (% of portfolio, QoQ changes,
+sparkline data) client-side from this raw data.
 
-### Stock JSON Format (`data/stocks/{TICKER}.json`)
+### Stock JSON Format (`data/stocks/{stock_id}.json`)
 
 ```json
 {
+  "stock_id": "037833100",
+  "cusip": "037833100",
   "ticker": "AAPL",
-  "issuer": "APPLE INC",
+  "issuer": "Apple Inc.",
+  "instrument_type": "EQUITY",
   "holders": [
     {
       "cik": 1067983,
       "name": "BERKSHIRE HATHAWAY INC",
       "history": [
-        { "date": "2025-12-31", "shares": 227920000, "value": 61960000 },
-        { "date": "2025-09-30", "shares": 238210000, "value": 65432000 }
+        { "date": "2026-03-31", "shares": 227917808, "value": 57843260493, "pct_of_fund": 21.986 },
+        { "date": "2025-12-31", "shares": 227917808, "value": 61961735283, "pct_of_fund": 22.601 }
       ]
     }
   ]
@@ -170,22 +199,40 @@ Stock files are built by cross-referencing all fund holdings after the fund file
     { "cik": 1067983, "name": "BERKSHIRE HATHAWAY INC" },
     { "cik": 1336528, "name": "PERSHING SQUARE CAPITAL MANAGEMENT LP" }
   ],
-  "tickers": ["AAPL", "AMZN", "AXP"],
-  "last_updated": "2026-04-07T06:00:00Z",
-  "total_filers": 5234,
-  "total_tickers": 8912
+  "tickers": [
+    {
+      "stock_id": "037833100",
+      "cusip": "037833100",
+      "ticker": "AAPL",
+      "issuer": "Apple Inc.",
+      "instrument_type": "EQUITY",
+      "last_seen": "2026-06-30",
+      "current_holder_count": 1000,
+      "holder_count": 1400
+    }
+  ],
+  "last_updated": "2026-08-05T21:51:45Z",
+  "total_filers": 9410,
+  "total_tickers": 35255
 }
 ```
 
-This file is ~500KB and loaded once when the site opens. JavaScript searches it instantly on the client side — no server needed.
+This browser index is loaded once when the site opens. JavaScript searches it
+locally; individual fund and security payloads remain on-demand.
 
 ### CUSIP-to-Ticker Mapping
 
 13F filings report holdings by CUSIP, not ticker. The pipeline needs to map CUSIPs to tickers. Approach:
 
-1. Build a CUSIP → ticker lookup from the 13F data itself — many filers list recognizable issuer names (e.g. "APPLE INC") alongside CUSIPs, and the same CUSIP appears across thousands of filings. Cross-referencing issuer names against `https://www.sec.gov/files/company_tickers.json` (which maps company names to tickers) enables matching.
-2. Store the mapping in `data/cusip_map.json` and grow it over time as more filings are processed
-3. Holdings with unmapped CUSIPs keep the CUSIP as an identifier — they're still searchable and displayable
+1. Combine retained filing evidence, reviewed overrides, SEC company and fund
+   metadata, and prior validated registry state.
+2. Resolve missing or suspicious current CUSIPs through OpenFIGI. Weekday
+   updates tolerate transient vendor outages; the weekly authenticated full
+   refresh fails closed if any batch is incomplete or malformed.
+3. Store the operational map in `.cache/cusip_map.json` and the display registry
+   in both private snapshot copies used for recovery and publication.
+4. Holdings without a safe ticker retain their CUSIP-based `stock_id`, so they
+   remain distinct, searchable, and displayable without inventing a symbol.
 
 ### SEC EDGAR Rate Limiting
 
@@ -193,7 +240,10 @@ This file is ~500KB and loaded once when the site opens. JavaScript searches it 
 - **Retry with exponential backoff** (2s, 4s, 8s, 16s, max 60s) on 403, 429, 503
 - **User-Agent header required:** must contain a real contact email, format `"YourName your@email.com"`. SEC blocks requests without valid contact info. In production we read this from the `SEC_USER_AGENT` env var, which is populated from a GitHub Actions repo secret — never hard-coded into the workflow file.
 - Accept-Encoding: gzip, deflate
-- **Concurrency:** a thread-safe rate limiter lets a small pool of workers (4) issue overlapping requests while still respecting the 8 req/sec cap. This absorbs network round-trip latency — without workers the latency dominates and we can't hit the rate cap in practice.
+- **Concurrency:** a thread-safe rate limiter lets a small pool of workers (8
+  by default) issue overlapping requests while still respecting the 8 req/sec
+  cap. This absorbs network round-trip latency without increasing the aggregate
+  SEC request rate.
 
 ### Key SEC EDGAR Endpoints
 
@@ -211,7 +261,7 @@ This file is ~500KB and loaded once when the site opens. JavaScript searches it 
 
 ### Tech Stack
 
-- Single `index.html` file with inline CSS and JavaScript — no build step, no npm, no framework
+- Single `index.html` file with inline CSS and JavaScript — no frontend compilation, npm, or framework
 - **Chart.js** from CDN for stacked bar charts
 - **SVG sparklines** rendered inline (see prototype)
 - Data loaded via `fetch()` from `data/*.json` files
@@ -220,7 +270,7 @@ This file is ~500KB and loaded once when the site opens. JavaScript searches it 
 ### Features
 
 **Fund Search & Browse:**
-- Search bar with autocomplete — searches across all ~5,000 fund names
+- Search bar with autocomplete — searches across all roughly 9,400 filer names
 - Type-ahead results appear as you type
 - Click any fund to see their portfolio
 
@@ -250,7 +300,7 @@ This file is ~500KB and loaded once when the site opens. JavaScript searches it 
 ### Design
 
 The design is already implemented in `index.html`. The rules below are the locked-in decisions (originally made against a `super-investor-seeker.html` prototype, now removed) that any future rework must preserve:
-- Fund names only — no "Manager" or "Person" column. The production data has no source for person names across ~5,000 filers.
+- Fund names only — no "Manager" or "Person" column. The production data has no source for person names across roughly 9,400 filers.
 - 4-quarter sparklines and 4-quarter charts (not 8, as the prototype used).
 
 Design rules to preserve:
@@ -263,113 +313,119 @@ Design rules to preserve:
 ### Data Loading Strategy
 
 ```javascript
-// On page load — load the search index (one file, ~500KB)
+// site-data-loader.js transparently maps detail fetches to .json.gz.
+// On page load, load the browser-facing search index.
 const index = await fetch('data/index.json').then(r => r.json());
-// Now search works instantly across all ~5,000 fund names
 
-// When user clicks a fund — load that fund's data (one file, ~5-50KB)
+// Detail payloads are individually gzip-compressed in the Pages artifact.
 const fund = await fetch(`data/funds/${cik}.json`).then(r => r.json());
 
-// When user clicks a stock — load that stock's data (one file, ~2-20KB)
-const stock = await fetch(`data/stocks/${ticker}.json`).then(r => r.json());
+const stock = await fetch(`data/stocks/${securityPath}.json`).then(r => r.json());
 ```
 
-This means the initial page load is fast (~500KB), and individual fund/stock data loads on demand. No need to download everything upfront.
+The loader first requests the published `.json.gz` payload and decompresses it
+in the browser, with a compatibility fallback for local development. Search and
+detail data therefore load on demand; ordinary visitors do not download the
+complete corpus up front.
 
 ---
 
-## GitHub Actions Workflow
+## GitHub Actions Workflows
 
-### `.github/workflows/update-data.yml`
+### `update-data.yml`
 
-```yaml
-name: Update 13F Data
+- Runs repeatedly during the Monday-Friday 7am-6pm America/New_York filing
+  window and supports manual dispatch.
+- Uses a shared `data-maintenance` concurrency group so Update and the weekly
+  CUSIP refresh cannot mutate snapshot state concurrently.
+- Checks out live `main`, authenticates to the private data repository with a
+  short-lived GitHub App token, and transactionally restores the newest
+  validated snapshot.
+- Runs the quarterly pipeline, recent-filing replay, registry rebuild, complete
+  corpus validator, and regression tests.
+- Mints a fresh write-scoped token only immediately before publication.
+- If the content digest is unchanged, reuses the active release. Otherwise it
+  publishes a draft release, round-trips its manifest and archive, then marks it
+  public and passes the exact release identity to Pages.
+- Never commits generated data to the public repository.
 
-on:
-  schedule:
-    - cron: '0 6 * * 6'      # Every Saturday at 6am UTC (2am ET)
-  workflow_dispatch:            # Manual trigger button on GitHub
+### `refresh-cusip-registry.yml`
 
-permissions:
-  contents: write               # so the job can push data/ commits back
+- Performs the weekly full OpenFIGI/CUSIP refresh under the same maintenance
+  lock and private-snapshot contract.
+- Requires a configured API key and fails publication if the authenticated full
+  refresh cannot complete reliably.
+- Validates and deploys changed derived data through the same exact-target Pages
+  workflow.
 
-jobs:
-  update:
-    runs-on: ubuntu-latest
-    timeout-minutes: 340        # outer safety; pipeline step has its own 300
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0        # full history for clean diff / commit
+### `deploy-pages.yml`
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
+- Accepts an exact code SHA, private release tag, and dataset digest from a
+  publisher; manual dispatch can also select a retained rollback release.
+- A scheduled recovery pass repairs interrupted finalization and removes any
+  orphaned Pages artifact.
+- Restores and validates the exact private snapshot, builds only the explicit
+  public allowlist, rejects stale public or private inputs, and deploys through
+  GitHub Actions Pages.
+- Records the successful deployment identity in the private release, retains
+  the active release plus one fallback, and deletes every temporary public
+  `github-pages` artifact.
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+### `test.yml` and schedule keepalive
 
-      - name: Verify SEC_USER_AGENT secret is configured
-        env:
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-        run: |
-          if [ -z "$SEC_USER_AGENT" ]; then
-            echo "::error::SEC_USER_AGENT secret is not set."
-            exit 1
-          fi
+- CI compiles entry points, rejects generated private paths in the current tree
+  and Git history, runs the loader test, and executes the complete Python suite.
+- Publishing workflows repeat the regression gates against their actual code
+  and restored data rather than depending on a parallel CI result.
+- A tiny, off-main heartbeat branch provides repository activity so GitHub does
+  not disable schedules after 60 quiet days. It does not alter `main`, trigger
+  deployment, or add meaningful clone weight.
 
-      - name: Run pipeline
-        timeout-minutes: 300    # 5h — leaves 40min for the commit step
-        env:
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-        run: python pipeline.py --all
+Required repository configuration:
 
-      - name: Commit and push data
-        if: always()            # run even on pipeline timeout / failure
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/
-          git diff --staged --quiet || git commit -m "Update 13F data $(date -u +%Y-%m-%d)"
-          git push
-```
-
-Key details:
-- `workflow_dispatch` lets you click "Run workflow" on GitHub to trigger manually
-- The pipeline has resume capability, so if it times out at 5.5 hours, the next run picks up where it left off
-- The `git diff --staged --quiet ||` only commits if data changed
-- Committing keeps the repo active (prevents GitHub from auto-disabling the schedule after 60 days of inactivity)
-- After the initial backfill, weekly runs take 5-15 minutes
+- `SEC_USER_AGENT`, `OPENFIGI_API_KEY`, and `DATA_ARCHIVE_APP_PRIVATE_KEY`
+  repository secrets.
+- `DATA_ARCHIVE_APP_CLIENT_ID` repository variable.
+- GitHub App access restricted to the private data repository, with read access
+  for restore and a separately minted write token for publication.
+- GitHub Pages publishing source set to **GitHub Actions**.
 
 ---
 
 ## GitHub Pages Configuration
 
-- Serve from the `main` branch, root directory (`/`)
-- Add a `.nojekyll` file to the repo root (prevents Jekyll processing)
-- The site URL will be `https://USERNAME.github.io/super-investor-seeker`
-- Custom domain can be added later via repo Settings → Pages → Custom Domains
+- Publishing source: GitHub Actions, not a branch directory.
+- Static entry points: `.nojekyll`, `CNAME`, `index.html`, and
+  `site-data-loader.js`.
+- Public data allowlist: the three browser indexes plus individual compressed
+  fund and stock payloads.
+- Custom domain: `https://13f.wesleyyon.com/`, fronted by Cloudflare.
+- Direct scripted reads may receive a Cloudflare challenge. Individual payloads
+  are nevertheless public and should be treated as scrapeable.
 
 ---
 
-## Implementation Order
+## Change and Verification Order
 
-### Phase 1: Data Pipeline
+### 1. Data pipeline changes
 
-Build `pipeline.py` that:
+Preserve these `pipeline.py` requirements:
 1. Downloads SEC quarterly index files to discover all 13F filers
 2. Fetches and parses 13F-HR XML holdings for each filer
 3. Maps CUSIPs to tickers
-4. Outputs fund JSON, stock JSON, and index.json into `data/`
-5. Tracks state in `pipeline_state.json` for resume capability
+4. Outputs fund JSON, stock JSON, and browser indexes into private `data/`
+5. Tracks processed, retry, amendment, identity, and health state for safe resume
 6. Has proper rate limiting and retry logic
 7. Accepts `--all` (all filers), `--cik XXXXXXX` (single filer), `--quarters N` (limit quarters)
 
-**Test:** Run `python3 pipeline.py --cik 1067983 --quarters 2` and verify `data/funds/1067983.json` has real Berkshire data for 2 quarters.
+**Verification:** Use fixture-backed unit tests first. For an authorized corpus
+check, restore a private snapshot and run the narrow command plus
+`validate_data.py`; never commit the resulting `data/` or `.cache/` paths.
 
-**Then:** Run `python3 pipeline.py --all --quarters 1` to fetch the most recent quarter for all ~5,000 filers. This verifies the full pipeline works end-to-end before deploying.
+Full-corpus publication must occur through the hosted workflow so snapshot
+identity, validation, retention, and deployment gates are exercised together.
 
-### Phase 2: Static Website
+### 2. Static website changes
 
 Build `index.html` that:
 1. Loads `data/index.json` on startup for search
@@ -377,32 +433,41 @@ Build `index.html` that:
 3. Matches the prototype design exactly
 4. Computes QoQ changes and sparklines client-side from the quarterly data
 
-**Test:** Serve locally with `python3 -m http.server 8000` and browse the site.
+**Verification:** Build a local Pages artifact from an authenticated snapshot,
+serve that artifact, exercise fund and stock routes, and run the loader and
+frontend regression tests.
 
-### Phase 3: GitHub Actions + Pages
+### 3. Automation or publication changes
 
-1. Create `.github/workflows/update-data.yml`
-2. Create `.nojekyll`
-3. Push to GitHub, enable Pages, enable Actions write permissions
-4. Trigger manual run to backfill data
-5. Verify the live site works
+1. Run the complete local suite and workflow-resilience tests.
+2. Confirm neither `data/` nor `.cache/` is tracked or present in Git history.
+3. Publish the code change to `main` only after the local gates pass.
+4. Require hosted Test, Update/Refresh, exact Pages deployment, finalization,
+   rollback retention, and artifact cleanup to succeed.
+5. Reconcile the private manifest and deployment marker, then verify the live
+   site through a browser-capable path.
 
 ---
 
 ## Prompting Tips for Claude Code
 
-### 1. Build one phase at a time
-"Build Phase 1 — the data pipeline only. See the PRD for architecture."
-Then test it. Then: "Build Phase 2 — the website."
+### 1. Change one layer at a time
+"Change the data pipeline only. Preserve the private snapshot contract and run
+the complete regression suite before publishing." Then, separately: "Change
+the website and verify it against a locally built Pages artifact."
 
 ### 2. No server. No database. No framework.
-"The website is a single index.html file. It loads JSON via fetch(). No Python backend, no React, no npm, no build step."
+"The website is a single index.html file. It loads JSON via fetch(). No Python
+backend, React, npm, or frontend compilation. Deployment still builds and
+validates a bounded Pages artifact from the authenticated private snapshot."
 
 ### 3. The pipeline discovers filers from SEC index files
 "Do NOT hardcode a list of filers. The pipeline downloads SEC's quarterly company.idx file to discover ALL 13F filers automatically."
 
 ### 4. Resume capability is critical
-"The pipeline must track processed filings in pipeline_state.json. If interrupted, the next run picks up where it left off."
+"The pipeline must track processed filings in pipeline_state.json inside the
+private snapshot. If interrupted, the next run restores that authenticated
+snapshot and picks up where it left off."
 
 ### 5. Reference the shipped design
 "Match the design in `index.html` — same dark theme, same tables, same Chart.js charts, same sparklines. (The original `super-investor-seeker.html` prototype was removed once `index.html` became canonical.)"

@@ -3,18 +3,27 @@ name: Test
 on:
   pull_request:
   push:
-    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   unit-tests:
+    # A same-repository PR already runs this exact SHA through the branch-push
+    # event. Keep pull_request coverage for forks without paying for, waiting
+    # on, or receiving duplicate failure mail from a second hosted runner.
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          # The privacy gate below audits every reachable commit, not only the
+          # current code-only tree.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -27,13 +36,24 @@ jobs:
       - name: Compile pipeline entry points
         run: python -m py_compile data_contract.py pipeline.py quarter_health.py security_identity.py value_units.py validate_data.py scripts/build_pages_artifact.py scripts/data_snapshot.py scripts/refresh_recent_13f_filings.py scripts/repair_value_units.py
 
-      - name: Reject tracked generated data
+      - name: Reject current or historical private generated data
         run: |
           set -euo pipefail
-          tracked=$(git ls-files -- data/)
+          tracked=$(git ls-files -- data/ .cache/)
           if [ -n "$tracked" ]; then
             printf '%s\n' "$tracked"
-            echo "::error::Generated data must be restored from private snapshots, not tracked in Git"
+            echo "::error::Private generated data must be restored from snapshots, not tracked in Git"
+            exit 1
+          fi
+
+          historical=$(
+            git log --all --format= --name-only -- data/ .cache/ |
+              sed '/^$/d' |
+              sort -u
+          )
+          if [ -n "$historical" ]; then
+            printf '%s\n' "$historical"
+            echo "::error::Private generated data exists in reachable Git history"
             exit 1
           fi
 
@@ -46,11 +66,13 @@ jobs:
       - name: Prove tests did not create generated data
         run: |
           set -euo pipefail
-          # data/ is intentionally ignored, so git status cannot detect a
-          # leaked test corpus. A code-only checkout must still have no data
-          # path at all after the suite.
-          if [ -e data ]; then
-            find data -maxdepth 2 -type f -print | head -100 || true
-            echo "::error::Tests left generated data in the code-only checkout"
-            exit 1
-          fi
+          # Both paths are intentionally ignored, so git status cannot detect
+          # a leaked test corpus or durable cache. A code-only checkout must
+          # still have neither path after the suite.
+          for private_path in data .cache; do
+            if [ -e "$private_path" ]; then
+              find "$private_path" -maxdepth 2 -type f -print | head -100 || true
+              echo "::error::Tests left private generated data in $private_path"
+              exit 1
+            fi
+          done

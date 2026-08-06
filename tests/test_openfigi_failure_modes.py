@@ -1,7 +1,7 @@
 """Coverage for resolve_cusips_via_openfigi's response-parsing defenses.
 
 These are the paths that the weekly full CUSIP refresh leans on: if any of
-them raise or silently mis-parse, tickers go missing from the public registry.
+them raise or silently mis-parse, tickers go missing from the published data.
 """
 
 import json
@@ -76,6 +76,28 @@ class OpenFIGIParseTests(unittest.TestCase):
         self.assertIs(response, success)
         self.assertEqual(2, post.call_count)
         sleep.assert_called_once_with(1)
+
+    def test_post_retries_transient_429_then_returns_success(self):
+        rate_limited = _fake_response(status=429, payload=[])
+        rate_limited.headers = {"ratelimit-reset": "0"}
+        success = _fake_response(
+            payload=[{"data": [{"ticker": "AAPL", "exchCode": "US"}]}]
+        )
+        with (
+            mock.patch.object(
+                pipeline.requests,
+                "post",
+                side_effect=[rate_limited, success],
+            ) as post,
+            mock.patch.object(pipeline.time, "sleep") as sleep,
+        ):
+            response = pipeline._openfigi_post([
+                {"idType": "ID_CUSIP", "idValue": "037833100"},
+            ])
+
+        self.assertIs(response, success)
+        self.assertEqual(2, post.call_count)
+        sleep.assert_called_once_with(30)
 
     def test_malformed_json_does_not_raise(self):
         self.assertEqual(self._run(_fake_response(raise_on_json=True)), {})
@@ -443,8 +465,20 @@ class OpenFIGIParseTests(unittest.TestCase):
             "594918104": None,
         })
         response = _fake_response(payload=[
-            {"data": [{"ticker": "RIVN", "exchCode": "US"}]},
-            {"data": [{"ticker": "BILL", "exchCode": "US"}]},
+            {
+                "data": [{
+                    "figi": "BBG000QW7VC1",
+                    "ticker": "RIVN",
+                    "exchCode": "US",
+                }],
+            },
+            {
+                "data": [{
+                    "figi": "BBG00L2H7F55",
+                    "ticker": "BILL",
+                    "exchCode": "US",
+                }],
+            },
         ])
 
         with mock.patch.object(
@@ -471,6 +505,175 @@ class OpenFIGIParseTests(unittest.TestCase):
                 {"idType": "ID_CUSIP", "idValue": "594918104"},
             ],
             post.call_args.args[0],
+        )
+
+    def test_full_refresh_rejects_invalid_configured_api_key(self):
+        unauthorized = _fake_response(status=401, payload={"error": "Invalid key"})
+        with (
+            mock.patch.dict(
+                pipeline.os.environ,
+                {"OPENFIGI_API_KEY": "configured-but-invalid"},
+            ),
+            mock.patch.object(
+                pipeline.requests,
+                "post",
+                return_value=unauthorized,
+            ) as post,
+        ):
+            with self.assertRaisesRegex(
+                pipeline.OpenFIGIFullRefreshError,
+                r"HTTP 401",
+            ):
+                pipeline.resolve_cusips_via_openfigi(
+                    list(self.cusips),
+                    force_refresh=True,
+                )
+
+        self.assertEqual(
+            "configured-but-invalid",
+            post.call_args.kwargs["headers"]["X-OPENFIGI-APIKEY"],
+        )
+
+    def test_full_refresh_rejects_forbidden_response(self):
+        with mock.patch.object(
+            pipeline,
+            "_openfigi_post",
+            return_value=_fake_response(status=403, payload={"error": "Forbidden"}),
+        ):
+            with self.assertRaisesRegex(
+                pipeline.OpenFIGIFullRefreshError,
+                r"HTTP 403",
+            ):
+                pipeline.resolve_cusips_via_openfigi(
+                    list(self.cusips),
+                    force_refresh=True,
+                )
+
+    def test_full_refresh_rejects_exhausted_transport_failure(self):
+        with mock.patch.object(pipeline, "_openfigi_post", return_value=None):
+            with self.assertRaisesRegex(
+                pipeline.OpenFIGIFullRefreshError,
+                r"no response",
+            ):
+                pipeline.resolve_cusips_via_openfigi(
+                    list(self.cusips),
+                    force_refresh=True,
+                )
+
+    def test_full_refresh_rejects_exhausted_rate_limit_or_server_error(self):
+        for status in (429, 500, 503):
+            with self.subTest(status=status), mock.patch.object(
+                pipeline,
+                "_openfigi_post",
+                return_value=_fake_response(status=status, payload=[]),
+            ):
+                with self.assertRaisesRegex(
+                    pipeline.OpenFIGIFullRefreshError,
+                    rf"HTTP {status}",
+                ):
+                    pipeline.resolve_cusips_via_openfigi(
+                        list(self.cusips),
+                        force_refresh=True,
+                    )
+
+    def test_full_refresh_rejects_malformed_or_incomplete_batches(self):
+        cases = {
+            "invalid JSON": _fake_response(raise_on_json=True),
+            "not a list": _fake_response(payload={"error": "oops"}),
+            r"result\(s\) for": _fake_response(payload=[]),
+            "non-object": _fake_response(payload=[None]),
+            "error result": _fake_response(
+                payload=[{"error": "unexpected processing error"}]
+            ),
+            "non-exclusive result shape": _fake_response(payload=[{
+                "data": [{"figi": "BBG000BLNNH6"}],
+                "warning": "no identifier found",
+            }]),
+            "empty warning": _fake_response(payload=[{"warning": "  "}]),
+            "malformed mapping data": _fake_response(
+                payload=[{"data": "not-a-list"}]
+            ),
+            "empty mapping data": _fake_response(payload=[{"data": []}]),
+            "without a non-empty FIGI": _fake_response(
+                payload=[{"data": [{"ticker": "AAPL"}]}]
+            ),
+        }
+        for expected, response in cases.items():
+            with self.subTest(expected=expected), mock.patch.object(
+                pipeline,
+                "_openfigi_post",
+                return_value=response,
+            ):
+                with self.assertRaisesRegex(
+                    pipeline.OpenFIGIFullRefreshError,
+                    expected,
+                ):
+                    pipeline.resolve_cusips_via_openfigi(
+                        list(self.cusips),
+                        force_refresh=True,
+                    )
+
+    def test_full_refresh_accepts_schema_valid_match_without_ticker(self):
+        response = _fake_response(payload=[{
+            "data": [{
+                "figi": "BBG000BLNNH6",
+                "ticker": None,
+                "name": "Example instrument",
+            }],
+        }])
+        with mock.patch.object(
+            pipeline,
+            "_openfigi_post",
+            return_value=response,
+        ):
+            result = pipeline.resolve_cusips_via_openfigi(
+                list(self.cusips),
+                force_refresh=True,
+            )
+
+        self.assertEqual({}, result)
+        self.assertEqual("matched", self._details()["037833100"]["status"])
+        self.assertIsNone(self._details()["037833100"]["ticker"])
+
+    def test_full_refresh_accepts_schema_valid_no_match_warning(self):
+        response = _fake_response(payload=[{
+            "warning": "No identifier found.",
+        }])
+        with mock.patch.object(
+            pipeline,
+            "_openfigi_post",
+            return_value=response,
+        ):
+            result = pipeline.resolve_cusips_via_openfigi(
+                list(self.cusips),
+                force_refresh=True,
+            )
+
+        self.assertEqual({}, result)
+        self.assertEqual(
+            {"037833100": {"status": "no_match"}},
+            self._details(),
+        )
+
+    def test_full_refresh_failure_cannot_succeed_from_stale_cache(self):
+        pipeline.save_openfigi_details({
+            "037833100": {
+                "status": "matched",
+                "ticker": "STALE",
+            },
+        })
+        pipeline._OPENFIGI_RUN_CACHE["037833100"] = "RUN-STALE"
+
+        with mock.patch.object(pipeline, "_openfigi_post", return_value=None):
+            with self.assertRaises(pipeline.OpenFIGIFullRefreshError):
+                pipeline.resolve_cusips_via_openfigi(
+                    list(self.cusips),
+                    force_refresh=True,
+                )
+
+        self.assertEqual(
+            "STALE",
+            self._details()["037833100"]["ticker"],
         )
 
     def test_definitive_no_match_is_cached_for_this_run(self):

@@ -49,9 +49,18 @@ artifact left by an interrupted finalization.
 
 Scheduled workflows obtain a short-lived token from the repository-scoped
 GitHub App, restore the newest private snapshot, run the pipeline and complete
-corpus validation, publish a replacement snapshot only when content changes,
-and deploy that exact dataset to Pages. The latest two validated snapshots are
-retained for rollback. Automation stores the App client ID in the repository
-variable `DATA_ARCHIVE_APP_CLIENT_ID` and its private key in the repository
-secret `DATA_ARCHIVE_APP_PRIVATE_KEY`. Long maintenance jobs mint a fresh,
-write-scoped token only when they are ready to publish.
+corpus validation, run the full Python and browser-loader regression suites,
+publish a replacement snapshot only when content changes, and deploy that
+exact dataset to Pages. Critical schedules run away from the top of the hour;
+a twice-monthly empty commit on the dedicated `automation-keepalive` branch
+keeps GitHub from disabling inactive public-repository schedules without
+changing `main` or triggering deployments. The latest two validated snapshots
+are retained for rollback.
+
+Automation stores the App client ID in the repository variable
+`DATA_ARCHIVE_APP_CLIENT_ID` and its private key in the repository secret
+`DATA_ARCHIVE_APP_PRIVATE_KEY`. Long maintenance jobs mint a fresh,
+write-scoped token only when they are ready to publish. The weekly full
+OpenFIGI refresh fails closed if any authenticated batch is incomplete or
+malformed; routine weekday resolution remains retrying and best-effort so a
+transient mapping outage does not block SEC filing updates.
