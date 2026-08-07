@@ -1,12 +1,17 @@
-# Super Investor Seeker — Product Requirements Document
+# Super Investor Seeker Architecture
 
 ## Vision
 
-A free, public web app where anyone can search and browse institutional fund holdings from **all** SEC 13F filings. Users can search by fund name or stock ticker across the current universe of roughly 9,400 institutional 13F-HR filers. The app shows portfolio breakdowns, position changes over time, historical trends, and cross-fund ownership analysis.
+A free, public web app where anyone can search and browse institutional fund
+holdings from **all** SEC 13F filings. Users can search by fund name or stock
+ticker across the discovered filer universe. The app shows portfolio
+breakdowns, position changes over time, historical trends, and cross-fund
+ownership analysis.
 
 This is a WhaleWisdom-style product — not limited to a curated list of investors, but covering every 13F filer.
 
-**UI implementation:** The live site lives in `index.html`. It was originally bootstrapped from a `super-investor-seeker.html` prototype (dark theme, Chart.js charts, SVG sparklines, compact data tables), which has since been removed now that `index.html` is the canonical design. Any future UI rework should match what `index.html` currently ships — see the Design section below for the locked-in rules.
+**UI implementation:** The live site and canonical design live in `index.html`.
+Any future UI rework must preserve the rules in the Design section below.
 
 ---
 
@@ -48,22 +53,6 @@ live Pages deployment remain unchanged.
 7. The browser loads public indexes and individual compressed fund or stock
    payloads on demand. Those public payloads can be enumerated or scraped; the
    private source archive is not exposed as a persistent bulk download.
-
-### Key Numbers
-
-| Metric | Value |
-|--------|-------|
-| Searchable 13F filers | ~9,400 |
-| API calls per filer per quarter | ~2-3 (submissions + index + XML) |
-| Time to fetch 1 quarter for all filers | ~55-80 minutes |
-| Full backfill or replay | resumable across runs; each hosted ingestion pass has a 210-minute cooperative budget |
-| Normal incremental workflow | roughly 40-70 minutes including full rebuild and validation |
-| Complete private dataset | approximately 4.6GB before compression |
-| Private snapshot archive | approximately 540MB |
-| Public code repository | code and tests only; generated data is forbidden |
-| Rollback retention | active snapshot plus one validated fallback |
-
----
 
 ## Data Pipeline (`pipeline.py`)
 
@@ -124,11 +113,11 @@ data/                     # Private snapshot input; ignored by Git
   funds/
     1067983.json          # Berkshire Hathaway — retained verified history
     1336528.json          # Pershing Square
-    ...                   # ~9,400 fund files
+    ...                   # one file per discovered fund
   stocks/
     037833100.json        # AAPL equity, keyed by canonical security identity
     29273V100__CALL.json  # Option family kept separate from its underlying
-    ...                   # tens of thousands of stock/security files
+    ...                   # one file per public security identity
 ```
 
 Only the three browser indexes and individually gzip-compressed files from
@@ -211,14 +200,15 @@ Stock files are built by cross-referencing all fund holdings after the fund file
       "holder_count": 1400
     }
   ],
-  "last_updated": "2026-08-05T21:51:45Z",
-  "total_filers": 9410,
-  "total_tickers": 35255
+  "last_updated": "2026-01-01T12:00:00Z",
+  "total_filers": 2,
+  "total_tickers": 1
 }
 ```
 
-This browser index is loaded once when the site opens. JavaScript searches it
-locally; individual fund and security payloads remain on-demand.
+The values above are illustrative. This browser index is loaded once when the
+site opens. JavaScript searches it locally; individual fund and security
+payloads remain on-demand.
 
 ### CUSIP-to-Ticker Mapping
 
@@ -263,14 +253,14 @@ locally; individual fund and security payloads remain on-demand.
 
 - Single `index.html` file with inline CSS and JavaScript — no frontend compilation, npm, or framework
 - **Chart.js** from CDN for stacked bar charts
-- **SVG sparklines** rendered inline (see prototype)
+- **SVG sparklines** rendered inline
 - Data loaded via `fetch()` from `data/*.json` files
 - Client-side search against the index.json
 
 ### Features
 
 **Fund Search & Browse:**
-- Search bar with autocomplete — searches across all roughly 9,400 filer names
+- Search bar with autocomplete — searches across all indexed filer names
 - Type-ahead results appear as you type
 - Click any fund to see their portfolio
 
@@ -299,9 +289,10 @@ locally; individual fund and security payloads remain on-demand.
 
 ### Design
 
-The design is already implemented in `index.html`. The rules below are the locked-in decisions (originally made against a `super-investor-seeker.html` prototype, now removed) that any future rework must preserve:
-- Fund names only — no "Manager" or "Person" column. The production data has no source for person names across roughly 9,400 filers.
-- 4-quarter sparklines and 4-quarter charts (not 8, as the prototype used).
+The design is implemented in `index.html`. Any future rework must preserve:
+- Fund names only — no "Manager" or "Person" column. The production data has
+  no source for person names across the complete filer universe.
+- 4-quarter sparklines and 4-quarter charts.
 
 Design rules to preserve:
 - Dark theme: `#06080d` background, `#0d1017` surface, `#111620` cards, `#1c2333` borders
@@ -430,7 +421,7 @@ identity, validation, retention, and deployment gates are exercised together.
 Build `index.html` that:
 1. Loads `data/index.json` on startup for search
 2. Renders fund lookup, fund portfolio, stock lookup, stock detail views
-3. Matches the prototype design exactly
+3. Preserves the design rules above
 4. Computes QoQ changes and sparklines client-side from the quarterly data
 
 **Verification:** Build a local Pages artifact from an authenticated snapshot,
@@ -446,28 +437,3 @@ frontend regression tests.
    rollback retention, and artifact cleanup to succeed.
 5. Reconcile the private manifest and deployment marker, then verify the live
    site through a browser-capable path.
-
----
-
-## Prompting Tips for Claude Code
-
-### 1. Change one layer at a time
-"Change the data pipeline only. Preserve the private snapshot contract and run
-the complete regression suite before publishing." Then, separately: "Change
-the website and verify it against a locally built Pages artifact."
-
-### 2. No server. No database. No framework.
-"The website is a single index.html file. It loads JSON via fetch(). No Python
-backend, React, npm, or frontend compilation. Deployment still builds and
-validates a bounded Pages artifact from the authenticated private snapshot."
-
-### 3. The pipeline discovers filers from SEC index files
-"Do NOT hardcode a list of filers. The pipeline downloads SEC's quarterly company.idx file to discover ALL 13F filers automatically."
-
-### 4. Resume capability is critical
-"The pipeline must track processed filings in pipeline_state.json inside the
-private snapshot. If interrupted, the next run restores that authenticated
-snapshot and picks up where it left off."
-
-### 5. Reference the shipped design
-"Match the design in `index.html` — same dark theme, same tables, same Chart.js charts, same sparklines. (The original `super-investor-seeker.html` prototype was removed once `index.html` became canonical.)"

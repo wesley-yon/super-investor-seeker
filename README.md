@@ -5,6 +5,9 @@ Super Investor Seeker builds and validates a public, searchable view of SEC
 corpus and durable pipeline state live as authenticated snapshots in the
 private `wesley-yon/super-investor-seeker-data` repository.
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline, data, website, and
+deployment contracts.
+
 ## Local setup
 
 ```bash

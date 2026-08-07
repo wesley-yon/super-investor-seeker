@@ -1015,12 +1015,6 @@ function holdingDisplayCompany(holding) {
   return issuer && (!cusip || issuer.toUpperCase() !== cusip) ? issuer : "";
 }
 
-// Backward-compatible name for callers and persisted frontend tests. This is a
-// display label, never a public security identity.
-function holdingDisplayTicker(holding) {
-  return holdingDisplayLabel(holding);
-}
-
 function securityLabelNeedsWrap(label) {
   const value = String(label || "").trim();
   return value.length > 12 || /\s/.test(value);
