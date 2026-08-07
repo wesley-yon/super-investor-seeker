@@ -33,8 +33,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Compile pipeline entry points
-        run: python -m py_compile data_contract.py pipeline.py quarter_health.py security_identity.py value_units.py validate_data.py scripts/build_pages_artifact.py scripts/data_snapshot.py scripts/refresh_recent_13f_filings.py scripts/repair_value_units.py
+      - name: Compile Python sources
+        run: python -m compileall -q *.py scripts
 
       - name: Reject current or historical private generated data
         run: |

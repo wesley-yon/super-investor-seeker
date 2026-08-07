@@ -717,12 +717,6 @@ class StockLookupIdTests(unittest.TestCase):
         self.assertEqual("", security_identity.stock_lookup_id(None, "CALL"))
         self.assertEqual("", security_identity.stock_lookup_id("  ", "PUT"))
 
-    def test_compatibility_builder_names_are_aliases(self) -> None:
-        self.assertIs(
-            security_identity.stock_lookup_id,
-            security_identity.make_stock_lookup_id,
-        )
-
     def test_parse_stock_lookup_id_normalizes_valid_and_invalid_suffixes(
         self,
     ) -> None:

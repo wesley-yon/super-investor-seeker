@@ -498,10 +498,6 @@ def stock_lookup_id(
     return f"{base}|{normalized_type}"
 
 
-# Compatibility names used by existing pipeline and call sites.
-make_stock_lookup_id = stock_lookup_id
-
-
 def parse_stock_lookup_id(stock_id: object | None) -> tuple[str, str]:
     """Split a stock ID into its normalized identifier and instrument type."""
 
@@ -553,7 +549,6 @@ __all__ = [
     "compose_security_label",
     "holding_instrument_type",
     "is_canonical_security_identifier",
-    "make_stock_lookup_id",
     "normalize_instrument_type",
     "normalize_note_security_label",
     "normalize_security_kind",

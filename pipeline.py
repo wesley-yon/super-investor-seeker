@@ -56,7 +56,6 @@ from quarter_health import (
 from security_identity import (
     compose_security_label,
     holding_instrument_type,
-    make_stock_lookup_id,
     normalize_instrument_type,
     normalize_note_security_label,
     normalize_security_kind,
@@ -65,6 +64,7 @@ from security_identity import (
     sec_issuer_proof_key,
     sec_ticker_titles,
     stock_filename,
+    stock_lookup_id,
 )
 from value_units import (
     AmbiguousValueUnits,
@@ -3095,12 +3095,6 @@ def fetch_company_ticker_maps() -> tuple[dict[str, str], dict[str, set[str]]]:
     return name_to_ticker, ticker_to_norms
 
 
-def fetch_company_tickers() -> dict[str, str]:
-    """Backward-compatible wrapper for callers that only need name_to_ticker."""
-    name_to_ticker, _ticker_to_norms = fetch_company_ticker_maps()
-    return name_to_ticker
-
-
 MIN_PREFIX_LEN = 8
 
 
@@ -3142,32 +3136,6 @@ def resolve_ticker_from_name(
     if multi:
         return multi
     return name_to_ticker.get(norm) or prefix_lookup(norm, name_to_ticker)
-
-
-def ticker_matches_issuer_name(
-    ticker: str | None,
-    issuer: str | None,
-    ticker_to_norms: dict[str, set[str]],
-) -> bool:
-    """Whether a cached ticker is compatible with the issuer name on a holding."""
-    if not ticker:
-        return False
-    known_norms = ticker_to_norms.get(ticker.upper())
-    if not known_norms:
-        # If the SEC master ticker file doesn't know about this symbol at all
-        # (common for some ADRs, notes, funds, and other non-plain-equity
-        # cases), treat the cached mapping as "not disproven" rather than
-        # force it back through OpenFIGI on every regeneration.
-        return True
-    norm = normalize_name(issuer or "")
-    if not norm:
-        return False
-    for known in known_norms:
-        if known == norm:
-            return True
-        if len(norm) >= MIN_PREFIX_LEN and known.startswith(norm):
-            return True
-    return False
 
 
 def _atomic_write_json(
@@ -4595,23 +4563,6 @@ def merge_composed_quarters_into_fund(
     return fund
 
 
-def add_quarter_to_fund(
-    cik: int,
-    name: str,
-    quarter: dict,
-    max_quarters: int,
-) -> None:
-    """Compatibility wrapper that only accepts a fully composed quarter."""
-    fund = merge_composed_quarters_into_fund(
-        cik,
-        name,
-        [quarter],
-        max_quarters,
-        preserve_history=True,
-    )
-    save_fund(cik, fund)
-
-
 # ----------------------------------------------------------------------------
 # Stock files & search index (regenerated at end of every run)
 # ----------------------------------------------------------------------------
@@ -5872,7 +5823,7 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
                     )
                     display_issuer = issuer_raw or cusip
 
-                stock_id = make_stock_lookup_id(stock_key, holding_type)
+                stock_id = stock_lookup_id(stock_key, holding_type)
                 s = stocks.setdefault(stock_id, {
                     "stock_id": stock_id,
                     "cusip": cusip,
@@ -10001,25 +9952,6 @@ def retry_unresolved_cusips() -> int:
 # ----------------------------------------------------------------------------
 # Main pipeline orchestration
 # ----------------------------------------------------------------------------
-
-def process_filing(
-    filing: dict,
-    cusip_map: dict[str, str],
-    max_quarters: int,
-    state: dict,
-    state_lock: threading.Lock | None = None,
-) -> bool:
-    """Compatibility wrapper: one accession triggers authoritative replay."""
-    return replay_quarters_for_cik(
-        filing["cik"],
-        [filing],
-        cusip_map,
-        max_quarters,
-        state,
-        state_lock=state_lock,
-        preserve_history=True,
-    ) > 0
-
 
 def _merge_replay_triggers(
     discovered: list[dict],

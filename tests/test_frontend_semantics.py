@@ -128,12 +128,12 @@ class FrontendSemanticsTests(unittest.TestCase):
                 "NOTE"
               ),
               equity: securityDisplayTicker("AAPL USD", "EQUITY"),
-              holding: holdingDisplayTicker({
+              holding: holdingDisplayLabel({
                 ticker: "BILL 0 04/01/30",
                 cusip: "090043AF7",
                 holding_type: "NOTE",
               }),
-              fallback: holdingDisplayTicker({
+              fallback: holdingDisplayLabel({
                 ticker: null,
                 cusip: "26210CAC8",
                 holding_type: "NOTE",
