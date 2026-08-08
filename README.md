@@ -3,7 +3,7 @@
 Super Investor Seeker builds and validates a public, searchable view of SEC
 13F holdings. Source code lives in this repository; the complete generated
 corpus and durable pipeline state live as authenticated snapshots in the
-private `wesley-yon/super-investor-seeker-data` repository.
+private `YOUR_GITHUB_OWNER/super-investor-seeker-data` repository.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline, data, website, and
 deployment contracts.
@@ -29,7 +29,7 @@ then restore the latest validated snapshot:
 gh auth login --git-protocol https
 DATA_ARCHIVE_TOKEN="$(gh auth token)" \
   .venv/bin/python scripts/data_snapshot.py pull \
-    --repository wesley-yon/super-investor-seeker-data \
+    --repository YOUR_GITHUB_OWNER/super-investor-seeker-data \
     --root . \
     --replace
 ```
