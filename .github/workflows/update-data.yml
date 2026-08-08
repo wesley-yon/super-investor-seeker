@@ -31,7 +31,7 @@ permissions:
   pages: read                  # verify exact generated Pages deployments
 
 env:
-  DATA_REPOSITORY: wesley-yon/super-investor-seeker-data
+  DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
 
 jobs:
   filing-window:
@@ -84,7 +84,7 @@ jobs:
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
-          owner: wesley-yon
+          owner: ${{ github.repository_owner }}
           repositories: super-investor-seeker-data
           permission-contents: read
 
@@ -299,7 +299,7 @@ jobs:
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
-          owner: wesley-yon
+          owner: ${{ github.repository_owner }}
           repositories: super-investor-seeker-data
           permission-contents: write
 
