@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -1372,6 +1376,747 @@ class PipelinePositionIdentityTests(unittest.TestCase):
                                 rebuilt_quarter
                             ),
                         )
+
+    def test_in_place_fund_rewrites_preserve_original_on_write_failure(
+        self,
+    ) -> None:
+        fund = {
+            "cik": 1,
+            "name": "Durability Probe",
+            "quarters": [{
+                "report_date": "2025-12-31",
+                "total_value": 100,
+                "holdings": [{
+                    "cusip": "037833100",
+                    "ticker": "OLD",
+                    "issuer": "Old Issuer",
+                    "holding_type": "EQUITY",
+                    "shares": 1,
+                    "value": 100,
+                }],
+            }],
+        }
+        registry = {
+            "037833100": {
+                "ticker": "AAPL",
+                "name": "Apple Inc",
+                "type": "EQUITY",
+            }
+        }
+        transforms = (
+            (
+                "ticker refresh",
+                lambda: pipeline.rebuild_tickers_in_place(
+                    company_ticker_data=[]
+                ),
+            ),
+            ("registry canonicalization", pipeline.canonicalize_fund_files),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            funds_dir = Path(tmpdir) / "funds"
+            funds_dir.mkdir()
+            fund_path = funds_dir / "1.json"
+            original = json.dumps(fund).encode()
+            with mock.patch.multiple(
+                pipeline,
+                FUNDS_DIR=funds_dir,
+                load_cusip_map=mock.Mock(
+                    return_value={"037833100": "AAPL"}
+                ),
+                load_cusip_registry=mock.Mock(return_value=registry),
+                load_openfigi_details=mock.Mock(return_value={}),
+                resolve_cusips_via_openfigi=mock.Mock(return_value={}),
+                save_cusip_map=mock.Mock(),
+            ):
+                for name, transform in transforms:
+                    with self.subTest(transform=name):
+                        fund_path.write_bytes(original)
+                        with (
+                            mock.patch.object(
+                                pipeline.json,
+                                "dump",
+                                side_effect=OSError("injected write failure"),
+                            ),
+                            self.assertRaisesRegex(
+                                OSError,
+                                "injected write failure",
+                            ),
+                        ):
+                            transform()
+                        self.assertEqual(original, fund_path.read_bytes())
+                        self.assertEqual([], list(funds_dir.glob("*.tmp.*")))
+
+    def test_authoritative_fund_mutations_are_serialized(self) -> None:
+        fund = {
+            "cik": 1,
+            "name": "Concurrency Probe",
+            "quarters": [{
+                "report_date": "2025-12-31",
+                "total_value": 100,
+                "holdings": [{
+                    "cusip": "037833100",
+                    "ticker": "OLD",
+                    "issuer": "Old Issuer",
+                    "holding_type": "EQUITY",
+                    "shares": 1,
+                    "value": 100,
+                }],
+            }],
+        }
+        registry = {
+            "037833100": {
+                "ticker": "AAPL",
+                "name": "Apple Inc",
+                "type": "EQUITY",
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = root / "data"
+            funds_dir = data_dir / "funds"
+            funds_dir.mkdir(parents=True)
+            fund_path = funds_dir / "1.json"
+            fund_path.write_text(json.dumps(fund))
+            canonical_ready = threading.Event()
+            ticker_ready = threading.Event()
+            release_canonical = threading.Event()
+            release_ticker = threading.Event()
+            failures: list[BaseException] = []
+            real_atomic_write = pipeline._atomic_write_json
+
+            def controlled_atomic_write(path, payload, **kwargs) -> None:
+                if threading.current_thread().name == "canonicalize-probe":
+                    canonical_ready.set()
+                    if not release_canonical.wait(5):
+                        raise TimeoutError("canonicalization was not released")
+                elif threading.current_thread().name == "ticker-probe":
+                    ticker_ready.set()
+                    if not release_ticker.wait(5):
+                        raise TimeoutError("ticker refresh was not released")
+                real_atomic_write(path, payload, **kwargs)
+
+            def run(target) -> None:
+                try:
+                    target()
+                except BaseException as exc:  # noqa: BLE001 - assert in parent thread
+                    failures.append(exc)
+
+            with (
+                mock.patch.multiple(
+                    pipeline,
+                    DATA_DIR=data_dir,
+                    FUNDS_DIR=funds_dir,
+                    load_cusip_map=mock.Mock(
+                        return_value={"037833100": "AAPL"}
+                    ),
+                    load_cusip_registry=mock.Mock(return_value=registry),
+                    load_openfigi_details=mock.Mock(return_value={}),
+                    resolve_cusips_via_openfigi=mock.Mock(return_value={}),
+                    save_cusip_map=mock.Mock(),
+                ),
+                mock.patch.object(
+                    pipeline,
+                    "_atomic_write_json",
+                    side_effect=controlled_atomic_write,
+                ),
+            ):
+                canonical_thread = threading.Thread(
+                    target=run,
+                    args=(pipeline.canonicalize_fund_files,),
+                    name="canonicalize-probe",
+                )
+                ticker_thread = threading.Thread(
+                    target=run,
+                    args=(lambda: pipeline.rebuild_tickers_in_place(
+                        company_ticker_data=[]
+                    ),),
+                    name="ticker-probe",
+                )
+                canonical_thread.start()
+                self.assertTrue(canonical_ready.wait(2))
+                ticker_thread.start()
+                entered_during_canonicalization = ticker_ready.wait(0.2)
+                release_canonical.set()
+                canonical_thread.join(2)
+                release_ticker.set()
+                ticker_thread.join(2)
+
+            self.assertFalse(canonical_thread.is_alive())
+            self.assertFalse(ticker_thread.is_alive())
+            self.assertEqual([], failures)
+            self.assertFalse(entered_during_canonicalization)
+            holding = json.loads(fund_path.read_text())["quarters"][0][
+                "holdings"
+            ][0]
+            self.assertEqual("AAPL", holding["ticker"])
+            self.assertEqual("Apple Inc", holding["issuer"])
+
+    def test_zero_share_repair_and_canonicalization_are_serialized(
+        self,
+    ) -> None:
+        fund = {
+            "cik": 1,
+            "name": "Concurrency Probe",
+            "quarters": [
+                {
+                    "report_date": "2025-12-31",
+                    "holdings": [
+                        {
+                            "cusip": "037833100",
+                            "ticker": "OLD",
+                            "issuer": "Old Issuer",
+                            "holding_type": "EQUITY",
+                            "shares": 10,
+                            "reported_shares": 0,
+                            "shares_imputed": True,
+                            "value": 100,
+                        }
+                    ],
+                }
+            ],
+        }
+        registry = {
+            "037833100": {
+                "ticker": "AAPL",
+                "name": "Apple Inc",
+                "type": "EQUITY",
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            funds_dir = data_dir / "funds"
+            funds_dir.mkdir(parents=True)
+            fund_path = funds_dir / "1.json"
+            fund_path.write_text(json.dumps(fund))
+
+            real_atomic_write = pipeline._atomic_write_json
+            repair_ready = threading.Event()
+            canonical_ready = threading.Event()
+            release_repair = threading.Event()
+            release_canonical = threading.Event()
+            failures: list[BaseException] = []
+
+            def controlled_atomic_write(path, payload, **kwargs) -> None:
+                thread_name = threading.current_thread().name
+                if thread_name == "zero-share-probe":
+                    repair_ready.set()
+                    if not release_repair.wait(5):
+                        raise TimeoutError("zero-share repair was not released")
+                elif thread_name == "canonicalize-probe":
+                    canonical_ready.set()
+                    if not release_canonical.wait(5):
+                        raise TimeoutError("canonicalization was not released")
+                real_atomic_write(path, payload, **kwargs)
+
+            def run(target) -> None:
+                try:
+                    target()
+                except BaseException as exc:  # noqa: BLE001 - assert in parent thread
+                    failures.append(exc)
+
+            with (
+                mock.patch.multiple(
+                    pipeline,
+                    DATA_DIR=data_dir,
+                    FUNDS_DIR=funds_dir,
+                    load_cusip_registry=mock.Mock(return_value=registry),
+                    build_zero_share_price_reference_maps=mock.Mock(
+                        return_value=({}, {})
+                    ),
+                ),
+                mock.patch.object(
+                    pipeline,
+                    "_atomic_write_json",
+                    side_effect=controlled_atomic_write,
+                ),
+            ):
+                repair_thread = threading.Thread(
+                    target=run,
+                    args=(pipeline.repair_zero_share_holdings_in_place,),
+                    name="zero-share-probe",
+                )
+                canonical_thread = threading.Thread(
+                    target=run,
+                    args=(pipeline.canonicalize_fund_files,),
+                    name="canonicalize-probe",
+                )
+                repair_thread.start()
+                self.assertTrue(repair_ready.wait(2))
+                canonical_thread.start()
+                entered_during_repair = canonical_ready.wait(0.2)
+                release_repair.set()
+                repair_thread.join(2)
+                release_canonical.set()
+                canonical_thread.join(2)
+
+            self.assertFalse(repair_thread.is_alive())
+            self.assertFalse(canonical_thread.is_alive())
+            self.assertEqual([], failures)
+            self.assertFalse(
+                entered_during_repair,
+                "canonicalization entered while zero-share repair held stale data",
+            )
+            holding = json.loads(fund_path.read_text())["quarters"][0][
+                "holdings"
+            ][0]
+            self.assertEqual(0, holding["shares"])
+            self.assertNotIn("shares_imputed", holding)
+            self.assertEqual("AAPL", holding["ticker"])
+            self.assertEqual("Apple Inc", holding["issuer"])
+
+    def test_atomic_json_write_cleans_up_after_keyboard_interrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "authoritative.json"
+            original = b'{"generation":"current"}'
+            path.write_bytes(original)
+
+            with (
+                mock.patch.object(
+                    pipeline.json,
+                    "dump",
+                    side_effect=KeyboardInterrupt,
+                ),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                pipeline._atomic_write_json(path, {"generation": "next"})
+
+            self.assertEqual(original, path.read_bytes())
+            self.assertEqual([], list(path.parent.glob("*.tmp.*")))
+
+    def test_atomic_json_write_fsyncs_file_and_parent_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "authoritative.json"
+            with mock.patch.object(pipeline.os, "fsync") as fsync:
+                pipeline._atomic_write_json(path, {"generation": "next"})
+
+            self.assertEqual(2, fsync.call_count)
+
+    def test_stock_regeneration_preserves_current_outputs_on_build_failure(
+        self,
+    ) -> None:
+        fund = {
+            "cik": 1,
+            "name": "Durability Probe",
+            "quarters": [{
+                "report_date": "2025-12-31",
+                "total_value": 100,
+                "holdings": [{
+                    "cusip": "037833100",
+                    "ticker": "AAPL",
+                    "issuer": "Apple Inc",
+                    "holding_type": "EQUITY",
+                    "shares": 1,
+                    "value": 100,
+                }],
+            }],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            funds_dir = data_dir / "funds"
+            stocks_dir = data_dir / "stocks"
+            funds_dir.mkdir(parents=True)
+            stocks_dir.mkdir()
+            (funds_dir / "1.json").write_text(json.dumps(fund))
+            current_stock = stocks_dir / "current.json"
+            current_stock.write_text('{"generation":"current"}')
+            index_path = data_dir / "index.json"
+            funds_index_path = data_dir / "funds-index.json"
+            index_path.write_text('{"generation":"current-index"}')
+            funds_index_path.write_text(
+                '{"generation":"current-funds-index"}'
+            )
+            expected_stocks = {
+                path.name: path.read_bytes()
+                for path in stocks_dir.glob("*.json")
+            }
+            expected_index = index_path.read_bytes()
+            expected_funds_index = funds_index_path.read_bytes()
+
+            with (
+                mock.patch.multiple(
+                    pipeline,
+                    DATA_DIR=data_dir,
+                    FUNDS_DIR=funds_dir,
+                    STOCKS_DIR=stocks_dir,
+                    INDEX_PATH=index_path,
+                    FUNDS_INDEX_PATH=funds_index_path,
+                    load_cusip_registry=mock.Mock(return_value={}),
+                ),
+                mock.patch.object(
+                    pipeline.json,
+                    "dump",
+                    side_effect=OSError("injected build failure"),
+                ),
+                self.assertRaisesRegex(OSError, "injected build failure"),
+            ):
+                pipeline.regenerate_stock_files_and_index(state={})
+
+            self.assertEqual(
+                expected_stocks,
+                {
+                    path.name: path.read_bytes()
+                    for path in stocks_dir.glob("*.json")
+                },
+            )
+            self.assertEqual(expected_index, index_path.read_bytes())
+            self.assertEqual(
+                expected_funds_index,
+                funds_index_path.read_bytes(),
+            )
+            self.assertEqual(
+                [],
+                list(Path(tmpdir).glob(".derived-stage-*")),
+            )
+            self.assertEqual(
+                [],
+                list(Path(tmpdir).glob(".derived-backup-*")),
+            )
+
+    def test_stock_regeneration_rolls_back_partial_publish_failure(
+        self,
+    ) -> None:
+        fund = {
+            "cik": 1,
+            "name": "Rollback Probe",
+            "quarters": [{
+                "report_date": "2025-12-31",
+                "total_value": 100,
+                "holdings": [{
+                    "cusip": "037833100",
+                    "ticker": "AAPL",
+                    "issuer": "Apple Inc",
+                    "holding_type": "EQUITY",
+                    "shares": 1,
+                    "value": 100,
+                }],
+            }],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            funds_dir = data_dir / "funds"
+            stocks_dir = data_dir / "stocks"
+            funds_dir.mkdir(parents=True)
+            stocks_dir.mkdir()
+            (funds_dir / "1.json").write_text(json.dumps(fund))
+            current_stock = b'{"generation":"current"}'
+            current_index = b'{"generation":"current-index"}'
+            current_funds_index = b'{"generation":"current-funds-index"}'
+            index_path = data_dir / "index.json"
+            funds_index_path = data_dir / "funds-index.json"
+            real_replace = pipeline.os.replace
+
+            for failure_type in (OSError, KeyboardInterrupt):
+                with self.subTest(failure_type=failure_type.__name__):
+                    for path in stocks_dir.glob("*.json"):
+                        path.unlink()
+                    (stocks_dir / "current.json").write_bytes(current_stock)
+                    index_path.write_bytes(current_index)
+                    funds_index_path.write_bytes(current_funds_index)
+
+                    def fail_during_publish(
+                        source,
+                        target,
+                        failure_type=failure_type,
+                    ) -> None:
+                        source_path = Path(source)
+                        if (
+                            source_path.name == "funds-index.json"
+                            and source_path.parent.name.startswith(
+                                ".derived-stage-"
+                            )
+                        ):
+                            raise failure_type("injected publish failure")
+                        real_replace(source, target)
+
+                    with (
+                        mock.patch.multiple(
+                            pipeline,
+                            DATA_DIR=data_dir,
+                            FUNDS_DIR=funds_dir,
+                            STOCKS_DIR=stocks_dir,
+                            INDEX_PATH=index_path,
+                            FUNDS_INDEX_PATH=funds_index_path,
+                            load_cusip_registry=mock.Mock(return_value={}),
+                        ),
+                        mock.patch.object(
+                            pipeline.os,
+                            "replace",
+                            side_effect=fail_during_publish,
+                        ),
+                        self.assertRaisesRegex(
+                            failure_type,
+                            "injected publish failure",
+                        ),
+                    ):
+                        pipeline.regenerate_stock_files_and_index(state={})
+
+                    self.assertEqual(
+                        {"current.json": current_stock},
+                        {
+                            path.name: path.read_bytes()
+                            for path in stocks_dir.glob("*.json")
+                        },
+                    )
+                    self.assertEqual(current_index, index_path.read_bytes())
+                    self.assertEqual(
+                        current_funds_index,
+                        funds_index_path.read_bytes(),
+                    )
+                    self.assertEqual(
+                        [],
+                        list(Path(tmpdir).glob(".derived-stage-*")),
+                    )
+                    self.assertEqual(
+                        [],
+                        list(Path(tmpdir).glob(".derived-backup-*")),
+                    )
+
+    def test_interrupted_derived_publish_restores_previous_generation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = root / "data"
+            stocks_dir = data_dir / "stocks"
+            stocks_dir.mkdir(parents=True)
+            (stocks_dir / "new.json").write_text('{"generation":"new"}')
+            index_path = data_dir / "index.json"
+            funds_index_path = data_dir / "funds-index.json"
+            index_path.write_text('{"generation":"new-index"}')
+            funds_index_path.write_text(
+                '{"generation":"new-funds-index"}'
+            )
+
+            backup_root = root / ".derived-backup-interrupted"
+            backup_stocks = backup_root / "stocks"
+            backup_stocks.mkdir(parents=True)
+            (backup_stocks / "old.json").write_text(
+                '{"generation":"old"}'
+            )
+            (backup_root / "index.json").write_text(
+                '{"generation":"old-index"}'
+            )
+            (backup_root / "funds-index.json").write_text(
+                '{"generation":"old-funds-index"}'
+            )
+            (backup_root / "transaction.json").write_text(json.dumps({
+                "status": "prepared",
+                "present": ["stocks", "funds-index.json", "index.json"],
+            }))
+            stale_stage = root / ".derived-stage-interrupted"
+            stale_stage.mkdir()
+            (stale_stage / "partial.json").write_text("{}")
+
+            with mock.patch.multiple(
+                pipeline,
+                DATA_DIR=data_dir,
+                STOCKS_DIR=stocks_dir,
+                INDEX_PATH=index_path,
+                FUNDS_INDEX_PATH=funds_index_path,
+            ):
+                pipeline._recover_interrupted_derived_publishes()
+
+            self.assertEqual(
+                {"old.json": b'{"generation":"old"}'},
+                {
+                    path.name: path.read_bytes()
+                    for path in stocks_dir.glob("*.json")
+                },
+            )
+            self.assertEqual(
+                b'{"generation":"old-index"}',
+                index_path.read_bytes(),
+            )
+            self.assertEqual(
+                b'{"generation":"old-funds-index"}',
+                funds_index_path.read_bytes(),
+            )
+            self.assertFalse(backup_root.exists())
+            self.assertFalse(stale_stage.exists())
+
+    def test_completed_derived_publish_keeps_new_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = root / "data"
+            stocks_dir = data_dir / "stocks"
+            stocks_dir.mkdir(parents=True)
+            (stocks_dir / "new.json").write_text('{"generation":"new"}')
+            index_path = data_dir / "index.json"
+            funds_index_path = data_dir / "funds-index.json"
+            index_path.write_text('{"generation":"new-index"}')
+            funds_index_path.write_text(
+                '{"generation":"new-funds-index"}'
+            )
+
+            backup_root = root / ".derived-backup-completed"
+            (backup_root / "stocks").mkdir(parents=True)
+            (backup_root / "stocks" / "old.json").write_text("{}")
+            (backup_root / "transaction.json").write_text(json.dumps({
+                "status": "published",
+                "present": ["stocks", "funds-index.json", "index.json"],
+            }))
+
+            with mock.patch.multiple(
+                pipeline,
+                DATA_DIR=data_dir,
+                STOCKS_DIR=stocks_dir,
+                INDEX_PATH=index_path,
+                FUNDS_INDEX_PATH=funds_index_path,
+            ):
+                pipeline._recover_interrupted_derived_publishes()
+
+            self.assertEqual(
+                {"new.json": b'{"generation":"new"}'},
+                {
+                    path.name: path.read_bytes()
+                    for path in stocks_dir.glob("*.json")
+                },
+            )
+            self.assertEqual(
+                b'{"generation":"new-index"}',
+                index_path.read_bytes(),
+            )
+            self.assertEqual(
+                b'{"generation":"new-funds-index"}',
+                funds_index_path.read_bytes(),
+            )
+            self.assertFalse(backup_root.exists())
+
+    def test_derived_output_lock_serializes_processes(self) -> None:
+        script = """
+import os
+import sys
+import time
+from pathlib import Path
+
+import pipeline
+
+pipeline.DATA_DIR = Path(sys.argv[1])
+attempted_path = Path(sys.argv[4])
+
+@pipeline._serialize_pipeline_maintenance
+def probe():
+    log_path = Path(sys.argv[2])
+    token = sys.argv[3]
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"start {token}\\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    if token == "first":
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not attempted_path.exists():
+            time.sleep(0.01)
+        if not attempted_path.exists():
+            raise RuntimeError("second lock probe did not attempt entry")
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"end {token}\\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+if sys.argv[3] == "second":
+    attempted_path.write_text("ready", encoding="utf-8")
+probe()
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = root / "data"
+            log_path = root / "events.log"
+            attempted_path = root / "second-attempted"
+            first = subprocess.Popen(
+                [sys.executable, "-c", script, str(data_dir), str(log_path),
+                 "first", str(attempted_path)],
+                cwd=Path(__file__).resolve().parents[1],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if log_path.exists() and "start first" in log_path.read_text():
+                    break
+                time.sleep(0.01)
+            else:
+                first.kill()
+                self.fail("first lock probe did not start")
+
+            self.assertIsNone(first.poll())
+            second = subprocess.Popen(
+                [sys.executable, "-c", script, str(data_dir), str(log_path),
+                 "second", str(attempted_path)],
+                cwd=Path(__file__).resolve().parents[1],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            first_stdout, first_stderr = first.communicate(timeout=5)
+            second_stdout, second_stderr = second.communicate(timeout=5)
+            self.assertEqual(
+                0,
+                first.returncode,
+                msg=f"stdout={first_stdout!r} stderr={first_stderr!r}",
+            )
+            self.assertEqual(
+                0,
+                second.returncode,
+                msg=f"stdout={second_stdout!r} stderr={second_stderr!r}",
+            )
+            self.assertEqual(
+                ["start first", "end first", "start second", "end second"],
+                log_path.read_text().splitlines(),
+            )
+
+    def test_parent_lock_remains_leased_until_inherited_worker_exits(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            worker_entered = threading.Event()
+            release_worker = threading.Event()
+            contender_entered = threading.Event()
+
+            @pipeline._serialize_pipeline_maintenance
+            def inherited_critical_section() -> None:
+                worker_entered.set()
+                if not release_worker.wait(5):
+                    raise TimeoutError("inherited worker was not released")
+
+            @pipeline._inherit_pipeline_maintenance
+            def worker() -> None:
+                inherited_critical_section()
+
+            @pipeline._serialize_pipeline_maintenance
+            def outer_workflow() -> threading.Thread:
+                thread = threading.Thread(target=worker, daemon=True)
+                thread.start()
+                if not worker_entered.wait(2):
+                    raise TimeoutError("inherited worker did not start")
+                return thread
+
+            @pipeline._serialize_pipeline_maintenance
+            def contender() -> None:
+                contender_entered.set()
+
+            with mock.patch.object(pipeline, "DATA_DIR", data_dir):
+                worker_thread = outer_workflow()
+                contender_thread = threading.Thread(target=contender, daemon=True)
+                contender_thread.start()
+                entered_while_worker_active = contender_entered.wait(0.2)
+                release_worker.set()
+                worker_thread.join(2)
+                contender_thread.join(2)
+
+            self.assertFalse(
+                entered_while_worker_active,
+                "maintenance lock escaped while an inherited worker was active",
+            )
+            self.assertFalse(worker_thread.is_alive())
+            self.assertFalse(contender_thread.is_alive())
+            self.assertTrue(contender_entered.is_set())
 
     def test_regenerate_cli_refreshes_fund_names_only_in_full_mode(
         self,

@@ -2,7 +2,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MAINTENANCE_WORKFLOWS = (
     ".github/workflows/update-data.yml",
@@ -15,6 +14,24 @@ def read(path: str) -> str:
 
 
 class WorkflowResilienceTests(unittest.TestCase):
+    def test_lxml_dependency_requires_patched_release(self):
+        requirement = next(
+            line
+            for line in read("requirements.txt").splitlines()
+            if line.startswith("lxml")
+        )
+        match = re.fullmatch(
+            r"lxml>=(\d+)\.(\d+)\.(\d+)(?:,.*)?",
+            requirement,
+        )
+
+        if match is None:
+            self.fail(f"unexpected lxml requirement format: {requirement}")
+        self.assertGreaterEqual(
+            tuple(int(part) for part in match.groups()),
+            (6, 1, 0),
+        )
+
     def test_critical_schedules_avoid_top_of_hour_without_changing_windows(self):
         update = read(".github/workflows/update-data.yml")
         refresh = read(".github/workflows/refresh-cusip-registry.yml")

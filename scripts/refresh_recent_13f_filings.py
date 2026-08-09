@@ -182,6 +182,7 @@ def fetch_recent_feed_filings(lookback_days: int, max_pages: int, page_size: int
     return filings
 
 
+@pipeline._serialize_pipeline_maintenance
 def main() -> int:
     lookback_days = env_int("RECENT_13F_LOOKBACK_DAYS", 3)
     # 200 pages covers 20,000 current-feed entries, enough for full 13F
