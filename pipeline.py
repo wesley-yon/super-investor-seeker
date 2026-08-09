@@ -25,6 +25,8 @@ Optionally reads OPENFIGI_API_KEY for higher-rate CUSIP->ticker lookups.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import functools
 import hashlib
 import json
 import logging
@@ -32,9 +34,11 @@ import math
 import os
 import queue
 import re
+import shutil
 import signal
 import statistics
 import sys
+import tempfile
 import threading
 import time
 from collections import Counter, defaultdict
@@ -43,7 +47,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import requests
-from lxml import etree, html as lxml_html
+from lxml import etree
+from lxml import html as lxml_html
 
 from data_contract import DATA_CONTRACT_VERSION
 from quarter_health import (
@@ -58,17 +63,17 @@ from security_identity import (
     holding_instrument_type,
     normalize_instrument_type,
     normalize_note_security_label,
+    normalize_security_identifier,
     normalize_security_kind,
     normalize_security_label,
-    normalize_security_identifier,
     sec_issuer_proof_key,
     sec_ticker_titles,
     stock_filename,
     stock_lookup_id,
 )
 from value_units import (
-    AmbiguousValueUnits,
     VALUE_UNIT_POLICY_VERSION,
+    AmbiguousValueUnits,
     is_unit_evidence_holding,
     normalize_value_units,
 )
@@ -153,6 +158,162 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("pipeline")
+
+
+_PIPELINE_MAINTENANCE_THREAD_LOCK = threading.RLock()
+_PIPELINE_MAINTENANCE_LOCAL = threading.local()
+_PIPELINE_MAINTENANCE_RELEASER_THREAD = threading.Thread
+
+
+class _PipelineMaintenanceToken:
+    """Lease the process lock until every inherited worker has exited."""
+
+    def __init__(self, lock_file) -> None:
+        self.lock_file = lock_file
+        self.condition = threading.Condition()
+        self.worker_count = 0
+        self.closing = False
+
+    def try_enter_worker(self) -> bool:
+        with self.condition:
+            if self.closing:
+                return False
+            self.worker_count += 1
+            return True
+
+    def leave_worker(self) -> None:
+        with self.condition:
+            self.worker_count -= 1
+            self.condition.notify_all()
+
+    def begin_close(self) -> bool:
+        with self.condition:
+            self.closing = True
+            return self.worker_count > 0
+
+    def wait_for_workers(self) -> None:
+        with self.condition:
+            while self.worker_count:
+                self.condition.wait()
+
+
+_PIPELINE_MAINTENANCE_PROCESS_TOKEN: _PipelineMaintenanceToken | None = None
+
+
+def _release_pipeline_maintenance_token(
+    token: _PipelineMaintenanceToken,
+) -> None:
+    global _PIPELINE_MAINTENANCE_PROCESS_TOKEN
+    try:
+        fcntl.flock(token.lock_file.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        log.warning("could not explicitly unlock pipeline maintenance lock: %s", exc)
+    finally:
+        try:
+            token.lock_file.close()
+        finally:
+            if _PIPELINE_MAINTENANCE_PROCESS_TOKEN is token:
+                _PIPELINE_MAINTENANCE_PROCESS_TOKEN = None
+
+
+def _release_pipeline_maintenance_token_when_idle(
+    token: _PipelineMaintenanceToken,
+) -> None:
+    token.wait_for_workers()
+    _release_pipeline_maintenance_token(token)
+
+
+def _inherit_pipeline_maintenance(func):
+    """Let a child worker reuse the process lock held by its parent workflow."""
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        token = _PIPELINE_MAINTENANCE_PROCESS_TOKEN
+        if token is None or not token.try_enter_worker():
+            return func(*args, **kwargs)
+        inherited = getattr(
+            _PIPELINE_MAINTENANCE_LOCAL,
+            "inherited_token",
+            None,
+        )
+        _PIPELINE_MAINTENANCE_LOCAL.inherited_token = token
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if inherited is not None:
+                _PIPELINE_MAINTENANCE_LOCAL.inherited_token = inherited
+            else:
+                del _PIPELINE_MAINTENANCE_LOCAL.inherited_token
+            token.leave_worker()
+
+    return wrapped
+
+
+def _serialize_pipeline_maintenance(func):
+    """Serialize nested maintenance calls across threads and processes."""
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        global _PIPELINE_MAINTENANCE_PROCESS_TOKEN
+        inherited = getattr(
+            _PIPELINE_MAINTENANCE_LOCAL,
+            "inherited_token",
+            None,
+        )
+        if (
+            inherited is not None
+            and inherited is _PIPELINE_MAINTENANCE_PROCESS_TOKEN
+        ):
+            return func(*args, **kwargs)
+        with _PIPELINE_MAINTENANCE_THREAD_LOCK:
+            depth = getattr(_PIPELINE_MAINTENANCE_LOCAL, "depth", 0)
+            if depth:
+                _PIPELINE_MAINTENANCE_LOCAL.depth = depth + 1
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    _PIPELINE_MAINTENANCE_LOCAL.depth = depth
+
+            lock_path = DATA_DIR.parent / ".pipeline-maintenance.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = open(  # noqa: SIM115 - worker lease can outlive caller
+                lock_path,
+                "a+b",
+            )
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            except BaseException:
+                lock_file.close()
+                raise
+            token = _PipelineMaintenanceToken(lock_file)
+            _PIPELINE_MAINTENANCE_LOCAL.depth = 1
+            _PIPELINE_MAINTENANCE_PROCESS_TOKEN = token
+            try:
+                return func(*args, **kwargs)
+            finally:
+                workers_active = token.begin_close()
+                del _PIPELINE_MAINTENANCE_LOCAL.depth
+                if workers_active:
+                    releaser = _PIPELINE_MAINTENANCE_RELEASER_THREAD(
+                        target=_release_pipeline_maintenance_token_when_idle,
+                        args=(token,),
+                        name="pipeline-maintenance-lock-releaser",
+                        daemon=True,
+                    )
+                    try:
+                        releaser.start()
+                    except BaseException as exc:  # noqa: BLE001 - preserve lease
+                        log.error(
+                            "could not start maintenance-lock releaser; "
+                            "waiting synchronously: %s",
+                            exc,
+                        )
+                        token.wait_for_workers()
+                        _release_pipeline_maintenance_token(token)
+                else:
+                    _release_pipeline_maintenance_token(token)
+
+    return wrapped
 
 
 # ----------------------------------------------------------------------------
@@ -2274,6 +2435,7 @@ def build_zero_share_price_reference_maps() -> tuple[
     return report_refs, position_refs
 
 
+@_serialize_pipeline_maintenance
 def repair_zero_share_holdings_in_place() -> int:
     """Impute obvious missing share counts using cross-filer quarter prices.
 
@@ -3138,12 +3300,22 @@ def resolve_ticker_from_name(
     return name_to_ticker.get(norm) or prefix_lookup(norm, name_to_ticker)
 
 
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes used by atomic file transactions."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _atomic_write_json(
     path: Path,
     payload,
     *,
     indent: int | None = 2,
     sort_keys: bool = False,
+    fsync_parent: bool = True,
 ) -> None:
     """Write JSON atomically: render to a sibling temp file, fsync, then
     os.replace() into place. A SIGTERM or power loss mid-write leaves either
@@ -3165,12 +3337,235 @@ def _atomic_write_json(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
-    except Exception:
+        if fsync_parent:
+            _fsync_directory(path.parent)
+    except BaseException:
+        removed = False
         try:
             tmp.unlink()
+            removed = True
         except FileNotFoundError:
             pass
+        if removed:
+            _fsync_directory(path.parent)
         raise
+
+
+def _remove_derived_output(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _recover_interrupted_derived_publishes() -> None:
+    """Restore the prior generation after an interrupted publish commit."""
+    transaction_parent = DATA_DIR.parent
+    if not transaction_parent.exists():
+        return
+
+    stale_stages = list(transaction_parent.glob(".derived-stage-*"))
+    for stale_stage in stale_stages:
+        _remove_derived_output(stale_stage)
+    if stale_stages:
+        _fsync_directory(transaction_parent)
+
+    backup_roots = sorted(
+        transaction_parent.glob(".derived-backup-*")
+    )
+    if len(backup_roots) > 1:
+        raise FundDataError(
+            "multiple interrupted derived-output publishes require review: "
+            + ", ".join(str(path) for path in backup_roots)
+        )
+    if not backup_roots:
+        return
+
+    backup_root = backup_roots[0]
+    marker_path = backup_root / "transaction.json"
+    try:
+        marker = json.loads(marker_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FundDataError(
+            f"invalid derived-output transaction marker: {marker_path}"
+        ) from exc
+    if not isinstance(marker, dict):
+        raise FundDataError(
+            f"derived-output transaction marker must be an object: {marker_path}"
+        )
+
+    status = marker.get("status")
+    present = marker.get("present")
+    targets = (
+        (STOCKS_DIR.name, STOCKS_DIR),
+        (FUNDS_INDEX_PATH.name, FUNDS_INDEX_PATH),
+        (INDEX_PATH.name, INDEX_PATH),
+    )
+    valid_names = {name for name, _target in targets}
+    if (
+        status not in {"prepared", "published"}
+        or not isinstance(present, list)
+        or any(
+            not isinstance(name, str) or name not in valid_names
+            for name in present
+        )
+    ):
+        raise FundDataError(
+            f"invalid derived-output transaction state: {marker_path}"
+        )
+    live_outputs_complete = all(
+        target.exists() or target.is_symlink()
+        for _name, target in targets
+    )
+    if status == "published" and live_outputs_complete:
+        shutil.rmtree(backup_root)
+        _fsync_directory(transaction_parent)
+        return
+    if status == "published":
+        log.warning(
+            "published derived-output transaction is incomplete; "
+            "restoring the previous generation"
+        )
+
+    present_names = set(present)
+    for name, target in targets:
+        backup = backup_root / name
+        if backup.exists() or backup.is_symlink():
+            _remove_derived_output(target)
+            os.replace(backup, target)
+            _fsync_directory(backup_root)
+            _fsync_directory(DATA_DIR)
+        elif name not in present_names:
+            _remove_derived_output(target)
+    _fsync_directory(DATA_DIR)
+    _fsync_directory(backup_root)
+    shutil.rmtree(backup_root)
+    _fsync_directory(transaction_parent)
+
+
+def _publish_staged_derived_outputs(staging_root: Path) -> None:
+    """Publish staged stocks and indexes, restoring prior outputs on errors.
+
+    POSIX cannot expose these three paths in one rename. Deployment consumers
+    run only after this producer returns and validation succeeds; the marker
+    provides crash recovery for the private working tree in the meantime.
+    """
+    replacements = (
+        (staging_root / "stocks", STOCKS_DIR),
+        (staging_root / "funds-index.json", FUNDS_INDEX_PATH),
+        (staging_root / "index.json", INDEX_PATH),
+    )
+    missing = [
+        str(path)
+        for path, _target in replacements
+        if not path.exists()
+    ]
+    if missing:
+        raise FundDataError(
+            "derived output staging is incomplete: " + ", ".join(missing)
+        )
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _fsync_directory(DATA_DIR.parent)
+    backup_root = Path(
+        tempfile.mkdtemp(prefix=".derived-backup-", dir=DATA_DIR.parent)
+    )
+    _fsync_directory(DATA_DIR.parent)
+    present = [
+        target.name
+        for _staged, target in replacements
+        if target.exists() or target.is_symlink()
+    ]
+    marker_path = backup_root / "transaction.json"
+    try:
+        _atomic_write_json(
+            marker_path,
+            {"status": "prepared", "present": present},
+            indent=None,
+            sort_keys=True,
+        )
+    except BaseException:
+        shutil.rmtree(backup_root, ignore_errors=True)
+        _fsync_directory(DATA_DIR.parent)
+        raise
+    backups: list[tuple[Path, Path]] = []
+    published: list[Path] = []
+    try:
+        for _staged, target in replacements:
+            if target.exists() or target.is_symlink():
+                backup = backup_root / target.name
+                os.replace(target, backup)
+                backups.append((backup, target))
+                _fsync_directory(DATA_DIR)
+                _fsync_directory(backup_root)
+        for staged, target in replacements:
+            os.replace(staged, target)
+            published.append(target)
+            _fsync_directory(staging_root)
+            _fsync_directory(DATA_DIR)
+        _atomic_write_json(
+            marker_path,
+            {"status": "published", "present": present},
+            indent=None,
+            sort_keys=True,
+        )
+    except BaseException as exc:
+        rollback_errors: list[str] = []
+        for target in reversed(published):
+            try:
+                _remove_derived_output(target)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"remove {target}: {rollback_exc}")
+        for backup, target in reversed(backups):
+            try:
+                _remove_derived_output(target)
+                os.replace(backup, target)
+                _fsync_directory(backup_root)
+                _fsync_directory(DATA_DIR)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"restore {target}: {rollback_exc}")
+        try:
+            _fsync_directory(DATA_DIR)
+            _fsync_directory(backup_root)
+        except OSError as rollback_exc:
+            rollback_errors.append(f"fsync rollback: {rollback_exc}")
+        if rollback_errors:
+            raise FundDataError(
+                "derived output publish failed and rollback was incomplete: "
+                + "; ".join(rollback_errors)
+            ) from exc
+        try:
+            shutil.rmtree(backup_root)
+        except OSError as cleanup_exc:
+            log.warning(
+                "could not remove derived-output backup %s after rollback: %s",
+                backup_root,
+                cleanup_exc,
+            )
+        else:
+            try:
+                _fsync_directory(DATA_DIR.parent)
+            except OSError as cleanup_exc:
+                log.warning(
+                    "could not fsync backup cleanup after rollback: %s",
+                    cleanup_exc,
+                )
+        raise
+    try:
+        shutil.rmtree(backup_root)
+    except OSError as exc:
+        log.warning(
+            "could not remove derived-output backup %s: %s",
+            backup_root,
+            exc,
+        )
+    else:
+        try:
+            _fsync_directory(DATA_DIR.parent)
+        except OSError as exc:
+            log.warning("could not fsync derived-output backup cleanup: %s", exc)
 
 
 def _read_json_object(path: Path) -> dict | None:
@@ -4753,6 +5148,7 @@ def _issuers_likely_same(a: str, b: str) -> bool:
     return False
 
 
+@_serialize_pipeline_maintenance
 def rebuild_tickers_in_place(
     *,
     full_refresh: bool = False,
@@ -5029,8 +5425,7 @@ def rebuild_tickers_in_place(
                     del h["option_type"]
                     changed = True
         if changed:
-            with open(fp, "w") as f:
-                json.dump(fund, f, indent=2)
+            _atomic_write_json(fp, fund)
             updated += 1
 
     # Replace the persisted cusip_map with the freshly-built one.
@@ -5220,6 +5615,7 @@ def inventory_published_quarter_health_issues(
     return dict(issues_by_key), published_keys
 
 
+@_serialize_pipeline_maintenance
 def enforce_published_quarter_health(state: dict) -> int:
     """Withhold every unhealthy quarter and durably queue an SEC retry."""
     log.info("Checking published quarter health before output generation...")
@@ -5372,6 +5768,7 @@ def quarter_health_retry_due(
     )
 
 
+@_serialize_pipeline_maintenance
 def retry_pending_quarter_health(
     state: dict,
     cusip_map: dict[str, str],
@@ -5684,6 +6081,7 @@ def published_holding_instrument_type(
     return raw_type
 
 
+@_serialize_pipeline_maintenance
 def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
     """Rebuild stock files, the full search index, and the fund bootstrap.
 
@@ -5699,6 +6097,7 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
     EQUITY. The raw filing evidence remains unchanged.
     """
     log.info("Rebuilding stock files and search index...")
+    _recover_interrupted_derived_publishes()
 
     if not FUNDS_DIR.exists():
         log.info("  no funds directory; nothing to rebuild")
@@ -5880,141 +6279,163 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
                 if new_entry.get("shares_imputed"):
                     existing["shares_imputed"] = True
 
-    # Wipe and rewrite stocks dir to drop stale tickers
-    STOCKS_DIR.mkdir(parents=True, exist_ok=True)
-    for old in STOCKS_DIR.glob("*.json"):
-        try:
-            old.unlink()
-        except OSError:
-            pass
-
-    current_reporting_quarter = _modal_latest_reporting_quarter(
-        funds_summary
+    # Build a complete replacement beside the live outputs. The current
+    # generation remains untouched unless every stock and both indexes render.
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    staging = tempfile.TemporaryDirectory(
+        prefix=".derived-stage-",
+        dir=DATA_DIR.parent,
     )
-    current_fund_quarters = _current_fund_quarters(
-        funds_summary,
-        current_reporting_quarter,
-    )
+    staging_root = Path(staging.name)
+    staged_stocks_dir = staging_root / "stocks"
+    try:
+        staged_stocks_dir.mkdir()
 
-    tickers: list[dict] = []
-    proven_split_adjustments: dict[str, list[dict]] = {}
-    for _stock_id, s in stocks.items():
-        holders_list = []
-        for _cik, holder in s["holders"].items():
-            history = list(holder["history"].values())
-            for entry in history:
-                entry["pct_of_fund"] = round(entry.get("pct_of_fund", 0.0), 3)
-            history.sort(key=lambda x: x.get("date") or "", reverse=True)
-            holders_list.append({
-                "cik": holder["cik"],
-                "name": holder["name"],
-                "history": history,
-            })
-        holders_list.sort(
-            key=lambda h: h["history"][0]["value"] if h["history"] else 0,
-            reverse=True,
+        current_reporting_quarter = _modal_latest_reporting_quarter(
+            funds_summary
         )
-        last_seen = max(
-            (
-                holder["history"][0].get("date") or ""
+        current_fund_quarters = _current_fund_quarters(
+            funds_summary,
+            current_reporting_quarter,
+        )
+
+        tickers: list[dict] = []
+        proven_split_adjustments: dict[str, list[dict]] = {}
+        for _stock_id, s in stocks.items():
+            holders_list = []
+            for _cik, holder in s["holders"].items():
+                history = list(holder["history"].values())
+                for entry in history:
+                    entry["pct_of_fund"] = round(entry.get("pct_of_fund", 0.0), 3)
+                history.sort(key=lambda x: x.get("date") or "", reverse=True)
+                holders_list.append({
+                    "cik": holder["cik"],
+                    "name": holder["name"],
+                    "history": history,
+                })
+            holders_list.sort(
+                key=lambda h: h["history"][0]["value"] if h["history"] else 0,
+                reverse=True,
+            )
+            last_seen = max(
+                (
+                    holder["history"][0].get("date") or ""
+                    for holder in holders_list
+                    if holder["history"]
+                ),
+                default="",
+            )
+            current_holder_count = sum(
+                1
                 for holder in holders_list
-                if holder["history"]
-            ),
-            default="",
-        )
-        current_holder_count = sum(
-            1
-            for holder in holders_list
-            if (
-                (current_quarter := current_fund_quarters.get(
-                    int(holder["cik"])
-                ))
-                is not None
-                and any(
-                    report_quarter_code(record.get("date"))
-                    == current_quarter
-                    for record in holder["history"]
+                if (
+                    (current_quarter := current_fund_quarters.get(
+                        int(holder["cik"])
+                    ))
+                    is not None
+                    and any(
+                        report_quarter_code(record.get("date"))
+                        == current_quarter
+                        for record in holder["history"]
+                    )
                 )
             )
-        )
-        out = {
-            "stock_id": s["stock_id"],
-            "cusip": s.get("cusip", ""),
-            "ticker": s["ticker"],
-            "issuer": s["issuer"],
-            "instrument_type": s.get("instrument_type", "EQUITY"),
-            "holders": holders_list,
-        }
-        if s.get("instrument_type", "EQUITY") == "EQUITY":
-            split_adjustments = infer_proven_split_adjustments(holders_list)
-            if split_adjustments:
-                out["split_adjustments"] = split_adjustments
-                proven_split_adjustments[s["stock_id"]] = split_adjustments
-        filename_base = s["stock_id"].split("|", 1)[0]
-        with open(STOCKS_DIR / stock_filename(filename_base, s.get("instrument_type")), "w") as f:
-            json.dump(out, f, indent=2)
-        # Search index should only contain canonical ticker-backed rows.
-        # Uncovered/synthetic identifiers still get stock files for direct
-        # fund-page drill-down, but should not appear as pseudo-tickers.
-        if s.get("search_ticker"):
-            tickers.append({
+            out = {
                 "stock_id": s["stock_id"],
                 "cusip": s.get("cusip", ""),
-                "ticker": s["search_ticker"],
+                "ticker": s["ticker"],
                 "issuer": s["issuer"],
                 "instrument_type": s.get("instrument_type", "EQUITY"),
-                # Search uses this compact evidence to choose the canonical
-                # representative when historical or typo CUSIPs share a
-                # ticker. Current holder coverage uses the same modal reporting
-                # baseline as the frontend's stock-page aggregates.
-                "last_seen": last_seen,
-                "current_holder_count": current_holder_count,
-                "holder_count": len(holders_list),
-            })
+                "holders": holders_list,
+            }
+            if s.get("instrument_type", "EQUITY") == "EQUITY":
+                split_adjustments = infer_proven_split_adjustments(holders_list)
+                if split_adjustments:
+                    out["split_adjustments"] = split_adjustments
+                    proven_split_adjustments[s["stock_id"]] = split_adjustments
+            filename_base = s["stock_id"].split("|", 1)[0]
+            _atomic_write_json(
+                staged_stocks_dir
+                / stock_filename(filename_base, s.get("instrument_type")),
+                out,
+                fsync_parent=False,
+            )
+            # Search index should only contain canonical ticker-backed rows.
+            # Uncovered/synthetic identifiers still get stock files for direct
+            # fund-page drill-down, but should not appear as pseudo-tickers.
+            if s.get("search_ticker"):
+                tickers.append({
+                    "stock_id": s["stock_id"],
+                    "cusip": s.get("cusip", ""),
+                    "ticker": s["search_ticker"],
+                    "issuer": s["issuer"],
+                    "instrument_type": s.get("instrument_type", "EQUITY"),
+                    # Search uses this compact evidence to choose the canonical
+                    # representative when historical or typo CUSIPs share a
+                    # ticker. Current holder coverage uses the same modal reporting
+                    # baseline as the frontend's stock-page aggregates.
+                    "last_seen": last_seen,
+                    "current_holder_count": current_holder_count,
+                    "holder_count": len(holders_list),
+                })
 
-    funds_summary.sort(key=lambda x: (x.get("name") or "").upper())
-    tickers.sort(key=lambda x: ((x.get("ticker") or "").upper(), x.get("stock_id") or ""))
-    proven_split_adjustments = {
-        stock_id: proven_split_adjustments[stock_id]
-        for stock_id in sorted(proven_split_adjustments)
-    }
+        funds_summary.sort(key=lambda x: (x.get("name") or "").upper())
+        tickers.sort(key=lambda x: ((x.get("ticker") or "").upper(), x.get("stock_id") or ""))
+        proven_split_adjustments = {
+            stock_id: proven_split_adjustments[stock_id]
+            for stock_id in sorted(proven_split_adjustments)
+        }
 
-    funds_index_semantic = {
-        "data_contract_version": DATA_CONTRACT_VERSION,
-        "fund_data_revision": fund_revision.hexdigest(),
-        "funds": funds_summary,
-        "proven_split_adjustments": proven_split_adjustments,
-        "total_filers": len(funds_summary),
-        "total_tickers": len(tickers),
-    }
-    index_semantic = {
-        **funds_index_semantic,
-        "tickers": tickers,
-    }
-    previous_index = _read_json_object(INDEX_PATH)
-    previous_semantic = dict(previous_index or {})
-    previous_last_updated = previous_semantic.pop("last_updated", None)
-    if (
-        previous_semantic == index_semantic
-        and _is_strict_utc_timestamp(previous_last_updated)
-    ):
-        generated_at = previous_last_updated
-    else:
-        generated_at = datetime.now(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
+        funds_index_semantic = {
+            "data_contract_version": DATA_CONTRACT_VERSION,
+            "fund_data_revision": fund_revision.hexdigest(),
+            "funds": funds_summary,
+            "proven_split_adjustments": proven_split_adjustments,
+            "total_filers": len(funds_summary),
+            "total_tickers": len(tickers),
+        }
+        index_semantic = {
+            **funds_index_semantic,
+            "tickers": tickers,
+        }
+        previous_index = _read_json_object(INDEX_PATH)
+        previous_semantic = dict(previous_index or {})
+        previous_last_updated = previous_semantic.pop("last_updated", None)
+        if (
+            previous_semantic == index_semantic
+            and _is_strict_utc_timestamp(previous_last_updated)
+        ):
+            generated_at = previous_last_updated
+        else:
+            generated_at = datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        funds_index = {
+            **funds_index_semantic,
+            "last_updated": generated_at,
+        }
+        index = {
+            **index_semantic,
+            "last_updated": generated_at,
+        }
+        # This is the render-blocking homepage bootstrap, so keep it compact.
+        _atomic_write_json(
+            staging_root / "funds-index.json",
+            funds_index,
+            indent=None,
+            fsync_parent=False,
         )
-    funds_index = {
-        **funds_index_semantic,
-        "last_updated": generated_at,
-    }
-    index = {
-        **index_semantic,
-        "last_updated": generated_at,
-    }
-    DATA_DIR.mkdir(exist_ok=True)
-    # This is the render-blocking homepage bootstrap, so keep it compact.
-    _atomic_write_json(FUNDS_INDEX_PATH, funds_index, indent=None)
-    _atomic_write_json(INDEX_PATH, index)
+        _atomic_write_json(
+            staging_root / "index.json",
+            index,
+            fsync_parent=False,
+        )
+        _fsync_directory(staged_stocks_dir)
+        _fsync_directory(staging_root)
+        _fsync_directory(DATA_DIR.parent)
+        _publish_staged_derived_outputs(staging_root)
+    finally:
+        staging.cleanup()
 
     log.info(
         f"  wrote {len(stocks)} stock files; index has "
@@ -9455,6 +9876,7 @@ def validate_cusip_registry() -> list[str]:
     return issues
 
 
+@_serialize_pipeline_maintenance
 def canonicalize_fund_files() -> int:
     """Normalize row type and refresh display metadata in every fund file.
 
@@ -9569,8 +9991,7 @@ def canonicalize_fund_files() -> int:
                     issuer_changes += 1
                     changed = True
         if changed:
-            with open(fp, "w") as f:
-                json.dump(fund, f, indent=2)
+            _atomic_write_json(fp, fund)
             updated += 1
 
     log.info(
@@ -9591,6 +10012,7 @@ def canonicalize_fund_files() -> int:
     return updated
 
 
+@_serialize_pipeline_maintenance
 def upgrade_composition_hashes_in_place() -> int:
     """Bind current parser-backed security identity into retained hashes.
 
@@ -9726,6 +10148,7 @@ def upgrade_composition_hashes_in_place() -> int:
     return upgraded
 
 
+@_serialize_pipeline_maintenance
 def rebuild_registry_backed_outputs(
     *,
     full_refresh: bool = False,
@@ -10057,6 +10480,7 @@ def _compose_replay_targets(
         composed.append(quarter)
     return composed
 
+@_serialize_pipeline_maintenance
 def replay_quarters_for_cik(
     cik: int,
     triggers: list[dict],
@@ -10307,6 +10731,7 @@ def replay_quarters_for_cik(
     return len(successful_triggers)
 
 
+@_serialize_pipeline_maintenance
 def run_for_cik(
     cik: int,
     quarters_n: int,
@@ -10359,6 +10784,7 @@ def run_for_cik(
     return True
 
 
+@_serialize_pipeline_maintenance
 def retry_pending_amendment_migrations(
     state: dict,
     cusip_map: dict[str, str],
@@ -10454,6 +10880,7 @@ def amendment_migration_retry_due(
     )
 
 
+@_serialize_pipeline_maintenance
 def run_all(
     quarters_n: int,
     *,
@@ -10583,6 +11010,7 @@ def run_all(
     completed = [0]
     failures: list[str] = []
 
+    @_inherit_pipeline_maintenance
     def worker() -> None:
         while not stop_event.is_set():
             try:
@@ -10866,6 +11294,7 @@ def amendment_migration_quarantine_budget(state: dict) -> int:
     return len(quarters)
 
 
+@_serialize_pipeline_maintenance
 def withhold_unmigrated_new_holdings_quarters(
     targets: list[dict],
 ) -> int:
@@ -10909,6 +11338,7 @@ def withhold_unmigrated_new_holdings_quarters(
     return withheld
 
 
+@_serialize_pipeline_maintenance
 def repair_amendments(
     quarters_n: int,
     *,
@@ -11298,6 +11728,7 @@ def _run_security_identity_replays(
     completed_ciks = [0]
     failures: list[str] = []
 
+    @_inherit_pipeline_maintenance
     def worker() -> None:
         while not stop_event.is_set():
             try:
@@ -11378,6 +11809,7 @@ def _run_security_identity_replays(
     return not failures, resolved[0]
 
 
+@_serialize_pipeline_maintenance
 def withhold_pending_security_identity_quarters(state: dict) -> int:
     """Remove unresolved identity targets while retaining their retry queue."""
     by_cik: dict[int, set[str]] = defaultdict(set)
@@ -11512,6 +11944,7 @@ def initial_migration_health_error(
     return None
 
 
+@_serialize_pipeline_maintenance
 def repair_security_identity_migration(
     *,
     rebuild_outputs: bool = True,
@@ -11618,6 +12051,7 @@ def repair_security_identity_migration(
     return True
 
 
+@_serialize_pipeline_maintenance
 def retry_pending_security_identity_migrations(
     state: dict,
     cusip_map: dict[str, str],
@@ -11667,6 +12101,7 @@ def security_identity_migration_retry_due(
     )
 
 
+@_serialize_pipeline_maintenance
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="SEC 13F-HR data pipeline for Super Investor Seeker",

@@ -20,6 +20,9 @@ htmlcov/
 .DS_Store
 logs/
 *.log
+.pipeline-maintenance.lock
+.derived-stage-*/
+.derived-backup-*/
 
 # Generated corpus and durable pipeline state are restored from the private
 # snapshot repository. They must never be committed to this code repository.
