@@ -1356,6 +1356,7 @@ class GeneratedDataContractTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = (ROOT / ".github/workflows/update-data.yml").read_text()
+        publisher = (ROOT / "scripts/publish_private_snapshot.sh").read_text()
         self.assertRegex(
             workflow,
             r"(?m)^  push:\n    branches: \[main\]",
@@ -1381,11 +1382,12 @@ class GeneratedDataContractTests(unittest.TestCase):
         )
         self.assertIn("actions/create-github-app-token@v3", workflow)
         self.assertIn("python scripts/data_snapshot.py pull", workflow)
-        self.assertIn("python scripts/data_snapshot.py pack", workflow)
-        self.assertIn("main moved during generation", workflow)
-        self.assertNotIn("git add data/", workflow)
-        self.assertNotIn("git commit -m", workflow)
-        self.assertNotIn("git push origin", workflow)
+        self.assertIn("bash scripts/publish_private_snapshot.sh", workflow)
+        self.assertIn("python scripts/data_snapshot.py pack", publisher)
+        self.assertIn("main moved during generation", publisher)
+        self.assertNotIn("git add data/", publisher)
+        self.assertNotIn("git commit -m", publisher)
+        self.assertNotIn("git push origin", publisher)
         self.assertRegex(
             workflow,
             r"(?s)- name: Refresh recently accepted 13F filings.*?"
@@ -1409,6 +1411,7 @@ class GeneratedDataContractTests(unittest.TestCase):
     def test_data_publishers_deploy_exact_validated_pages_artifact(
         self,
     ) -> None:
+        publisher = (ROOT / "scripts/publish_private_snapshot.sh").read_text()
         for relative_path in (
             ".github/workflows/update-data.yml",
             ".github/workflows/refresh-cusip-registry.yml",
@@ -1416,22 +1419,23 @@ class GeneratedDataContractTests(unittest.TestCase):
             with self.subTest(workflow=relative_path):
                 workflow = (ROOT / relative_path).read_text()
                 self.assertIn("id: publish_snapshot", workflow)
-                self.assertIn('echo "code_sha=', workflow)
-                self.assertIn('echo "release_tag=', workflow)
-                self.assertIn('echo "dataset_id=', workflow)
+                self.assertIn("bash scripts/publish_private_snapshot.sh", workflow)
+                self.assertIn('echo "code_sha=', publisher)
+                self.assertIn('echo "release_tag=', publisher)
+                self.assertIn('echo "dataset_id=', publisher)
                 self.assertIn(
                     "site_changed: "
                     "${{ steps.publish_snapshot.outputs.site_changed }}",
                     workflow,
                 )
-                self.assertIn('echo "site_changed=', workflow)
+                self.assertIn('echo "site_changed=', publisher)
                 self.assertIn(
                     "outputs.site_changed == 'true'",
                     workflow,
                 )
                 self.assertIn(
                     "bash scripts/pages_deploy_needed.sh",
-                    workflow,
+                    publisher,
                 )
                 self.assertIn(
                     "code_sha: "
@@ -1439,11 +1443,11 @@ class GeneratedDataContractTests(unittest.TestCase):
                     workflow,
                 )
                 self.assertIn("python scripts/data_snapshot.py pull", workflow)
-                self.assertIn("python scripts/data_snapshot.py pack", workflow)
-                self.assertIn("gh release create", workflow)
-                self.assertIn("gh release download", workflow)
-                self.assertIn("gh release edit", workflow)
-                self.assertNotIn("git add data/", workflow)
+                self.assertIn("python scripts/data_snapshot.py pack", publisher)
+                self.assertIn("gh release create", publisher)
+                self.assertIn("gh release download", publisher)
+                self.assertIn("gh release edit", publisher)
+                self.assertNotIn("git add data/", publisher)
                 self.assertIn(
                     "uses: ./.github/workflows/deploy-pages.yml",
                     workflow,

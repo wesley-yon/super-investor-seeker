@@ -7,6 +7,7 @@ MAINTENANCE_WORKFLOWS = (
     ".github/workflows/update-data.yml",
     ".github/workflows/refresh-cusip-registry.yml",
 )
+PUBLISHER_SCRIPT = "scripts/publish_private_snapshot.sh"
 
 
 def read(path: str) -> str:
@@ -171,6 +172,27 @@ class WorkflowResilienceTests(unittest.TestCase):
                 )
                 self.assertNotIn("steps.data-app-token.outputs.token", publish)
 
+    def test_maintenance_workflows_use_one_shared_snapshot_publisher(self):
+        for path in MAINTENANCE_WORKFLOWS:
+            with self.subTest(path=path):
+                workflow = read(path)
+                self.assertEqual(
+                    1,
+                    workflow.count(f"bash {PUBLISHER_SCRIPT}"),
+                )
+                self.assertNotIn("python scripts/data_snapshot.py pack", workflow)
+
+        publisher = read(PUBLISHER_SCRIPT)
+        for fragment in (
+            "python scripts/data_snapshot.py pack",
+            "git fetch --no-tags origin main:refs/remotes/origin/main",
+            'gh release create "$release_tag"',
+            "python scripts/data_snapshot.py verify",
+            'gh release edit "$release_tag"',
+            'echo "site_changed=true"',
+        ):
+            self.assertIn(fragment, publisher)
+
     def test_maintenance_restores_private_snapshot_before_mutation(self):
         mutation_steps = {
             ".github/workflows/update-data.yml": "- name: Run pipeline",
@@ -205,27 +227,31 @@ class WorkflowResilienceTests(unittest.TestCase):
             "--draft=false",
             "--latest",
         )
+        publisher = read(PUBLISHER_SCRIPT)
+        for fragment in required_fragments:
+            self.assertIn(fragment, publisher)
+        self.assertLess(
+            publisher.index('gh release create "$release_tag"'),
+            publisher.index("python scripts/data_snapshot.py verify"),
+        )
+        self.assertLess(
+            publisher.index("python scripts/data_snapshot.py verify"),
+            publisher.index('gh release edit "$release_tag"'),
+        )
+        self.assertNotIn("git add data/", publisher)
+        self.assertNotIn("git commit", publisher)
+        self.assertNotIn("git push", publisher)
+
         for path in MAINTENANCE_WORKFLOWS:
             with self.subTest(path=path):
                 workflow = read(path)
-                for fragment in required_fragments:
-                    self.assertIn(fragment, workflow)
-                self.assertLess(
-                    workflow.index('gh release create "$release_tag"'),
-                    workflow.index("python scripts/data_snapshot.py verify"),
-                )
-                self.assertLess(
-                    workflow.index("python scripts/data_snapshot.py verify"),
-                    workflow.index('gh release edit "$release_tag"'),
-                )
-                self.assertNotIn("git add data/", workflow)
-                self.assertNotIn("git commit", workflow)
-                self.assertNotIn("git push", workflow)
+                self.assertIn(f"bash {PUBLISHER_SCRIPT}", workflow)
                 self.assertNotIn("actions/cache", workflow)
                 self.assertIn("permissions:\n  contents: read", workflow)
                 self.assertNotRegex(workflow, r"(?m)^  contents: write$")
 
     def test_publishers_output_exact_deployment_identity(self):
+        publisher = read(PUBLISHER_SCRIPT)
         for path in MAINTENANCE_WORKFLOWS:
             with self.subTest(path=path):
                 workflow = read(path)
@@ -241,31 +267,26 @@ class WorkflowResilienceTests(unittest.TestCase):
                     )
                     self.assertIn(
                         f'echo "{output}=',
-                        workflow,
+                        publisher,
                     )
                 self.assertIn(
                     'if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then',
-                    workflow,
+                    publisher,
                 )
                 self.assertIn("PUBLIC_GITHUB_TOKEN: ${{ github.token }}", workflow)
-                self.assertIn('GH_TOKEN="$PUBLIC_GITHUB_TOKEN"', workflow)
-                self.assertIn('echo "site_changed=true"', workflow)
+                self.assertIn('GH_TOKEN="$PUBLIC_GITHUB_TOKEN"', publisher)
+                self.assertIn('echo "site_changed=true"', publisher)
 
     def test_maintenance_stale_code_guard_fails_closed(self):
-        for path in MAINTENANCE_WORKFLOWS:
-            with self.subTest(path=path):
-                workflow = read(path)
-                publish = workflow.split(
-                    "- name: Publish ", 1
-                )[1]
-                fetch = "git fetch --no-tags origin main:refs/remotes/origin/main"
-                self.assertIn(fetch, publish)
-                self.assertIn(
-                    'if [ "$code_sha" != "$(git rev-parse origin/main)" ]; then',
-                    publish,
-                )
-                self.assertIn("aborting stale publication", publish)
-                self.assertNotIn("git reset --hard", publish)
+        publisher = read(PUBLISHER_SCRIPT)
+        fetch = "git fetch --no-tags origin main:refs/remotes/origin/main"
+        self.assertIn(fetch, publisher)
+        self.assertIn(
+            'if [ "$code_sha" != "$(git rev-parse origin/main)" ]; then',
+            publisher,
+        )
+        self.assertIn("aborting stale publication", publisher)
+        self.assertNotIn("git reset --hard", publisher)
 
     def test_data_workflow_timeouts_preserve_durable_partial_progress(self):
         workflow = read(".github/workflows/update-data.yml")
@@ -509,26 +530,18 @@ class WorkflowResilienceTests(unittest.TestCase):
         )
 
     def test_unchanged_maintenance_preserves_active_pages_release(self):
-        for path in MAINTENANCE_WORKFLOWS:
-            with self.subTest(path=path):
-                workflow = read(path)
-                unchanged = workflow.split(
-                    'if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then', 1
-                )[1].split("\n          fi", 1)[0]
-                self.assertIn(
-                    'active_release_json=$(gh api "/repos/$DATA_REPOSITORY/releases/latest")',
-                    unchanged,
-                )
-                self.assertIn('"$active_dataset_id" "$active_release_tag"', unchanged)
-                self.assertIn(
-                    'echo "release_tag=$active_release_tag"', unchanged
-                )
-                self.assertIn(
-                    'echo "dataset_id=$active_dataset_id"', unchanged
-                )
-                self.assertNotIn(
-                    'echo "release_tag=$BASE_RELEASE_TAG"', unchanged
-                )
+        publisher = read(PUBLISHER_SCRIPT)
+        unchanged = publisher.split(
+            'if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then', 1
+        )[1].split("\nfi", 1)[0]
+        self.assertIn(
+            'active_release_json=$(gh api "/repos/$DATA_REPOSITORY/releases/latest")',
+            unchanged,
+        )
+        self.assertIn('"$active_dataset_id" "$active_release_tag"', unchanged)
+        self.assertIn('echo "release_tag=$active_release_tag"', unchanged)
+        self.assertIn('echo "dataset_id=$active_dataset_id"', unchanged)
+        self.assertNotIn('echo "release_tag=$BASE_RELEASE_TAG"', unchanged)
 
     def test_maintenance_callers_pass_exact_snapshot_and_inherit_secrets(self):
         expected_outputs = {

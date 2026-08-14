@@ -32,6 +32,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import TypedDict
 
+from composition_integrity import (
+    calculate_quarter_composition_hash as _calculate_quarter_composition_hash,
+)
 from data_contract import DATA_CONTRACT_VERSION
 from quarter_health import (
     add_quarter_peer_observations,
@@ -41,9 +44,13 @@ from quarter_health import (
     structural_quarter_health_issues,
 )
 from security_identity import (
+    EQUITY_FUND_SECURITY_KINDS as _EQUITY_FUND_SECURITY_KINDS,
+    FUND_IDENTITY_TICKER_SOURCES as _FUND_IDENTITY_TICKER_SOURCES,
     VALID_INSTRUMENT_TYPES,
     holding_instrument_type,
     is_canonical_security_identifier,
+    is_mutual_fund_ticker,
+    is_synthetic_identifier,
     normalize_instrument_type,
     normalize_note_security_label,
     normalize_security_kind,
@@ -54,6 +61,8 @@ from security_identity import (
     stock_file_stem,
     stock_filename,
     stock_lookup_id,
+    published_holding_instrument_type,
+    registry_entry_has_equity_fund_identity,
 )
 from value_units import (
     PEER_MIN_SCALE_COUNT_SUPPORT,
@@ -92,17 +101,6 @@ _NEW_HOLDINGS_REPLACEMENT_MIN_MATCHED_ROWS = 5
 _NEW_HOLDINGS_REPLACEMENT_COVERAGE_NUMERATOR = 9
 _NEW_HOLDINGS_REPLACEMENT_COVERAGE_DENOMINATOR = 10
 _SECURITY_IDENTITY_VERSION = 1
-_EQUITY_FUND_SECURITY_KINDS = frozenset({
-    "ETF",
-    "MUTUAL FUND",
-    "CLOSED-END FUND",
-})
-_FUND_IDENTITY_TICKER_SOURCES = frozenset({
-    "cusip_map_vetted",
-    "manual_override",
-    "openfigi_plain_ticker",
-    "openfigi_prior_registry_ticker",
-})
 _EXCLUSIVE_ETF_ISSUER_RE = re.compile(
     r"(?:"
     r"ISHARES\s+TR|"
@@ -118,7 +116,6 @@ _SCHWAB_STRATEGIC_TR_RE = re.compile(
     re.IGNORECASE,
 )
 _RBB_FD_INC_RE = re.compile(r"RBB\s+FD\s+INC", re.IGNORECASE)
-_MUTUAL_FUND_TICKER_RE = re.compile(r"^[A-Z]{4}X$")
 _ETN_KIND_RE = re.compile(
     r"\bETNS?\b|\bEXCHANGE[- ]TRADED\s+NOTES?\b",
     re.IGNORECASE,
@@ -140,7 +137,6 @@ _SUPPORTED_VALUE_UNIT_POLICY_VERSIONS = (
     | {VALUE_UNIT_POLICY_VERSION}
 )
 _COMPOSITION_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
-_SYNTHETIC_IDENTIFIER_RE = re.compile(r"^0{3,}([A-Z]{2,7})$")
 _SUSPICIOUS_TICKER_RE = re.compile(
     r"^\d|\s|\d+\.\d+|(?:PERP|PFD|NOTE|WARRANT)$",
     re.IGNORECASE,
@@ -303,34 +299,6 @@ def holding_stock_id(
     )
 
 
-def published_holding_instrument_type(
-    holding: dict,
-    registry_entry: dict | None = None,
-) -> str:
-    """Independently derive the canonical public instrument type.
-
-    Persisted fund rows remain registry-independent filing evidence. Generated
-    stock artifacts may override a legacy option parse for a confirmed bond,
-    or a non-option parser bucket for a confirmed listed fund.
-    """
-    raw_type = holding_instrument_type(holding)
-    if (
-        isinstance(registry_entry, dict)
-        and normalize_security_kind(registry_entry.get("security_kind"))
-        == "BOND"
-        and normalize_instrument_type(registry_entry.get("type")) == "NOTE"
-    ):
-        return "NOTE"
-    if (
-        raw_type not in {"CALL", "PUT", "OPT"}
-        and isinstance(registry_entry, dict)
-        and normalize_instrument_type(registry_entry.get("type")) == "EQUITY"
-        and registry_entry_has_equity_fund_identity(registry_entry)
-    ):
-        return "EQUITY"
-    return raw_type
-
-
 def validate_fund_holding_identity(
     holding: dict,
     context: str,
@@ -366,7 +334,6 @@ def validate_fund_holding_identity(
             )
 
     raw_cusip = holding.get("cusip")
-    normalized_cusip = normalize_security_identifier(raw_cusip)
     if not is_canonical_security_identifier(raw_cusip):
         errors.append(
             f"{context} has invalid canonical cusip {raw_cusip!r}"
@@ -498,94 +465,11 @@ def _numbers_match(left: object, right: object) -> bool:
     return math.isclose(left, right, rel_tol=1e-12, abs_tol=1e-9)
 
 
-def _composition_holdings_payload(
-    holdings: list[dict],
-    *,
-    include_holding_type: bool = False,
-) -> list[dict]:
-    payload = []
-    for holding in holdings:
-        row = {
-            "cusip": holding.get("cusip"),
-            "class": holding.get("class"),
-            "value": holding.get("value"),
-            "shares": (
-                0 if holding.get("shares_imputed") else holding.get("shares")
-            ),
-            "put_call": holding.get("put_call"),
-        }
-        if include_holding_type:
-            row["holding_type"] = holding_instrument_type(holding)
-        payload.append(row)
-    payload.sort(key=lambda row: json.dumps(
-        row, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ))
-    return payload
-
-def _composition_source_decisions(source_filings: list[dict]) -> list[dict]:
-    decisions: list[dict] = []
-    for source in source_filings:
-        decision = {
-            "accession": source.get("accession"),
-            "source_hash": source.get("source_hash"),
-            "form_type": source.get("form_type"),
-            "accepted_at": source.get("accepted_at"),
-            "amendment_number": source.get("amendment_number"),
-            "amendment_kind": source.get("amendment_kind"),
-            "composition_action": source.get("composition_action"),
-            "new_holdings_overlap": source.get("new_holdings_overlap"),
-        }
-        if "security_identity_version" in source:
-            decision["security_identity_version"] = source.get(
-                "security_identity_version"
-            )
-        decisions.append(decision)
-    return decisions
-
 def calculate_composition_hash(quarter: dict) -> str:
-    sources = {}
-    for source in quarter["source_filings"]:
-        if isinstance(source, dict) and isinstance(source.get("accession"), str):
-            sources[source["accession"]] = source
-    applied = quarter["applied_accessions"]
-    version = quarter.get("composition_version")
-    raw_hash_version = quarter.get("composition_hash_version", 1)
-    hash_version = (
-        raw_hash_version
-        if (
-            type(raw_hash_version) is int
-            and raw_hash_version in {1, _COMPOSITION_HASH_VERSION}
-        )
-        else 1
+    return _calculate_quarter_composition_hash(
+        quarter,
+        current_hash_version=_COMPOSITION_HASH_VERSION,
     )
-    payload = {
-        "composition_version": version,
-        "report_date": quarter.get("report_date"),
-        "base_accession": quarter["base_accession"],
-        "applied_accessions": applied,
-        "applied_source_hashes": [sources[accession]["source_hash"] for accession in applied],
-        "holdings": _composition_holdings_payload(
-            quarter["holdings"],
-            include_holding_type=hash_version >= 2,
-        ),
-    }
-    if hash_version >= 2:
-        payload["composition_hash_version"] = hash_version
-    if version == 2:
-        payload["source_decisions"] = _composition_source_decisions(
-            quarter["source_filings"]
-        )
-        if "security_identity_version" in quarter:
-            payload["security_identity_version"] = quarter.get(
-                "security_identity_version"
-            )
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def load_json(path: Path, errors: list[str]) -> dict | list | None:
@@ -677,13 +561,6 @@ def registry_alias_has_sec_proof(
         and sec_issuer_proof_key(entry.get("dominant_issuer"))
         == sec_issuer
     )
-
-
-def is_synthetic_identifier(identifier: str | None) -> bool:
-    raw = str(identifier or "").strip().upper()
-    if raw in {"000000NAN", "0LOOKITUP", "MONEYMRKT", "OOOOOOOOO"}:
-        return True
-    return bool(_SYNTHETIC_IDENTIFIER_RE.match(raw))
 
 
 def allow_vetted_legacy_registry_ticker(
@@ -2584,33 +2461,13 @@ def expected_filer_fund_kind(entry: dict) -> str | None:
             or _exact_registry_issuer_matches(entry, _RBB_FD_INC_RE)
         )
         and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,15}", ticker)
-        and not _MUTUAL_FUND_TICKER_RE.fullmatch(ticker)
+        and not is_mutual_fund_ticker(ticker)
         and "ticker_collision_demoted" not in sources
         and bool(sources & _FUND_IDENTITY_TICKER_SOURCES)
         and "SELF-DIRECTED ACCOUNT" not in dominant_class
     ):
         return "ETF"
     return None
-
-
-def registry_entry_has_equity_fund_identity(entry: dict | None) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    if normalize_instrument_type(entry.get("type")) != "EQUITY":
-        return False
-    kind = normalize_security_kind(entry.get("security_kind"))
-    if kind in _EQUITY_FUND_SECURITY_KINDS:
-        return True
-    if kind is not None:
-        return False
-    sources = set(entry.get("sources") or [])
-    if (
-        "ticker_collision_demoted" in sources
-        or not (sources & _FUND_IDENTITY_TICKER_SOURCES)
-    ):
-        return False
-    ticker = str(entry.get("ticker") or "").strip().upper()
-    return bool(_MUTUAL_FUND_TICKER_RE.fullmatch(ticker))
 
 
 def registry_entry_has_fund_evidence(entry: dict | None) -> bool:

@@ -107,6 +107,33 @@ def is_unit_evidence_holding(holding: dict) -> bool:
     )
 
 
+def _unit_evidence_row(
+    holding: dict,
+) -> tuple[str, float, float] | None:
+    """Normalize policy-neutral fields used by each unit-evidence path."""
+
+    if not is_unit_evidence_holding(holding):
+        return None
+    value = _positive_number(holding.get("value"))
+    shares = _positive_number(holding.get("shares"))
+    if value is None or shares is None:
+        return None
+    cusip = str(holding.get("cusip") or "").strip().upper()
+    return cusip, value, shares
+
+
+def _scale_ratio_cluster(ratio: float) -> str | None:
+    """Classify a price ratio without applying any acceptance thresholds."""
+
+    if 1 / PEER_ALIGNMENT_FACTOR <= ratio <= PEER_ALIGNMENT_FACTOR:
+        return "aligned_1x"
+    if PEER_RATIO_MIN <= ratio <= PEER_RATIO_MAX:
+        return "inflated_1000x"
+    if 1 / PEER_RATIO_MAX <= ratio <= 1 / PEER_RATIO_MIN:
+        return "understated_1000x"
+    return None
+
+
 def _adjacent_position_key(holding: dict) -> tuple[str, str] | None:
     """Return a stable cross-quarter key without excluding principal rows."""
     cusip = str(holding.get("cusip") or "").strip().upper()
@@ -183,13 +210,7 @@ def adjacent_quarter_scale_evidence(
             (current_value / current_shares)
             / (adjacent_value / adjacent_shares)
         )
-        cluster = None
-        if 1 / PEER_ALIGNMENT_FACTOR <= ratio <= PEER_ALIGNMENT_FACTOR:
-            cluster = "aligned_1x"
-        elif PEER_RATIO_MIN <= ratio <= PEER_RATIO_MAX:
-            cluster = "inflated_1000x"
-        elif 1 / PEER_RATIO_MAX <= ratio <= 1 / PEER_RATIO_MIN:
-            cluster = "understated_1000x"
+        cluster = _scale_ratio_cluster(ratio)
         if cluster is not None:
             clusters[cluster]["positions"] += 1
             clusters[cluster]["raw_value"] += current_value
@@ -343,16 +364,13 @@ def classify_value_units(
     low_price_cusips: set[str] = set()
 
     for holding in rows:
-        if not is_unit_evidence_holding(holding):
+        row = _unit_evidence_row(holding)
+        if row is None:
             continue
-        value = _positive_number(holding.get("value"))
-        shares = _positive_number(holding.get("shares"))
-        if value is None or shares is None:
-            continue
+        cusip, value, shares = row
 
         eligible_positions += 1
         eligible_value += value
-        cusip = str(holding.get("cusip") or "").strip().upper()
         if cusip:
             eligible_cusips.add(cusip)
         if value / shares < LOW_PRICE_CUTOFF:
@@ -420,13 +438,10 @@ def classify_value_units(
     exact_peer_dollar_cusips: set[str] = set()
     exact_peer_thousands_cusips: set[str] = set()
     for holding in rows:
-        if not is_unit_evidence_holding(holding):
+        row = _unit_evidence_row(holding)
+        if row is None:
             continue
-        value = _positive_number(holding.get("value"))
-        shares = _positive_number(holding.get("shares"))
-        if value is None or shares is None:
-            continue
-        cusip = str(holding.get("cusip") or "").strip().upper()
+        cusip, value, shares = row
         reference = peer_prices.get(cusip)
         if not reference:
             continue
@@ -450,12 +465,16 @@ def classify_value_units(
             exact_peer_matched_positions += 1
             exact_peer_matched_cusips.add(cusip)
             exact_peer_matched_value += value
-        if 1 / PEER_ALIGNMENT_FACTOR <= ratio <= PEER_ALIGNMENT_FACTOR:
+        cluster = _scale_ratio_cluster(ratio)
+        if cluster == "aligned_1x":
             peer_dollar_value += value
             peer_dollar_cusips.add(cusip)
             if is_exact:
                 exact_peer_dollar_value += value
                 exact_peer_dollar_cusips.add(cusip)
+        # Runtime peer prices deliberately allow the same threefold tolerance
+        # around 1/1,000 used for the aligned 1x cluster. The validation
+        # backstop below uses the narrower 500x-2,000x policy instead.
         if (
             1 / (VALUE_UNIT_SCALE * PEER_ALIGNMENT_FACTOR)
             <= ratio
@@ -843,15 +862,12 @@ def peer_scale_evidence(
     understated_cusips: set[str] = set()
 
     for holding in holdings:
-        if not is_unit_evidence_holding(holding):
+        row = _unit_evidence_row(holding)
+        if row is None:
             continue
-        value = _positive_number(holding.get("value"))
-        shares = _positive_number(holding.get("shares"))
-        if value is None or shares is None:
-            continue
+        cusip, value, shares = row
         eligible_value += value
 
-        cusip = str(holding.get("cusip") or "").strip().upper()
         if cusip:
             eligible_cusips.add(cusip)
         if value / shares < LOW_PRICE_CUTOFF:
@@ -869,15 +885,16 @@ def peer_scale_evidence(
         matched_cusips.add(cusip)
         matched_value += value
         ratio = (value / shares) / reference_price
-        if 1 / PEER_ALIGNMENT_FACTOR <= ratio <= PEER_ALIGNMENT_FACTOR:
+        cluster = _scale_ratio_cluster(ratio)
+        if cluster == "aligned_1x":
             aligned_positions += 1
             aligned_cusips.add(cusip)
             aligned_value += value
-        elif PEER_RATIO_MIN <= ratio <= PEER_RATIO_MAX:
+        elif cluster == "inflated_1000x":
             inflated_positions += 1
             inflated_cusips.add(cusip)
             inflated_value += value
-        elif 1 / PEER_RATIO_MAX <= ratio <= 1 / PEER_RATIO_MIN:
+        elif cluster == "understated_1000x":
             understated_positions += 1
             understated_cusips.add(cusip)
             understated_value += value
