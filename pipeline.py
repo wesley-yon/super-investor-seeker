@@ -326,6 +326,9 @@ class FilingDiscoveryError(RuntimeError):
 class FilingParseError(RuntimeError):
     """One immutable SEC filing component could not be parsed or reconciled."""
 
+class FilingIdentityError(FilingParseError):
+    """Primary-document filer identity is absent or conflicts with its CIK."""
+
 class FilingFetchError(FilingParseError):
     """One SEC filing resource remained unavailable after HTTP retries."""
 
@@ -1266,18 +1269,18 @@ def fetch_filing_holdings(
     metadata = parse_primary_document(primary_bytes, supplied_form)
     source_filer_cik = metadata.get("filer_cik")
     if source_filer_cik is None:
-        raise FilingParseError(
+        raise FilingIdentityError(
             f"primary filing identity is missing filer CIK for "
             f"{cik}/{accession}"
         )
     if source_filer_cik != int(cik):
-        raise FilingParseError(
+        raise FilingIdentityError(
             f"filer CIK conflict for {accession}: requested {cik}, "
             f"primary document declares {source_filer_cik}"
         )
     source_manager_name = metadata.get("filing_manager_name")
     if not normalize_filer_identity_name(source_manager_name):
-        raise FilingParseError(
+        raise FilingIdentityError(
             f"primary filing identity is missing filing-manager name for "
             f"{cik}/{accession}"
         )
@@ -10557,6 +10560,11 @@ def _compose_replay_targets(
             if component is None:
                 try:
                     component = fetch_filing_holdings(cik, accession, filing=row)
+                except FilingIdentityError:
+                    # Identity failures are never made safe by a later
+                    # restatement. Suppressing one could hide a cross-CIK
+                    # component in the discovered filing chain.
+                    raise
                 except FilingParseError as exc:
                     parse_failures.append((row, exc))
                     continue
