@@ -1765,8 +1765,23 @@ function badge(ch) {
 
 function displayDate(dateStr) {
   if (!dateStr) return "—";
-  const d = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return dateStr;
+  const value = String(dateStr).trim();
+  if (/^\d{4}-\d{2}$/.test(value)) {
+    const year = Number(value.slice(0, 4));
+    const month = Number(value.slice(5, 7));
+    if (year < 1 || month < 1 || month > 12) return value;
+    const d = new Date(`${value}-01T00:00:00`);
+    return d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const d = new Date(`${value}T00:00:00`);
+  const [year, month, day] = value.split("-").map(Number);
+  const isExactDate = year >= 1
+    && !Number.isNaN(d.getTime())
+    && d.getFullYear() === year
+    && d.getMonth() + 1 === month
+    && d.getDate() === day;
+  if (!isExactDate) return value;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 

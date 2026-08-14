@@ -10869,6 +10869,7 @@ def run_for_cik(
             quarters_n,
             state,
             preserve_history=True,
+            force=True,
         )
     except (Exception, KeyboardInterrupt) as exc:
         log.error("single-CIK replay failed for CIK %s: %s", cik, exc)
@@ -10897,7 +10898,7 @@ def run_for_cik(
         enforce_published_quarter_health(state)
     save_state(state)
     save_cusip_map(cusip_map)
-    log.info(f"processed {processed} new filings for CIK {cik}")
+    log.info("processed %s filing trigger(s) for CIK %s", processed, cik)
     if rebuild_outputs:
         rebuild_registry_backed_outputs()
     return True

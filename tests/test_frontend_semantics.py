@@ -1,7 +1,9 @@
 import json
+import os
 import subprocess
 import unittest
 from pathlib import Path
+from typing import cast
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +27,47 @@ class FrontendSemanticsTests(unittest.TestCase):
             text=True,
         )
         return json.loads(completed.stdout)
+
+    def test_display_date_preserves_legacy_month_precision(self) -> None:
+        date_start = self.html.index("function displayDate(")
+        date_end = self.html.index("function fundTicker(", date_start)
+        completed = subprocess.run(
+            [
+                "node",
+                "-e",
+                (
+                    self.html[date_start:date_end]
+                    + """
+                    console.log(JSON.stringify({
+                      exact: displayDate("2026-05-14"),
+                      monthOnly: displayDate("2026-05"),
+                      malformed: displayDate("not-a-date"),
+                      impossible: displayDate("2026-02-31"),
+                      invalidYear: displayDate("0000-02-29"),
+                    }));
+                    """
+                ),
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "LANG": "en_US.UTF-8",
+                "LC_ALL": "en_US.UTF-8",
+            },
+        )
+        result = cast(
+            dict[str, str],
+            json.loads(completed.stdout),
+        )
+
+        self.assertEqual("May 14, 2026", result["exact"])
+        self.assertEqual("May 2026", result["monthOnly"])
+        self.assertEqual("not-a-date", result["malformed"])
+        self.assertEqual("2026-02-31", result["impossible"])
+        self.assertEqual("0000-02-29", result["invalidYear"])
 
     def test_homepage_pins_venrock_before_other_popular_filers(self) -> None:
         constants_start = self.html.index(

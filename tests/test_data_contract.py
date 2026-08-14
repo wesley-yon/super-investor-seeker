@@ -1389,7 +1389,9 @@ class GeneratedDataContractTests(unittest.TestCase):
         self.assertRegex(
             workflow,
             r"(?s)- name: Refresh recently accepted 13F filings.*?"
-            r"if: steps\.pipeline\.outputs\.migration_only != 'true'",
+            r"if: >-\n\s+"
+            r"steps\.pipeline\.outputs\.migration_only != 'true' &&\n\s+"
+            r"steps\.pipeline\.outputs\.targeted_cik != 'true'",
         )
         for required_step in (
             "Regenerate registry-backed site data",
