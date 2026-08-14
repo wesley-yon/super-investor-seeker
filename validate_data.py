@@ -8,6 +8,7 @@ pipeline changes. It verifies that:
   - index.json points at existing fund/stock files
   - funds-index.json is lightweight and matches the fund portion of index.json
   - fund quarter histories are sorted and de-duplicated
+  - filing dates preserve their actual day or retained legacy month precision
   - each fund index entry exposes its four newest actual report quarters
   - stock holder histories are sorted, de-duplicated, and carry pct_of_fund
   - stock histories reconcile to every retained quarter without inventing
@@ -225,6 +226,25 @@ def report_quarter_code(report_date: object) -> int | None:
     if quarter is None:
         return None
     return parsed.year * 10 + quarter
+
+
+def filing_date_precision(value: object) -> str | None:
+    """Classify a valid SEC filing date without inventing missing precision."""
+    if not isinstance(value, str):
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            return None
+        return "DAY"
+    if re.fullmatch(r"\d{4}-\d{2}", value):
+        try:
+            date.fromisoformat(f"{value}-01")
+        except ValueError:
+            return None
+        return "MONTH"
+    return None
 
 
 def expected_fund_quarter_codes(report_dates: object) -> list[int]:
@@ -1019,9 +1039,10 @@ def validate_amendment_composition(
                 f"{context} source {accession} has unsupported "
                 f"security_identity_version {source_identity_version!r}"
             )
-        if not isinstance(source.get("filing_date"), str) or not source["filing_date"]:
+        if filing_date_precision(source.get("filing_date")) != "DAY":
             errors.append(
-                f"{context} source {accession} has invalid filing_date"
+                f"{context} source {accession} has invalid filing_date; "
+                "structured provenance requires a valid YYYY-MM-DD date"
             )
         for total_key in ("reported_entry_total", "reported_value_total"):
             total = source.get(total_key)
@@ -1697,8 +1718,34 @@ def validate_funds(
                 continue
             if not quarter.get("report_date"):
                 errors.append(f"fund file {fp.name} quarter {idx} missing report_date")
-            if not quarter.get("filing_date"):
-                errors.append(f"fund file {fp.name} quarter {idx} missing filing_date")
+            filing_date = quarter.get("filing_date")
+            filing_precision = filing_date_precision(filing_date)
+            has_structured_provenance = (
+                "source_filings" in quarter
+                or "composition_version" in quarter
+            )
+            filing_context = f"fund file {fp.name} quarter {idx}"
+            if filing_precision == "MONTH":
+                if has_structured_provenance:
+                    errors.append(
+                        f"{filing_context} has month-only filing_date "
+                        f"{filing_date!r} despite structured provenance"
+                    )
+                elif quality_summary is not None:
+                    legacy_count = quality_summary.get(
+                        "legacy_month_precision_filing_dates", 0
+                    )
+                    quality_summary[
+                        "legacy_month_precision_filing_dates"
+                    ] = (
+                        legacy_count if type(legacy_count) is int else 0
+                    ) + 1
+            elif filing_precision != "DAY":
+                errors.append(
+                    f"{filing_context} has invalid filing_date "
+                    f"{filing_date!r}; expected a valid YYYY-MM-DD date or "
+                    "retained legacy YYYY-MM month"
+                )
 
             if (
                 quality_summary is not None
@@ -4262,6 +4309,7 @@ def main() -> int:
         "legacy_value_unit_quarters": 0,
         "legacy_value_unit_sources": 0,
         "without_value_unit_provenance": 0,
+        "legacy_month_precision_filing_dates": 0,
         "value_unit_migration_version": None,
         "filer_name_collision_groups": 0,
     }
@@ -4280,6 +4328,20 @@ def main() -> int:
         fund_calendars,
         expected_current_stats,
     ) = validate_funds(errors, registry, quality_summary)
+    raw_legacy_month_filing_dates = quality_summary[
+        "legacy_month_precision_filing_dates"
+    ]
+    legacy_month_filing_dates = (
+        raw_legacy_month_filing_dates
+        if type(raw_legacy_month_filing_dates) is int
+        else 0
+    )
+    if legacy_month_filing_dates:
+        warnings.append(
+            f"{legacy_month_filing_dates} retained legacy quarter(s) have "
+            "month-only filing dates; the site must display month precision "
+            "without inventing a calendar day"
+        )
     filer_collisions = filer_name_collision_groups(fund_calendars)
     quality_summary["filer_name_collision_groups"] = len(filer_collisions)
     if filer_collisions:
@@ -4372,6 +4434,10 @@ def main() -> int:
         f"hash-v{_COMPOSITION_HASH_VERSION} quarter(s), "
         f"{quality_summary['legacy_composition_hash_quarters']} retained "
         "legacy hash quarter(s)"
+    )
+    print(
+        "  - Retained legacy month-precision filing dates: "
+        f"{quality_summary['legacy_month_precision_filing_dates']}"
     )
     print(
         "  - Value-unit migration: "

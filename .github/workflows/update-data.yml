@@ -20,6 +20,11 @@ on:
         required: false
         default: 4
         type: number
+      filing_cik:
+        description: Exact SEC CIK to force-replay instead of running the broad ingest
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: data-maintenance
@@ -144,8 +149,9 @@ jobs:
         # An inner cooperative timeout sends SIGTERM while enough job time
         # remains to regenerate, validate, and publish the pipeline's durable
         # checkpoint. Unexpected non-zero exits still fail closed. A
-        # successful migration-only run intentionally skips the recent-feed
-        # pass so the one-time replay keeps the hosted-run budget.
+        # successful migration-only or explicit single-CIK run intentionally
+        # skips the recent-feed pass so the bounded replay keeps the hosted-run
+        # budget and cannot broaden a targeted repair.
         # Even if this step, the recent-feed pass, and regeneration all reach
         # their ceilings, the job retains more than an hour for validation,
         # private snapshot publication, Pages, and setup variance.
@@ -157,6 +163,7 @@ jobs:
           OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
           REPAIR_AMENDMENTS: ${{ inputs.repair_amendments || 'false' }}
           FILING_QUARTERS: ${{ inputs.filing_quarters || 4 }}
+          FILING_CIK: ${{ inputs.filing_cik || '' }}
         run: |
           set -euo pipefail
           mode=(--all)
@@ -193,7 +200,16 @@ jobs:
           print("true" if needed else "false")
           '
           )
-          if [ "$migration_only" = "true" ]; then
+          targeted_cik=false
+          if [ -n "$FILING_CIK" ]; then
+            if [[ ! "$FILING_CIK" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::filing_cik must be a positive integer CIK"
+              exit 1
+            fi
+            mode=(--cik "$FILING_CIK")
+            migration_only=false
+            targeted_cik=true
+          elif [ "$migration_only" = "true" ]; then
             mode=(--migrations-only)
           elif [ "$REPAIR_AMENDMENTS" = "true" ]; then
             mode=(--repair-amendments)
@@ -214,13 +230,17 @@ jobs:
             exit "$pipeline_status"
           fi
           echo "migration_only=$migration_only" >> "$GITHUB_OUTPUT"
+          echo "targeted_cik=$targeted_cik" >> "$GITHUB_OUTPUT"
 
       - name: Refresh recently accepted 13F filings
         id: recent_filings
         # SEC quarterly company.idx files can lag newly accepted EDGAR filings.
         # This generic current-feed pass catches any recent 13F-HR / 13F-HR/A
-        # accession before the registry-backed site data is regenerated.
-        if: steps.pipeline.outputs.migration_only != 'true'
+        # accession before the registry-backed site data is regenerated. An
+        # explicit CIK replay is deliberately kept targeted and skips this pass.
+        if: >-
+          steps.pipeline.outputs.migration_only != 'true' &&
+          steps.pipeline.outputs.targeted_cik != 'true'
         timeout-minutes: 20
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}

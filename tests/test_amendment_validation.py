@@ -189,6 +189,18 @@ class AmendmentCompositionValidationTests(unittest.TestCase):
         validate_data.validate_amendment_composition(quarter, "test quarter", errors)
         return errors
 
+    def test_structured_sources_require_exact_valid_filing_dates(self) -> None:
+        for filing_date in ("2025-05", "2025-02-31", "May 2025", None):
+            with self.subTest(filing_date=filing_date):
+                quarter = valid_quarter()
+                quarter["source_filings"][0]["filing_date"] = filing_date
+                errors = self.validate(quarter)
+                self.assertTrue(any(
+                    "structured provenance requires a valid YYYY-MM-DD date"
+                    in error
+                    for error in errors
+                ))
+
     def test_valid_original_plus_new_holdings_chain(self):
         self.assertEqual(self.validate(valid_quarter()), [])
 

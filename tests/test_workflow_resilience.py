@@ -41,6 +41,22 @@ class WorkflowResilienceTests(unittest.TestCase):
         self.assertNotRegex(update, r"(?m)^\s*- cron: '0 ")
         self.assertNotRegex(refresh, r"(?m)^\s*- cron: '0 ")
 
+    def test_manual_update_can_force_replay_one_cik(self):
+        workflow = read(".github/workflows/update-data.yml")
+        dispatch = workflow.split("  workflow_dispatch:", 1)[1].split(
+            "\nconcurrency:", 1
+        )[0]
+
+        self.assertRegex(
+            dispatch,
+            r"(?ms)^      filing_cik:\n.*?^        required: false$",
+        )
+        self.assertIn("FILING_CIK: ${{ inputs.filing_cik || '' }}", workflow)
+        self.assertIn('[[ ! "$FILING_CIK" =~ ^[1-9][0-9]*$ ]]', workflow)
+        self.assertIn('mode=(--cik "$FILING_CIK")', workflow)
+        self.assertIn('echo "targeted_cik=$targeted_cik" >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn("steps.pipeline.outputs.targeted_cik != 'true'", workflow)
+
     def test_keepalive_is_twice_monthly_empty_and_strictly_off_main(self):
         workflow = read(".github/workflows/keepalive.yml")
 

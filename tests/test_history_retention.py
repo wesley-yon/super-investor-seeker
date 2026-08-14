@@ -175,6 +175,7 @@ class HistoryRetentionTests(unittest.TestCase):
 
         discovery.assert_called_once_with(CIK, 2)
         self.assertIs(replay.call_args.kwargs["preserve_history"], True)
+        self.assertIs(replay.call_args.kwargs["force"], True)
 
     def test_single_fund_failure_checkpoints_partial_replay_progress(self) -> None:
         state = {"_processed_set": set()}
