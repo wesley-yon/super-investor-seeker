@@ -87,6 +87,52 @@ class InstrumentTypeTests(unittest.TestCase):
             security_identity.holding_instrument_type(None),
         )
 
+    def test_publication_identity_policy_has_one_shared_implementation(self) -> None:
+        mutual_fund_entry = {
+            "ticker": "BCOIX",
+            "type": "EQUITY",
+            "sources": ["cusip_map_vetted"],
+        }
+        holding = {"holding_type": "NOTE"}
+
+        self.assertTrue(
+            security_identity.registry_entry_has_equity_fund_identity(
+                mutual_fund_entry
+            )
+        )
+        self.assertEqual(
+            "EQUITY",
+            security_identity.published_holding_instrument_type(
+                holding,
+                mutual_fund_entry,
+            ),
+        )
+        self.assertIs(
+            pipeline.published_holding_instrument_type,
+            security_identity.published_holding_instrument_type,
+        )
+        self.assertIs(
+            validate_data.published_holding_instrument_type,
+            security_identity.published_holding_instrument_type,
+        )
+
+    def test_synthetic_identifier_policy_has_one_shared_implementation(self) -> None:
+        self.assertTrue(security_identity.is_synthetic_identifier("00000AAPL"))
+        self.assertTrue(security_identity.is_synthetic_identifier("MONEYMRKT"))
+        self.assertFalse(security_identity.is_synthetic_identifier("037833100"))
+        self.assertEqual(
+            "AAPL",
+            security_identity.synthetic_identifier_ticker_hint("00000AAPL"),
+        )
+        self.assertIs(
+            pipeline.is_synthetic_identifier,
+            security_identity.is_synthetic_identifier,
+        )
+        self.assertIs(
+            validate_data.is_synthetic_identifier,
+            security_identity.is_synthetic_identifier,
+        )
+
 
 class NoteSecurityLabelTests(unittest.TestCase):
     def test_normalizes_supported_openfigi_note_labels(self) -> None:
@@ -869,6 +915,31 @@ class SecValidatedTickerAliasTests(unittest.TestCase):
         self.assertEqual({apple_key}, ticker_to_norms["AAPL"])
         self.assertEqual({bank_key}, ticker_to_norms["BAC"])
         self.assertEqual({bank_key}, ticker_to_norms["BAC-PB"])
+
+    def test_prefix_lookup_cache_is_scoped_to_the_name_index(self) -> None:
+        norm = "PREFIXCACHEPROBE"
+
+        self.assertEqual(
+            "FIRST",
+            pipeline.prefix_lookup(norm, {"PREFIXCACHEPROBE INC": "FIRST"}),
+        )
+        self.assertEqual(
+            "SECOND",
+            pipeline.prefix_lookup(norm, {"PREFIXCACHEPROBE PLC": "SECOND"}),
+        )
+
+    def test_prefix_lookup_preserves_legacy_cache_keyword(self) -> None:
+        cache: dict[str, str | None] = {}
+
+        self.assertEqual(
+            "FIRST",
+            pipeline.prefix_lookup(
+                "PREFIXCACHEPROBE",
+                {"PREFIXCACHEPROBE INC": "FIRST"},
+                _cache=cache,
+            ),
+        )
+        self.assertEqual("FIRST", cache["PREFIXCACHEPROBE"])
 
     def test_only_narrow_existing_ticker_edits_are_accepted(self) -> None:
         sec_titles = {
@@ -2187,6 +2258,31 @@ probe()
                 pipeline.rebuild_registry_backed_outputs()
 
         canonicalize.assert_not_called()
+
+    def test_registry_rebuild_reuses_builder_observed_cusips(self) -> None:
+        observed_cusips = frozenset({"037833100"})
+        registry = pipeline.CusipRegistry(
+            {"037833100": {"ticker": "AAPL"}},
+            observed_cusips=observed_cusips,
+        )
+        builder = mock.Mock(return_value=registry)
+        validator = mock.Mock(return_value=[])
+
+        with mock.patch.multiple(
+            pipeline,
+            build_cusip_registry=builder,
+            validate_cusip_registry=validator,
+            write_security_labels=mock.Mock(),
+            canonicalize_fund_files=mock.Mock(),
+            repair_zero_share_holdings_in_place=mock.Mock(),
+            upgrade_composition_hashes_in_place=mock.Mock(),
+            regenerate_stock_files_and_index=mock.Mock(),
+            write_ticker_health_report=mock.Mock(),
+        ):
+            pipeline.rebuild_registry_backed_outputs()
+
+        builder.assert_called_once()
+        validator.assert_called_once_with(current_cusips=observed_cusips)
 
     def test_registry_rebuild_normalizes_identity_before_share_repair(
         self,

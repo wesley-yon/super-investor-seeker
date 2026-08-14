@@ -1623,12 +1623,17 @@ class PipelineIdentityTests(unittest.TestCase):
             (funds_dir / "1.json").write_text(json.dumps(reference, indent=2))
             (funds_dir / "2.json").write_text(json.dumps(missing, indent=2))
 
-            original_funds_dir = pipeline.FUNDS_DIR
-            try:
-                pipeline.FUNDS_DIR = funds_dir
+            with (
+                mock.patch.object(pipeline, "FUNDS_DIR", funds_dir),
+                mock.patch.object(
+                    pipeline,
+                    "build_zero_share_price_reference_maps",
+                    side_effect=AssertionError(
+                        "repair must collect references during its reset pass"
+                    ),
+                ),
+            ):
                 updated = pipeline.repair_zero_share_holdings_in_place()
-            finally:
-                pipeline.FUNDS_DIR = original_funds_dir
 
             repaired = json.loads((funds_dir / "2.json").read_text())
             holding = repaired["quarters"][0]["holdings"][0]

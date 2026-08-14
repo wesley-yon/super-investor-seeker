@@ -1,0 +1,5 @@
+target-version = "py311"
+exclude = [".hermes"]
+
+[lint]
+select = ["E9", "F", "B006", "B904"]

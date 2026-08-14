@@ -80,6 +80,24 @@ class ValueUnitClassifierTests(unittest.TestCase):
     def test_policy_version_is_two(self) -> None:
         self.assertEqual(2, value_units.VALUE_UNIT_POLICY_VERSION)
 
+    def test_policy_free_peer_evidence_helpers_are_shared(self) -> None:
+        holding = equity("037833100", 150, 10)
+
+        self.assertEqual(
+            ("037833100", 150.0, 10.0),
+            value_units._unit_evidence_row(holding),
+        )
+        self.assertEqual("aligned_1x", value_units._scale_ratio_cluster(1.0))
+        self.assertEqual(
+            "inflated_1000x",
+            value_units._scale_ratio_cluster(1000.0),
+        )
+        self.assertEqual(
+            "understated_1000x",
+            value_units._scale_ratio_cluster(0.001),
+        )
+        self.assertIsNone(value_units._scale_ratio_cluster(25.0))
+
     def test_broad_value_weighted_evidence_scales_entire_component(self) -> None:
         holdings = [
             equity(f"10000000{i}", 100 + i, 1000 + i)

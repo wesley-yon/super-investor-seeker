@@ -50,6 +50,10 @@ import requests
 from lxml import etree
 from lxml import html as lxml_html
 
+from composition_integrity import (
+    calculate_composition_hash as _calculate_composition_hash,
+    canonical_json_hash as _canonical_json_hash,
+)
 from data_contract import DATA_CONTRACT_VERSION
 from quarter_health import (
     add_quarter_peer_observations,
@@ -59,8 +63,12 @@ from quarter_health import (
     structural_quarter_health_issues,
 )
 from security_identity import (
+    EQUITY_FUND_SECURITY_KINDS as _EQUITY_FUND_SECURITY_KINDS,
+    FUND_IDENTITY_TICKER_SOURCES as _FUND_IDENTITY_TICKER_SOURCES,
     compose_security_label,
     holding_instrument_type,
+    is_mutual_fund_ticker,
+    is_synthetic_identifier,
     normalize_instrument_type,
     normalize_note_security_label,
     normalize_security_identifier,
@@ -70,6 +78,10 @@ from security_identity import (
     sec_ticker_titles,
     stock_filename,
     stock_lookup_id,
+    published_holding_instrument_type,
+    registry_entry_has_equity_fund_identity as _registry_entry_has_equity_fund_identity,
+    registry_entry_has_trusted_fund_symbol_evidence as _entry_has_trusted_fund_symbol_evidence,
+    synthetic_identifier_ticker_hint,
 )
 from value_units import (
     VALUE_UNIT_POLICY_VERSION,
@@ -601,11 +613,11 @@ def download_company_idx(
             col_filename = header.index("File Name")
         else:
             col_filename = header.index("Filename")
-    except ValueError:
+    except ValueError as exc:
         if strict:
             raise FilingDiscoveryError(
                 f"missing company.idx columns for {year} QTR{quarter}"
-            )
+            ) from exc
         log.warning("  could not locate columns")
         return []
 
@@ -1648,15 +1660,6 @@ def display_ticker_for_holding_type(
     return raw_ticker
 
 
-def _canonical_json_hash(payload) -> str:
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
 def _component_source_hash(component: dict) -> str:
     source_hash = str(component.get("source_hash") or "").strip().lower()
     if re.fullmatch(r"[0-9a-f]{64}", source_hash):
@@ -1697,53 +1700,6 @@ def _component_source_hash(component: dict) -> str:
         "holdings": component.get("holdings"),
     })
 
-def _composition_holdings_payload(
-    holdings: list[dict],
-    *,
-    include_holding_type: bool = False,
-) -> list[dict]:
-    """Return stable SEC-derived fields, excluding mutable display metadata."""
-    payload: list[dict] = []
-    for holding in holdings:
-        row = {
-            "cusip": holding.get("cusip"),
-            "class": holding.get("class"),
-            "value": holding.get("value"),
-            # The downstream zero-share repair is explicitly marked; hash the
-            # source value (zero) so a derived imputation does not invalidate
-            # immutable SEC composition provenance.
-            "shares": 0 if holding.get("shares_imputed") else holding.get("shares"),
-            "put_call": holding.get("put_call"),
-        }
-        if include_holding_type:
-            row["holding_type"] = holding_instrument_type(holding)
-        payload.append(row)
-    payload.sort(key=lambda row: json.dumps(
-        row, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ))
-    return payload
-
-def _composition_source_decisions(source_filings: list[dict]) -> list[dict]:
-    """Return the immutable v2 amendment decisions included in the hash."""
-    decisions: list[dict] = []
-    for source in source_filings:
-        decision = {
-            "accession": source.get("accession"),
-            "source_hash": source.get("source_hash"),
-            "form_type": source.get("form_type"),
-            "accepted_at": source.get("accepted_at"),
-            "amendment_number": source.get("amendment_number"),
-            "amendment_kind": source.get("amendment_kind"),
-            "composition_action": source.get("composition_action"),
-            "new_holdings_overlap": source.get("new_holdings_overlap"),
-        }
-        if "security_identity_version" in source:
-            decision["security_identity_version"] = source.get(
-                "security_identity_version"
-            )
-        decisions.append(decision)
-    return decisions
-
 def calculate_composition_hash(
     report_date: str,
     base_accession: str,
@@ -1756,26 +1712,17 @@ def calculate_composition_hash(
     security_identity_version: int | None = None,
     composition_hash_version: int = 1,
 ) -> str:
-    payload = {
-        "composition_version": composition_version,
-        "report_date": report_date,
-        "base_accession": base_accession,
-        "applied_accessions": applied_accessions,
-        "applied_source_hashes": applied_source_hashes,
-        "holdings": _composition_holdings_payload(
-            holdings,
-            include_holding_type=composition_hash_version >= 2,
-        ),
-    }
-    if composition_hash_version >= 2:
-        payload["composition_hash_version"] = composition_hash_version
-    if composition_version == 2:
-        if source_filings is None:
-            raise ValueError("v2 composition hashes require source filing decisions")
-        payload["source_decisions"] = _composition_source_decisions(source_filings)
-        if security_identity_version is not None:
-            payload["security_identity_version"] = security_identity_version
-    return _canonical_json_hash(payload)
+    return _calculate_composition_hash(
+        report_date,
+        base_accession,
+        applied_accessions,
+        applied_source_hashes,
+        holdings,
+        composition_version=composition_version,
+        source_filings=source_filings,
+        security_identity_version=security_identity_version,
+        composition_hash_version=composition_hash_version,
+    )
 
 
 def _normalize_amendment_identity_text(value: object) -> str:
@@ -2453,40 +2400,6 @@ def quarter_has_unsafe_legacy_option_identity(quarter: dict) -> bool:
     )
 
 
-_SYNTHETIC_IDENTIFIER_RE = re.compile(r"^0{3,}([A-Z]{2,7})$")
-_SYNTHETIC_IDENTIFIER_LITERALS = frozenset({
-    "000000NAN",
-    "0LOOKITUP",
-    "MONEYMRKT",
-    "OOOOOOOOO",
-})
-
-
-def synthetic_identifier_ticker_hint(identifier: str | None) -> str | None:
-    """Return a ticker-like suffix for obvious zero-padded fake identifiers.
-
-    This is only an observability hint. We never treat the suffix as a
-    canonical CUSIP->ticker mapping.
-    """
-    raw = str(identifier or "").strip().upper()
-    match = _SYNTHETIC_IDENTIFIER_RE.match(raw)
-    if not match:
-        return None
-    suffix = match.group(1)
-    if 1 < len(suffix) <= 5 and suffix[0].isalpha():
-        return suffix
-    return None
-
-
-def is_synthetic_identifier(identifier: str | None) -> bool:
-    """Whether an identifier is obviously synthetic filler, not a real CUSIP."""
-    raw = str(identifier or "").strip().upper()
-    if raw in _SYNTHETIC_IDENTIFIER_LITERALS:
-        return True
-    match = _SYNTHETIC_IDENTIFIER_RE.match(raw)
-    return bool(match)
-
-
 def find_ambiguous_ticker_cusips(holdings: list[dict]) -> set[str]:
     """CUSIPs that collide under the same ticker + instrument type."""
     by_key: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -2502,6 +2415,54 @@ def find_ambiguous_ticker_cusips(holdings: list[dict]) -> set[str]:
         if len(cusips) > 1:
             ambiguous.update(cusips)
     return ambiguous
+
+
+def _collect_zero_share_price_references(
+    quarter: dict,
+    by_report_position: dict[tuple[str, str, str], list[float]],
+    by_position: dict[tuple[str, str], list[float]],
+) -> None:
+    """Record non-derived per-share prices from one materialized quarter."""
+    report_date = quarter.get("report_date") or ""
+    for holding in quarter.get("holdings", []):
+        cusip = str(holding.get("cusip") or "").strip().upper()
+        holding_type = classify_saved_holding(holding)
+        value = holding.get("value") or 0
+        shares = holding.get("shares") or 0
+        if (
+            not cusip
+            or value <= 0
+            or shares <= 0
+            or "shares_imputed" in holding
+        ):
+            continue
+        price = value / shares
+        if price <= 0:
+            continue
+        if report_date:
+            by_report_position[(report_date, cusip, holding_type)].append(price)
+        by_position[(cusip, holding_type)].append(price)
+
+
+def _median_zero_share_price_references(
+    by_report_position: dict[tuple[str, str, str], list[float]],
+    by_position: dict[tuple[str, str], list[float]],
+) -> tuple[
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str], float],
+]:
+    return (
+        {
+            key: statistics.median(values)
+            for key, values in by_report_position.items()
+            if values
+        },
+        {
+            key: statistics.median(values)
+            for key, values in by_position.items()
+            if values
+        },
+    )
 
 
 def build_zero_share_price_reference_maps() -> tuple[
@@ -2522,39 +2483,16 @@ def build_zero_share_price_reference_maps() -> tuple[
         except json.JSONDecodeError:
             continue
         for quarter in fund.get("quarters", []):
-            report_date = quarter.get("report_date") or ""
-            for holding in quarter.get("holdings", []):
-                cusip = str(holding.get("cusip") or "").strip().upper()
-                holding_type = classify_saved_holding(holding)
-                value = holding.get("value") or 0
-                shares = holding.get("shares") or 0
-                if (
-                    not cusip
-                    or value <= 0
-                    or shares <= 0
-                    or "shares_imputed" in holding
-                ):
-                    continue
-                price = value / shares
-                if price <= 0:
-                    continue
-                if report_date:
-                    by_report_position[
-                        (report_date, cusip, holding_type)
-                    ].append(price)
-                by_position[(cusip, holding_type)].append(price)
+            _collect_zero_share_price_references(
+                quarter,
+                by_report_position,
+                by_position,
+            )
 
-    report_refs = {
-        key: statistics.median(values)
-        for key, values in by_report_position.items()
-        if values
-    }
-    position_refs = {
-        key: statistics.median(values)
-        for key, values in by_position.items()
-        if values
-    }
-    return report_refs, position_refs
+    return _median_zero_share_price_references(
+        by_report_position,
+        by_position,
+    )
 
 
 @_serialize_pipeline_maintenance
@@ -2581,6 +2519,8 @@ def repair_zero_share_holdings_in_place() -> int:
     total = len(fund_paths)
     reset_files = 0
     reset_rows = 0
+    by_report_position: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+    by_position: dict[tuple[str, str], list[float]] = defaultdict(list)
 
     # Phase 1: restore every derived row to its immutable reported value before
     # any peer reference is calculated. Persist this pass so a later crash
@@ -2602,6 +2542,11 @@ def repair_zero_share_holdings_in_place() -> int:
                 del holding["shares_imputed"]
                 changed = True
                 reset_rows += 1
+            _collect_zero_share_price_references(
+                quarter,
+                by_report_position,
+                by_position,
+            )
 
         if changed:
             _atomic_write_json(fp, fund)
@@ -2613,9 +2558,14 @@ def repair_zero_share_holdings_in_place() -> int:
             "fund files"
         )
 
-    # Phase 2: rebuild references only after all stale derived shares have
-    # disappeared, then reproduce each still-qualifying estimate.
-    report_refs, position_refs = build_zero_share_price_reference_maps()
+    # Phase 2: finalize references only after the complete reset pass has
+    # succeeded, then reproduce each still-qualifying estimate. Reference
+    # observations were collected during that pass to avoid rereading the
+    # complete fund corpus.
+    report_refs, position_refs = _median_zero_share_price_references(
+        by_report_position,
+        by_position,
+    )
     if not report_refs and not position_refs:
         log.info(
             "  no price references available; prior imputations remain "
@@ -2801,7 +2751,6 @@ NAME_ABBREV: dict[str, str] = {
     "RES": "RESOURCES",
     "RESH": "RESEARCH",
     "INDUS": "INDUSTRIAL",
-    "RLTY": "REALTY",
     "FDS": "FUNDS",
     "TR": "TRUST",
     "EXCH": "EXCHANGE",
@@ -2856,7 +2805,6 @@ NAME_ABBREV: dict[str, str] = {
     "BEVGS": "BEVERAGES",
     "RETL": "RETAIL",
     "LOGIS": "LOGISTICS",
-    "BANCSH": "BANCSHARES",
 }
 
 # Tokens dropped entirely (whole-word match)
@@ -3382,8 +3330,11 @@ def fetch_company_ticker_maps() -> tuple[dict[str, str], dict[str, set[str]]]:
 MIN_PREFIX_LEN = 8
 
 
-def prefix_lookup(norm: str, name_to_ticker: dict[str, str],
-                  _cache: dict[str, str | None] = {}) -> str | None:
+def prefix_lookup(
+    norm: str,
+    name_to_ticker: dict[str, str],
+    _cache: dict[str, str | None] | None = None,
+) -> str | None:
     """Return a ticker when ``norm`` is a unique truncated prefix of one name.
 
     This intentionally only allows the issuer name from the filing to be
@@ -3391,10 +3342,11 @@ def prefix_lookup(norm: str, name_to_ticker: dict[str, str],
     (`norm.startswith(known)`) caused false positives like mapping
     "SOUTHERN MO BANCORP" to "SO" (Southern Co) just because both names start
     with "SOUTHERN". Min 8 chars to avoid broad fuzzy matches."""
-    if norm in _cache:
+    if _cache is not None and norm in _cache:
         return _cache[norm]
     if len(norm) < MIN_PREFIX_LEN:
-        _cache[norm] = None
+        if _cache is not None:
+            _cache[norm] = None
         return None
     matches = []
     for known in name_to_ticker:
@@ -3403,7 +3355,8 @@ def prefix_lookup(norm: str, name_to_ticker: dict[str, str],
             if len(matches) > 1:
                 break
     result = name_to_ticker[matches[0]] if len(matches) == 1 else None
-    _cache[norm] = result
+    if _cache is not None:
+        _cache[norm] = result
     return result
 
 
@@ -3411,6 +3364,8 @@ def resolve_ticker_from_name(
     issuer: str | None,
     title_of_class: str | None,
     name_to_ticker: dict[str, str],
+    *,
+    prefix_cache: dict[str, str | None] | None = None,
 ) -> str | None:
     """Resolve a ticker from issuer/class text using exact + safe-prefix rules."""
     norm = normalize_name(issuer or "")
@@ -3419,7 +3374,11 @@ def resolve_ticker_from_name(
     multi = resolve_multi_class(norm, title_of_class or "")
     if multi:
         return multi
-    return name_to_ticker.get(norm) or prefix_lookup(norm, name_to_ticker)
+    return name_to_ticker.get(norm) or prefix_lookup(
+        norm,
+        name_to_ticker,
+        prefix_cache,
+    )
 
 
 def _fsync_directory(path: Path) -> None:
@@ -4049,7 +4008,6 @@ _FILER_COMMON_CLASS_ONLY_RE = re.compile(
     r"(?:\s+(?:NEW|SH|SHS|SHARE|SHARES))?$",
     re.IGNORECASE,
 )
-_FILER_MUTUAL_FUND_TICKER_RE = re.compile(r"^[A-Z]{4}X$")
 _FILER_COMMON_CLASS_EXCLUSION_RE = re.compile(
     r"\b(?:"
     r"ADRS?|ADS|DEPOSITARY|DEP(?:OSITARY)?(?:\s+SHS?)?|"
@@ -4083,17 +4041,6 @@ _FUND_PRODUCT_NAME_KINDS = frozenset({
     "ETN",
     "MUTUAL FUND",
     "CLOSED-END FUND",
-})
-_EQUITY_FUND_SECURITY_KINDS = frozenset({
-    "ETF",
-    "MUTUAL FUND",
-    "CLOSED-END FUND",
-})
-_FUND_IDENTITY_TICKER_SOURCES = frozenset({
-    "cusip_map_vetted",
-    "manual_override",
-    "openfigi_plain_ticker",
-    "openfigi_prior_registry_ticker",
 })
 _FUND_PRODUCT_CLASS_GENERIC_TOKENS = frozenset({
     "ADR",
@@ -6174,35 +6121,6 @@ def infer_proven_split_adjustments(
     return adjustments
 
 
-def published_holding_instrument_type(
-    holding: dict,
-    registry_entry: dict | None = None,
-) -> str:
-    """Return the canonical instrument type used by public stock artifacts.
-
-    Fund files preserve the parser's original filing evidence. A later,
-    stronger structural classification may prove that a row saved as an
-    option is actually debt, or that a non-option NOTE/PREF/WARRANT parse is
-    really a listed fund share. Explicit fund options remain separate.
-    """
-    raw_type = holding_instrument_type(holding)
-    if (
-        isinstance(registry_entry, dict)
-        and normalize_security_kind(registry_entry.get("security_kind"))
-        == "BOND"
-        and normalize_instrument_type(registry_entry.get("type")) == "NOTE"
-    ):
-        return "NOTE"
-    if (
-        raw_type not in {"CALL", "PUT", "OPT"}
-        and isinstance(registry_entry, dict)
-        and normalize_instrument_type(registry_entry.get("type")) == "EQUITY"
-        and _registry_entry_has_equity_fund_identity(registry_entry)
-    ):
-        return "EQUITY"
-    return raw_type
-
-
 @_serialize_pipeline_maintenance
 def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
     """Rebuild stock files, the full search index, and the fund bootstrap.
@@ -7246,6 +7164,8 @@ def _strip_option_underlying_name(raw_name: str | None) -> str:
 def _option_ticker_candidates(
     raw_name: str | None,
     name_to_ticker: dict[str, str],
+    *,
+    prefix_cache: dict[str, str | None] | None = None,
 ) -> list[str]:
     """Ordered unique ticker candidates extracted from an option label."""
     name = str(raw_name or "").upper().strip()
@@ -7266,7 +7186,12 @@ def _option_ticker_candidates(
 
     stripped = _strip_option_underlying_name(name)
     if stripped:
-        add(resolve_ticker_from_name(stripped, "", name_to_ticker))
+        add(resolve_ticker_from_name(
+            stripped,
+            "",
+            name_to_ticker,
+            prefix_cache=prefix_cache,
+        ))
 
     return out
 
@@ -7291,6 +7216,7 @@ def _apply_option_underlying_derivations(
 
     derived_tickers = 0
     linked_underlyings = 0
+    prefix_cache: dict[str, str | None] = {}
     for cusip, entry in registry.items():
         if entry.get("type") not in {"CALL", "PUT", "OPT"}:
             continue
@@ -7305,7 +7231,11 @@ def _apply_option_underlying_derivations(
             if underlying_cusip != cusip and "derived_prefix6" not in sources:
                 sources.append("derived_prefix6")
 
-        candidates = _option_ticker_candidates(entry.get("dominant_issuer"), name_to_ticker)
+        candidates = _option_ticker_candidates(
+            entry.get("dominant_issuer"),
+            name_to_ticker,
+            prefix_cache=prefix_cache,
+        )
         if not candidate_ticker and len(candidates) == 1:
             ticker_guess = candidates[0]
             if (
@@ -8048,7 +7978,7 @@ def _filer_guarded_series_etf(entry: dict | None) -> bool:
     )
     if (
         not _OPENFIGI_PLAIN_TICKER_RE.fullmatch(ticker)
-        or _FILER_MUTUAL_FUND_TICKER_RE.fullmatch(ticker)
+        or is_mutual_fund_ticker(ticker)
         or "ticker_collision_demoted" in sources
         or not (sources & _FUND_IDENTITY_TICKER_SOURCES)
     ):
@@ -8063,39 +7993,6 @@ def _filer_guarded_series_etf(entry: dict | None) -> bool:
         ):
             return True
     return False
-
-
-def _entry_has_trusted_fund_symbol_evidence(entry: dict | None) -> bool:
-    """Recognize an untyped fund symbol without guessing its legal subtype."""
-
-    if not isinstance(entry, dict):
-        return False
-    kind = normalize_security_kind(entry.get("security_kind"))
-    if kind is not None:
-        return False
-    sources = set(entry.get("sources") or [])
-    if (
-        "ticker_collision_demoted" in sources
-        or not (sources & _FUND_IDENTITY_TICKER_SOURCES)
-    ):
-        return False
-    ticker = str(entry.get("ticker") or "").strip().upper()
-    return bool(_FILER_MUTUAL_FUND_TICKER_RE.fullmatch(ticker))
-
-
-def _registry_entry_has_equity_fund_identity(
-    entry: dict | None,
-) -> bool:
-    """Identify fund shares without guessing their exact legal fund kind."""
-
-    if not isinstance(entry, dict):
-        return False
-    if normalize_instrument_type(entry.get("type")) != "EQUITY":
-        return False
-    kind = normalize_security_kind(entry.get("security_kind"))
-    if kind in _EQUITY_FUND_SECURITY_KINDS:
-        return True
-    return _entry_has_trusted_fund_symbol_evidence(entry)
 
 
 def _filer_security_kind(entry: dict | None) -> str | None:
@@ -9342,12 +9239,25 @@ def write_security_labels(registry: dict[str, dict]) -> None:
     )
 
 
+class CusipRegistry(dict[str, dict]):
+    """Registry result carrying the CUSIP set observed during its build."""
+
+    def __init__(
+        self,
+        registry: dict[str, dict] | None = None,
+        *,
+        observed_cusips: set[str] | frozenset[str] = frozenset(),
+    ) -> None:
+        super().__init__(registry or {})
+        self.observed_cusips = frozenset(observed_cusips)
+
+
 def build_cusip_registry(
     *,
     full_refresh: bool = False,
     company_ticker_data: dict | list | None = None,
     refresh_official_fund_names: bool | None = None,
-) -> dict:
+) -> CusipRegistry:
     """Build the canonical per-CUSIP registry from current fund-file evidence.
 
     Sources, by priority:
@@ -9370,7 +9280,7 @@ def build_cusip_registry(
     log.info("Building CUSIP registry...")
     if not FUNDS_DIR.exists():
         log.info("  no funds directory; skipping registry build")
-        return {}
+        return CusipRegistry()
 
     if refresh_official_fund_names is None:
         # Preserve the side-effect-free injected-data path used by callers
@@ -9781,10 +9691,13 @@ def build_cusip_registry(
         f"  published {product_name_count} descriptive fund product name(s)"
     )
     log.info(f"  types: {by_type}")
-    return registry
+    return CusipRegistry(registry, observed_cusips=set(evidence))
 
 
-def validate_cusip_registry() -> list[str]:
+def validate_cusip_registry(
+    *,
+    current_cusips: set[str] | frozenset[str] | None = None,
+) -> list[str]:
     """Return human-readable warnings about the snapshot registry copies."""
     issues: list[str] = []
     registry = load_cusip_registry()
@@ -9972,7 +9885,8 @@ def validate_cusip_registry() -> list[str]:
             f"samples: {sample}"
         )
 
-    current_cusips = set(_aggregate_cusip_evidence())
+    if current_cusips is None:
+        current_cusips = set(_aggregate_cusip_evidence())
     missing_cusips = sorted(current_cusips - set(registry))
     if missing_cusips:
         issues.append(
@@ -10285,7 +10199,14 @@ def rebuild_registry_backed_outputs(
     )
     if isinstance(registry, dict):
         write_security_labels(registry)
-    registry_issues = validate_cusip_registry()
+    if isinstance(registry, CusipRegistry):
+        registry_issues = validate_cusip_registry(
+            current_cusips=registry.observed_cusips,
+        )
+    else:
+        # Compatibility for injected/mocked builders that predate the
+        # observation-carrying registry result.
+        registry_issues = validate_cusip_registry()
     critical_registry_issues = [
         issue for issue in registry_issues
         if (

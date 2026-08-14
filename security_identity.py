@@ -41,8 +41,27 @@ SECURITY_KINDS = (
     "UNIT",
 )
 VALID_SECURITY_KINDS = frozenset(SECURITY_KINDS)
+EQUITY_FUND_SECURITY_KINDS = frozenset({
+    "ETF",
+    "MUTUAL FUND",
+    "CLOSED-END FUND",
+})
+FUND_IDENTITY_TICKER_SOURCES = frozenset({
+    "cusip_map_vetted",
+    "manual_override",
+    "openfigi_plain_ticker",
+    "openfigi_prior_registry_ticker",
+})
 
 _UNSAFE_FILENAME_CHARS_RE = re.compile(r"[^A-Z0-9._-]")
+_MUTUAL_FUND_TICKER_RE = re.compile(r"^[A-Z]{4}X$")
+_SYNTHETIC_IDENTIFIER_RE = re.compile(r"^0{3,}([A-Z]{2,7})$")
+_SYNTHETIC_IDENTIFIER_LITERALS = frozenset({
+    "000000NAN",
+    "0LOOKITUP",
+    "MONEYMRKT",
+    "OOOOOOOOO",
+})
 _MAX_SECURITY_LABEL_LENGTH = 160
 _SECURITY_CLASS_TOKEN_RE = re.compile(r"[A-Z0-9]+")
 _DATE_TOKEN_RE = re.compile(
@@ -483,6 +502,95 @@ def holding_instrument_type(holding: Mapping[str, object] | None) -> str:
     )
 
 
+def registry_entry_has_equity_fund_identity(entry: dict | None) -> bool:
+    """Identify an equity fund share from canonical registry evidence."""
+
+    if not isinstance(entry, dict):
+        return False
+    if normalize_instrument_type(entry.get("type")) != "EQUITY":
+        return False
+    kind = normalize_security_kind(entry.get("security_kind"))
+    if kind in EQUITY_FUND_SECURITY_KINDS:
+        return True
+    return registry_entry_has_trusted_fund_symbol_evidence(entry)
+
+
+def is_mutual_fund_ticker(ticker: object | None) -> bool:
+    """Whether a symbol has the standard five-letter mutual-fund shape."""
+
+    normalized = str(ticker or "").strip().upper()
+    return bool(_MUTUAL_FUND_TICKER_RE.fullmatch(normalized))
+
+
+def registry_entry_has_trusted_fund_symbol_evidence(
+    entry: dict | None,
+) -> bool:
+    """Recognize an untyped fund symbol without guessing its legal subtype."""
+
+    if not isinstance(entry, dict):
+        return False
+    if normalize_security_kind(entry.get("security_kind")) is not None:
+        return False
+    sources = set(entry.get("sources") or [])
+    if (
+        "ticker_collision_demoted" in sources
+        or not (sources & FUND_IDENTITY_TICKER_SOURCES)
+    ):
+        return False
+    return is_mutual_fund_ticker(entry.get("ticker"))
+
+
+def published_holding_instrument_type(
+    holding: Mapping[str, object] | None,
+    registry_entry: dict | None = None,
+) -> str:
+    """Return the canonical instrument type used by public stock artifacts.
+
+    Persisted rows retain filing evidence. A stronger registry classification
+    may correct a legacy option parse to debt or collapse a non-option parser
+    bucket to a confirmed listed fund share. Explicit fund options stay
+    separate.
+    """
+
+    raw_type = holding_instrument_type(holding)
+    if (
+        isinstance(registry_entry, dict)
+        and normalize_security_kind(registry_entry.get("security_kind"))
+        == "BOND"
+        and normalize_instrument_type(registry_entry.get("type")) == "NOTE"
+    ):
+        return "NOTE"
+    if (
+        raw_type not in {"CALL", "PUT", "OPT"}
+        and registry_entry_has_equity_fund_identity(registry_entry)
+    ):
+        return "EQUITY"
+    return raw_type
+
+
+def synthetic_identifier_ticker_hint(identifier: object | None) -> str | None:
+    """Return an observability-only ticker hint from a zero-padded fake ID."""
+
+    raw = normalize_security_identifier(identifier)
+    match = _SYNTHETIC_IDENTIFIER_RE.match(raw)
+    if not match:
+        return None
+    suffix = match.group(1)
+    if 1 < len(suffix) <= 5 and suffix[0].isalpha():
+        return suffix
+    return None
+
+
+def is_synthetic_identifier(identifier: object | None) -> bool:
+    """Whether an identifier is obvious synthetic filler, not a real CUSIP."""
+
+    raw = normalize_security_identifier(identifier)
+    return (
+        raw in _SYNTHETIC_IDENTIFIER_LITERALS
+        or bool(_SYNTHETIC_IDENTIFIER_RE.match(raw))
+    )
+
+
 def stock_lookup_id(
     identifier: object | None,
     instrument_type: object | None = DEFAULT_INSTRUMENT_TYPE,
@@ -542,6 +650,8 @@ def stock_filename(
 
 __all__ = [
     "DEFAULT_INSTRUMENT_TYPE",
+    "EQUITY_FUND_SECURITY_KINDS",
+    "FUND_IDENTITY_TICKER_SOURCES",
     "INSTRUMENT_TYPES",
     "SECURITY_KINDS",
     "VALID_INSTRUMENT_TYPES",
@@ -549,14 +659,20 @@ __all__ = [
     "compose_security_label",
     "holding_instrument_type",
     "is_canonical_security_identifier",
+    "is_mutual_fund_ticker",
+    "is_synthetic_identifier",
     "normalize_instrument_type",
     "normalize_note_security_label",
     "normalize_security_kind",
     "normalize_security_label",
     "normalize_security_identifier",
     "parse_stock_lookup_id",
+    "published_holding_instrument_type",
+    "registry_entry_has_equity_fund_identity",
+    "registry_entry_has_trusted_fund_symbol_evidence",
     "safe_ticker",
     "stock_file_stem",
     "stock_filename",
     "stock_lookup_id",
+    "synthetic_identifier_ticker_hint",
 ]
