@@ -134,11 +134,14 @@ class FilingComponentTests(unittest.TestCase):
         value_total: int,
         entry_total: int = 1,
         *,
-        filer_cik: int | None = CIK,
+        filer_cik: int | str | None = CIK,
         manager_name: str | None = "Blackstone Inc.",
     ) -> bytes:
-        identity = "" if filer_cik is None else f"""
-          <filer><credentials><cik>{filer_cik:010d}</cik></credentials></filer>
+        raw_filer_cik = (
+            f"{filer_cik:010d}" if isinstance(filer_cik, int) else filer_cik
+        )
+        identity = "" if raw_filer_cik is None else f"""
+          <filer><credentials><cik>{raw_filer_cik}</cik></credentials></filer>
           <filingManager><name>{manager_name or ''}</name></filingManager>
         """
         return f"""<edgarSubmission>
@@ -167,7 +170,7 @@ class FilingComponentTests(unittest.TestCase):
         info_table: bytes | None = None,
         entry_total: int = 1,
         *,
-        filer_cik: int | None = CIK,
+        filer_cik: int | str | None = CIK,
         manager_name: str | None = "Blackstone Inc.",
     ):
         index = self.Response(payload={
@@ -244,6 +247,50 @@ class FilingComponentTests(unittest.TestCase):
                     BASE_ACCESSION,
                     filing=BASE_ROW,
                 )
+
+    def test_component_rejects_missing_or_non_numeric_primary_filer_cik(
+        self,
+    ) -> None:
+        for filer_cik in (None, "not-a-cik"):
+            with self.subTest(filer_cik=filer_cik), mock.patch.object(
+                pipeline.HTTP,
+                "get",
+                side_effect=self.responses(
+                    value_total=100,
+                    filer_cik=filer_cik,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    pipeline.FilingParseError,
+                    "primary filing identity is missing filer CIK",
+                ):
+                    pipeline.fetch_filing_holdings(
+                        CIK,
+                        BASE_ACCESSION,
+                        filing=BASE_ROW,
+                    )
+
+    def test_component_rejects_missing_or_blank_primary_manager_name(
+        self,
+    ) -> None:
+        for manager_name in (None, "   "):
+            with self.subTest(manager_name=manager_name), mock.patch.object(
+                pipeline.HTTP,
+                "get",
+                side_effect=self.responses(
+                    value_total=100,
+                    manager_name=manager_name,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    pipeline.FilingParseError,
+                    "primary filing identity is missing filing-manager name",
+                ):
+                    pipeline.fetch_filing_holdings(
+                        CIK,
+                        BASE_ACCESSION,
+                        filing=BASE_ROW,
+                    )
 
     def test_component_records_prior_manager_name_without_quarantining_cik(self) -> None:
         with (
