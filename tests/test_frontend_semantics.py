@@ -67,6 +67,51 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual([1615982, 1067983, 1336528], result["present"])
         self.assertEqual([1067983, 1336528], result["absent"])
 
+    def test_fund_search_identity_always_includes_the_authoritative_cik(
+        self,
+    ) -> None:
+        formatter_start = self.html.index("const _tcKeepUpper")
+        formatter_end = self.html.index("function changeText(", formatter_start)
+        cik_start = self.html.index("function cikKey(")
+        cik_end = self.html.index("function reportQuarterCode(", cik_start)
+        completed = subprocess.run(
+            [
+                "node",
+                "-e",
+                (
+                    self.html[formatter_start:formatter_end]
+                    + self.html[cik_start:cik_end]
+                    + """
+                    console.log(JSON.stringify({
+                      first: fundSearchIdentity({
+                        cik: 1765681,
+                        name: "Thrive Capital Management, LLC",
+                      }),
+                      second: fundSearchIdentity({
+                        cik: 1845943,
+                        name: "Thrive Capital Management, LLC",
+                      }),
+                    }));
+                    """
+                ),
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "Thrive Capital Management · CIK 1765681",
+            result["first"],
+        )
+        self.assertEqual(
+            "Thrive Capital Management · CIK 1845943",
+            result["second"],
+        )
+        self.assertIn("${esc(fundSearchIdentity(f))}", self.html)
+
     def test_fund_product_name_formatting_preserves_brand_and_index_name(
         self,
     ) -> None:

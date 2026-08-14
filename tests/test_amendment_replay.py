@@ -49,11 +49,24 @@ def primary_document_xml(
   <headerData>
     <filerInfo>
       <periodOfReport>12-31-2025</periodOfReport>
+      <filer>
+        <credentials><cik>0000123456</cik></credentials>
+      </filer>
     </filerInfo>
   </headerData>
   <formData>
     <coverPage>
       <reportCalendarOrQuarter>12-31-2025</reportCalendarOrQuarter>
+      <filingManager>
+        <name>Example Capital Management, LLC</name>
+        <address>
+          <street1>100 Main Street</street1>
+          <city>New York</city>
+          <stateOrCountry>NY</stateOrCountry>
+          <zipCode>10001</zipCode>
+        </address>
+      </filingManager>
+      <form13FFileNumber>028-12345</form13FFileNumber>
       <isAmendment>{str(is_amendment).lower()}</isAmendment>
       {amendment_no_xml}
       {amendment_info_xml}
@@ -177,6 +190,21 @@ class PrimaryDocumentMetadataTests(unittest.TestCase):
         self.assertEqual("ORIGINAL", metadata["amendment_kind"])
         self.assertEqual(2, metadata["reported_entry_total"])
         self.assertEqual(150, metadata["reported_value_total"])
+        self.assertEqual(CIK, metadata["filer_cik"])
+        self.assertEqual(
+            "Example Capital Management, LLC",
+            metadata["filing_manager_name"],
+        )
+        self.assertEqual(
+            {
+                "street1": "100 Main Street",
+                "city": "New York",
+                "state_or_country": "NY",
+                "zip_code": "10001",
+            },
+            metadata["filing_manager_address"],
+        )
+        self.assertEqual("028-12345", metadata["form_13f_file_number"])
 
     def test_supported_amendment_metadata(self) -> None:
         cases = (
@@ -222,6 +250,20 @@ class PrimaryDocumentMetadataTests(unittest.TestCase):
 
 
 class AmendmentChainReducerTests(unittest.TestCase):
+    def test_source_provenance_preserves_filer_name_discrepancy(self) -> None:
+        filing = original()
+        filing["filer_name_discrepancy"] = {
+            "discovery_name": "Current Adviser, LLC",
+            "primary_name": "Prior Adviser, LLC",
+        }
+
+        quarter = pipeline.compose_quarter_filings([filing])
+
+        self.assertEqual(
+            filing["filer_name_discrepancy"],
+            quarter["source_filings"][0]["filer_name_discrepancy"],
+        )
+
     def assert_holding_totals(
         self,
         quarter: dict,

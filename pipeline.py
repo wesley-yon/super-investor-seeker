@@ -822,6 +822,20 @@ def _first_local_text(tree: etree._Element, *names: str) -> str | None:
                 return text
     return None
 
+
+def _first_local_element(
+    tree: etree._Element,
+    name: str,
+) -> etree._Element | None:
+    for element in tree.iter():
+        if (
+            isinstance(element.tag, str)
+            and etree.QName(element.tag).localname == name
+        ):
+            return element
+    return None
+
+
 def _parse_bool_text(value: str | None) -> bool | None:
     text = str(value or "").strip().lower()
     if text in {"true", "1", "yes", "y"}:
@@ -837,6 +851,11 @@ def normalize_amendment_kind(value: str | None) -> str:
     if normalized in {"NEW HOLDINGS", "NEW HOLDING"}:
         return "NEW_HOLDINGS"
     return "UNKNOWN"
+
+
+def normalize_filer_identity_name(value: str | None) -> str:
+    """Normalize punctuation/case only for authoritative name comparisons."""
+    return "".join(re.findall(r"[A-Z0-9]+", str(value or "").upper()))
 
 def parse_primary_document(xml_bytes: bytes, form_type: str | None = None) -> dict:
     """Parse composition metadata from one filing's primary SEC document."""
@@ -856,6 +875,37 @@ def parse_primary_document(xml_bytes: bytes, form_type: str | None = None) -> di
     reported_value_total = parse_numeric_text(
         _first_local_text(tree, "tableValueTotal") or ""
     )
+    filer = _first_local_element(tree, "filer")
+    raw_filer_cik = _first_local_text(filer, "cik") if filer is not None else None
+    filer_cik = (
+        int(raw_filer_cik)
+        if raw_filer_cik and re.fullmatch(r"\d+", raw_filer_cik)
+        else None
+    )
+    filing_manager = _first_local_element(tree, "filingManager")
+    filing_manager_name = (
+        _first_local_text(filing_manager, "name")
+        if filing_manager is not None
+        else None
+    )
+    manager_address = (
+        _first_local_element(filing_manager, "address")
+        if filing_manager is not None
+        else None
+    )
+    address_fields = {
+        "street1": "street1",
+        "street2": "street2",
+        "city": "city",
+        "state_or_country": "stateOrCountry",
+        "zip_code": "zipCode",
+    }
+    filing_manager_address = {
+        output_name: value
+        for output_name, xml_name in address_fields.items()
+        if manager_address is not None
+        and (value := _first_local_text(manager_address, xml_name))
+    }
 
     declared_amendment = str(form_type or "").upper().endswith("/A")
     has_amendment_metadata = bool(raw_kind or amendment_number_text or is_amendment is True)
@@ -882,6 +932,27 @@ def parse_primary_document(xml_bytes: bytes, form_type: str | None = None) -> di
         "amendment_kind": amendment_kind,
         "reported_entry_total": reported_entry_total,
         "reported_value_total": reported_value_total,
+        **({"filer_cik": filer_cik} if filer_cik is not None else {}),
+        **(
+            {"filing_manager_name": filing_manager_name}
+            if filing_manager_name is not None
+            else {}
+        ),
+        **(
+            {"filing_manager_address": filing_manager_address}
+            if filing_manager_address
+            else {}
+        ),
+        **(
+            {"form_13f_file_number": form_13f_file_number}
+            if (
+                form_13f_file_number := _first_local_text(
+                    tree,
+                    "form13FFileNumber",
+                )
+            )
+            else {}
+        ),
         "metadata_errors": metadata_errors,
     }
 
@@ -1193,6 +1264,44 @@ def fetch_filing_holdings(
         ) from exc
     supplied_form = (filing or {}).get("form_type")
     metadata = parse_primary_document(primary_bytes, supplied_form)
+    source_filer_cik = metadata.get("filer_cik")
+    if source_filer_cik is None:
+        raise FilingParseError(
+            f"primary filing identity is missing filer CIK for "
+            f"{cik}/{accession}"
+        )
+    if source_filer_cik != int(cik):
+        raise FilingParseError(
+            f"filer CIK conflict for {accession}: requested {cik}, "
+            f"primary document declares {source_filer_cik}"
+        )
+    source_manager_name = metadata.get("filing_manager_name")
+    if not normalize_filer_identity_name(source_manager_name):
+        raise FilingParseError(
+            f"primary filing identity is missing filing-manager name for "
+            f"{cik}/{accession}"
+        )
+    expected_manager_name = (filing or {}).get("name")
+    filer_name_discrepancy = None
+    if (
+        normalize_filer_identity_name(expected_manager_name)
+        and normalize_filer_identity_name(expected_manager_name)
+        != normalize_filer_identity_name(source_manager_name)
+    ):
+        # A matching CIK remains the authoritative identity key. Historical
+        # covers can legitimately use a prior legal name, so preserve the
+        # discrepancy for audit instead of quarantining a valid filing.
+        filer_name_discrepancy = {
+            "discovery_name": str(expected_manager_name),
+            "primary_name": str(source_manager_name),
+        }
+        log.warning(
+            "  filing-manager name differs for %s/%s: discovery=%r, primary=%r",
+            cik,
+            accession,
+            expected_manager_name,
+            source_manager_name,
+        )
     report_date = metadata.get("report_date")
     expected_report_date = normalize_report_date((filing or {}).get("report_date"))
     if not report_date:
@@ -1393,6 +1502,11 @@ def fetch_filing_holdings(
         "amendment_number": metadata.get("amendment_number"),
         "amendment_kind": metadata.get("amendment_kind"),
         "metadata_errors": metadata.get("metadata_errors") or [],
+        **(
+            {"filer_name_discrepancy": filer_name_discrepancy}
+            if filer_name_discrepancy is not None
+            else {}
+        ),
         # These totals describe the selected information table and therefore
         # remain the reconciliation basis for composition. Cover totals are
         # retained separately so small filer-authored discrepancies are
@@ -1946,6 +2060,11 @@ def compose_quarter_filings(components: list[dict]) -> dict:
         "accepted_at": component.get("accepted_at"),
         "amendment_number": component.get("amendment_number"),
         "amendment_kind": component["amendment_kind"],
+        **(
+            {"filer_name_discrepancy": component["filer_name_discrepancy"]}
+            if isinstance(component.get("filer_name_discrepancy"), dict)
+            else {}
+        ),
         "source_hash": component["source_hash"],
         "reported_entry_total": component.get("reported_entry_total"),
         "reported_value_total": component.get("reported_value_total"),
