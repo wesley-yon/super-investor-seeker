@@ -239,7 +239,7 @@ class FilingComponentTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(
-                pipeline.FilingParseError,
+                pipeline.FilingIdentityError,
                 "filer CIK conflict",
             ):
                 pipeline.fetch_filing_holdings(
@@ -261,7 +261,7 @@ class FilingComponentTests(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(
-                    pipeline.FilingParseError,
+                    pipeline.FilingIdentityError,
                     "primary filing identity is missing filer CIK",
                 ):
                     pipeline.fetch_filing_holdings(
@@ -283,7 +283,7 @@ class FilingComponentTests(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(
-                    pipeline.FilingParseError,
+                    pipeline.FilingIdentityError,
                     "primary filing identity is missing filing-manager name",
                 ):
                     pipeline.fetch_filing_holdings(
@@ -884,6 +884,45 @@ class ReplayIntegrationTests(unittest.TestCase):
             quarter = fund["quarters"][0]
             self.assertEqual(restatement_accession, quarter["base_accession"])
             self.assertEqual(80, quarter["total_value"])
+
+    def test_filer_identity_failure_before_restatement_is_never_superseded(
+        self,
+    ) -> None:
+        failed_accession = "0001193125-26-111111"
+        restatement_accession = "0001193125-26-222222"
+        failed_row = filing_row(
+            failed_accession, "13F-HR/A", "2026-03-01T12:00:00Z"
+        )
+        restatement_row = filing_row(
+            restatement_accession, "13F-HR/A", "2026-04-01T12:00:00Z"
+        )
+        restatement_component = component(
+            restatement_accession,
+            "RESTATEMENT",
+            restatement_row["accepted_at"],
+            [holding("888888888", 80)],
+            amendment_number=2,
+        )
+        with mock.patch.object(
+            pipeline,
+            "fetch_filing_holdings",
+            side_effect=pipeline.FilingIdentityError(
+                "filer CIK conflict: requested 1393818, primary declares 1845943"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pipeline.FilingIdentityError,
+                "filer CIK conflict",
+            ):
+                pipeline._compose_replay_targets(
+                    CIK,
+                    [BASE_ROW, failed_row, restatement_row],
+                    {REPORT_DATE},
+                    {
+                        BASE_ACCESSION: BASE_COMPONENT,
+                        restatement_accession: restatement_component,
+                    },
+                )
 
     def test_state_does_not_advance_when_atomic_fund_save_fails(self) -> None:
         state = {"processed": [], "_processed_set": set()}
