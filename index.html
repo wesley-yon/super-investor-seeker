@@ -1865,6 +1865,12 @@ function displayFundName(name) {
   return displayEntityName(name);
 }
 
+function fundSearchIdentity(fund) {
+  const name = displayFundName(fund?.name);
+  const cik = cikKey(fund?.cik);
+  return cik ? `${name} · CIK ${cik}` : name;
+}
+
 function displayIssuer(name) {
   return displayEntityName(name)
     .replace(/\bIshares\b/g, "iShares")
@@ -2521,7 +2527,7 @@ function globalSearch(q) {
     ${fundMatches.map(f => `
       <div class="gsearch-item" onclick="closeGlobalSearch(); loadFund(${f.cik})">
         <span class="gsearch-tag fund">FUND</span>
-        <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayFundName(f.name))}</span>
+        <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(fundSearchIdentity(f))}</span>
       </div>
     `).join("")}` : "";
 

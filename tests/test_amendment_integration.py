@@ -130,9 +130,20 @@ class FilingComponentTests(unittest.TestCase):
             return self.payload
 
     @staticmethod
-    def primary(value_total: int, entry_total: int = 1) -> bytes:
+    def primary(
+        value_total: int,
+        entry_total: int = 1,
+        *,
+        filer_cik: int | None = CIK,
+        manager_name: str | None = "Blackstone Inc.",
+    ) -> bytes:
+        identity = "" if filer_cik is None else f"""
+          <filer><credentials><cik>{filer_cik:010d}</cik></credentials></filer>
+          <filingManager><name>{manager_name or ''}</name></filingManager>
+        """
         return f"""<edgarSubmission>
           <periodOfReport>12-31-2025</periodOfReport>
+          {identity}
           <isAmendment>false</isAmendment>
           <tableEntryTotal>{entry_total}</tableEntryTotal>
           <tableValueTotal>{value_total}</tableValueTotal>
@@ -155,6 +166,9 @@ class FilingComponentTests(unittest.TestCase):
         value_total: int,
         info_table: bytes | None = None,
         entry_total: int = 1,
+        *,
+        filer_cik: int | None = CIK,
+        manager_name: str | None = "Blackstone Inc.",
     ):
         index = self.Response(payload={
             "directory": {"item": [
@@ -162,7 +176,12 @@ class FilingComponentTests(unittest.TestCase):
                 {"name": "information_table.xml"},
             ]}
         })
-        primary = self.Response(content=self.primary(value_total, entry_total))
+        primary = self.Response(content=self.primary(
+            value_total,
+            entry_total,
+            filer_cik=filer_cik,
+            manager_name=manager_name,
+        ))
         information = self.Response(content=info_table or self.INFO_TABLE)
 
         def get(url: str):
@@ -206,6 +225,60 @@ class FilingComponentTests(unittest.TestCase):
             parsed["value_unit_method"],
         )
         self.assertEqual(1, len(parsed["holdings"]))
+
+    def test_component_rejects_primary_filer_cik_conflict(self) -> None:
+        with mock.patch.object(
+            pipeline.HTTP,
+            "get",
+            side_effect=self.responses(
+                value_total=100,
+                filer_cik=1845943,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pipeline.FilingParseError,
+                "filer CIK conflict",
+            ):
+                pipeline.fetch_filing_holdings(
+                    CIK,
+                    BASE_ACCESSION,
+                    filing=BASE_ROW,
+                )
+
+    def test_component_records_prior_manager_name_without_quarantining_cik(self) -> None:
+        with (
+            mock.patch.object(
+                pipeline.HTTP,
+                "get",
+                side_effect=self.responses(
+                    value_total=100,
+                    manager_name="Prior Adviser Name, LLC",
+                ),
+            ),
+            mock.patch.object(
+                pipeline,
+                "load_prior_value_unit_context",
+                return_value=(None, None),
+            ),
+            self.assertLogs(pipeline.log, level="WARNING") as captured,
+        ):
+            parsed = pipeline.fetch_filing_holdings(
+                CIK,
+                BASE_ACCESSION,
+                filing=BASE_ROW,
+            )
+
+        self.assertEqual(
+            {
+                "discovery_name": "Blackstone Inc.",
+                "primary_name": "Prior Adviser Name, LLC",
+            },
+            parsed["filer_name_discrepancy"],
+        )
+        self.assertTrue(any(
+            "filing-manager name differs" in message
+            for message in captured.output
+        ))
 
     def test_component_passes_trusted_adjacent_holdings_to_normalizer(
         self,

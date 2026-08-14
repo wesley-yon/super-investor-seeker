@@ -29,6 +29,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
+from typing import TypedDict
 
 from data_contract import DATA_CONTRACT_VERSION
 from quarter_health import (
@@ -69,6 +70,7 @@ from pipeline import (
     _registry_fund_symbol,
     MANUAL_SECURITY_KIND_OVERRIDES,
     infer_proven_split_adjustments,
+    normalize_filer_identity_name,
 )
 
 
@@ -177,6 +179,36 @@ def canonical_cik(value: object) -> str | None:
     if type(value) is not int or value <= 0:
         return None
     return str(value)
+
+
+class FilerNameCollision(TypedDict):
+    name: str
+    ciks: tuple[str, ...]
+
+
+def filer_name_collision_groups(
+    fund_calendars: dict[str, dict],
+) -> list[FilerNameCollision]:
+    """Return legal-name collisions that must stay distinct by SEC CIK."""
+    by_name: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for cik, metadata in sorted(fund_calendars.items()):
+        if not isinstance(metadata, dict):
+            continue
+        name = metadata.get("name")
+        if not isinstance(name, str):
+            continue
+        key = normalize_filer_identity_name(name)
+        if key:
+            by_name[key].append((cik, name))
+
+    return [
+        {
+            "name": entries[0][1],
+            "ciks": tuple(cik for cik, _name in entries),
+        }
+        for _key, entries in sorted(by_name.items())
+        if len(entries) > 1
+    ]
 
 
 def report_quarter_code(report_date: object) -> int | None:
@@ -1610,6 +1642,18 @@ def validate_funds(
         elif cik != fp.stem:
             errors.append(f"fund file {fp.name} has mismatched cik {raw_cik!r}")
 
+        raw_fund_name = fund.get("name")
+        fund_name = (
+            raw_fund_name
+            if isinstance(raw_fund_name, str) and raw_fund_name.strip()
+            else None
+        )
+        if fund_name is None:
+            errors.append(
+                f"fund file {fp.name} has invalid filer name "
+                f"{raw_fund_name!r}; expected a non-empty SEC legal name"
+            )
+
         quarters = fund.get("quarters", [])
         if not isinstance(quarters, list):
             errors.append(f"fund file {fp.name} has non-list quarters")
@@ -1638,6 +1682,7 @@ def validate_funds(
                 "report_dates": calendar_dates,
                 "report_date_set": frozenset(calendar_dates),
                 "q": tuple(expected_fund_quarter_codes(calendar_dates)),
+                **({"name": fund_name} if fund_name is not None else {}),
             }
 
         validate_adjacent_quarter_value_units(
@@ -3458,6 +3503,17 @@ def validate_stocks(
                 errors.append(
                     f"stock file {fp.name} holder {h_idx} references unknown fund {cik}"
                 )
+            expected_name = (
+                calendar.get("name")
+                if isinstance(calendar, dict)
+                else None
+            )
+            if expected_name is not None and holder.get("name") != expected_name:
+                errors.append(
+                    f"stock file {fp.name} holder {h_idx} name "
+                    f"{holder.get('name')!r} does not match fund {cik} "
+                    f"name {expected_name!r}"
+                )
             transition_dates = (
                 set(calendar["report_dates"][:2])
                 if calendar is not None
@@ -3772,6 +3828,16 @@ def validate_index(
                     f"index.json references missing fund file for cik {cik}"
                 )
             calendar = fund_calendars.get(cik)
+            expected_name = (
+                calendar.get("name")
+                if isinstance(calendar, dict)
+                else None
+            )
+            if expected_name is not None and entry.get("name") != expected_name:
+                errors.append(
+                    f"index.json fund cik {cik} name {entry.get('name')!r} "
+                    f"does not match fund file {expected_name!r}"
+                )
             expected_withheld_date = expected_withheld.get(cik)
             expected_unverified_dates = expected_unverified.get(cik, [])
             if expected_withheld_date is not None:
@@ -4197,6 +4263,7 @@ def main() -> int:
         "legacy_value_unit_sources": 0,
         "without_value_unit_provenance": 0,
         "value_unit_migration_version": None,
+        "filer_name_collision_groups": 0,
     }
 
     if not DATA_DIR.exists():
@@ -4213,6 +4280,18 @@ def main() -> int:
         fund_calendars,
         expected_current_stats,
     ) = validate_funds(errors, registry, quality_summary)
+    filer_collisions = filer_name_collision_groups(fund_calendars)
+    quality_summary["filer_name_collision_groups"] = len(filer_collisions)
+    if filer_collisions:
+        collision_samples = "; ".join(
+            f"{collision['name']} ({', '.join(collision['ciks'])})"
+            for collision in filer_collisions[:5]
+        )
+        warnings.append(
+            f"{len(filer_collisions)} normalized SEC filer legal-name "
+            "collision group(s) require CIK-level disambiguation; samples: "
+            f"{collision_samples}"
+        )
     pipeline_state = validate_pipeline_state(
         fund_files,
         errors,
@@ -4270,6 +4349,10 @@ def main() -> int:
     print(
         "  - Files checked: "
         f"{len(fund_files)} fund, {len(stock_files)} stock"
+    )
+    print(
+        "  - SEC filer legal-name collision groups (kept distinct by CIK): "
+        f"{quality_summary['filer_name_collision_groups']}"
     )
     print(
         "  - Amendment migration targets quarantined: "
