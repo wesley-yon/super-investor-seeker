@@ -1,0 +1,386 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ownershipDocument>
+  <schemaVersion>X0508</schemaVersion>
+  <documentType>5/A</documentType>
+  <periodOfReport>2024-12-31</periodOfReport>
+  <dateOfOriginalSubmission>2025-02-14</dateOfOriginalSubmission>
+  <form3HoldingsReported>0</form3HoldingsReported>
+  <form4TransactionsReported>1</form4TransactionsReported>
+  <issuer>
+    <issuerCik>0000000001</issuerCik>
+    <issuerName>SYNTHETIC SOURCE ISSUER</issuerName>
+    <issuerTradingSymbol>SYNTHETIC</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000001001</rptOwnerCik>
+      <rptOwnerName>SYNTHETIC SOURCE OWNER 1</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerAddress>
+      <rptOwnerStreet1>SYNTHETIC STREET 1</rptOwnerStreet1>
+      <rptOwnerStreet2 />
+      <rptOwnerCity>SYNTHETIC CITY</rptOwnerCity>
+      <rptOwnerState>ZZ</rptOwnerState>
+      <rptOwnerZipCode>00000</rptOwnerZipCode>
+      <rptOwnerStateDescription />
+    </reportingOwnerAddress>
+    <reportingOwnerRelationship>
+      <isDirector>1</isDirector>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <aff10b5One>0</aff10b5One>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <transactionDate>
+        <value>2016-09-15</value>
+      </transactionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>A</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionTimeliness>
+        <value>SYNTHETIC TEXT</value>
+      </transactionTimeliness>
+      <transactionAmounts>
+        <transactionShares>
+          <value>315.467</value>
+        </transactionShares>
+        <transactionPricePerShare>
+          <value>70.32</value>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode>
+          <value>SYNTHETIC TEXT</value>
+        </transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>156090.869</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+    <nonDerivativeTransaction>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <transactionDate>
+        <value>2020-08-20</value>
+      </transactionDate>
+      <transactionCoding>
+        <transactionFormType>5</transactionFormType>
+        <transactionCode>G</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionTimeliness />
+      <transactionAmounts>
+        <transactionShares>
+          <value>2400</value>
+        </transactionShares>
+        <transactionPricePerShare>
+          <value>0</value>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode>
+          <value>SYNTHETIC TEXT</value>
+        </transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>0</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+    <nonDerivativeTransaction>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <transactionDate>
+        <value>2016-09-15</value>
+      </transactionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>A</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionTimeliness>
+        <value>SYNTHETIC TEXT</value>
+      </transactionTimeliness>
+      <transactionAmounts>
+        <transactionShares>
+          <value>28.936</value>
+        </transactionShares>
+        <transactionPricePerShare>
+          <value>70.32</value>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode>
+          <value>SYNTHETIC TEXT</value>
+        </transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>0.002</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+    <nonDerivativeTransaction>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <transactionDate>
+        <value>2022-05-01</value>
+      </transactionDate>
+      <transactionCoding>
+        <transactionFormType>5</transactionFormType>
+        <transactionCode>G</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionTimeliness />
+      <transactionAmounts>
+        <transactionShares>
+          <value>17464</value>
+        </transactionShares>
+        <transactionPricePerShare>
+          <value>0</value>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode>
+          <value>SYNTHETIC TEXT</value>
+        </transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>0</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>121820</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+          <footnoteId id="F1" />
+        </directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>160000</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+          <footnoteId id="F2" />
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>0</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+          <footnoteId id="F2" />
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>87500</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+          <footnoteId id="F2" />
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>1017</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>0</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>67214</value>
+          <footnoteId id="F3" />
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+          <footnoteId id="F4" />
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+  </nonDerivativeTable>
+  <derivativeTable>
+    <derivativeTransaction>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+        <footnoteId id="F5" />
+      </securityTitle>
+      <conversionOrExercisePrice>
+        <footnoteId id="F6" />
+      </conversionOrExercisePrice>
+      <transactionDate>
+        <value>2016-09-15</value>
+      </transactionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>A</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionTimeliness>
+        <value>SYNTHETIC TEXT</value>
+      </transactionTimeliness>
+      <transactionAmounts>
+        <transactionShares>
+          <value>262.832</value>
+        </transactionShares>
+        <transactionPricePerShare>
+          <value>70.32</value>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode>
+          <value>SYNTHETIC TEXT</value>
+        </transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <exerciseDate>
+        <footnoteId id="F7" />
+      </exerciseDate>
+      <expirationDate>
+        <footnoteId id="F7" />
+      </expirationDate>
+      <underlyingSecurity>
+        <underlyingSecurityTitle>
+          <value>SYNTHETIC TEXT</value>
+        </underlyingSecurityTitle>
+        <underlyingSecurityShares>
+          <value>262.832</value>
+        </underlyingSecurityShares>
+      </underlyingSecurity>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>78397.5</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+      </ownershipNature>
+    </derivativeTransaction>
+  </derivativeTable>
+  <footnotes>
+    <footnote id="F1">SYNTHETIC FOOTNOTE F1</footnote>
+    <footnote id="F2">SYNTHETIC FOOTNOTE F2</footnote>
+    <footnote id="F3">SYNTHETIC FOOTNOTE F3</footnote>
+    <footnote id="F4">SYNTHETIC FOOTNOTE F4</footnote>
+    <footnote id="F5">SYNTHETIC FOOTNOTE F5</footnote>
+    <footnote id="F6">SYNTHETIC FOOTNOTE F6</footnote>
+    <footnote id="F7">SYNTHETIC FOOTNOTE F7</footnote>
+  </footnotes>
+  <ownerSignature>
+    <signatureName>SYNTHETIC SOURCE SIGNATORY</signatureName>
+    <signatureDate>2026-02-19</signatureDate>
+  </ownerSignature>
+</ownershipDocument>

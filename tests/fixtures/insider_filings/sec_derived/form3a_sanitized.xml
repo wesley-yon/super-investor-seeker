@@ -1,0 +1,80 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ownershipDocument>
+  <schemaVersion>X0607</schemaVersion>
+  <documentType>3/A</documentType>
+  <periodOfReport>2026-02-12</periodOfReport>
+  <dateOfOriginalSubmission>2026-02-23</dateOfOriginalSubmission>
+  <noSecuritiesOwned>0</noSecuritiesOwned>
+  <issuer>
+    <issuerCik>0000000001</issuerCik>
+    <issuerName>SYNTHETIC SOURCE ISSUER</issuerName>
+    <issuerTradingSymbol>SYNTHETIC</issuerTradingSymbol>
+    <issuerForeignTradingSymbol />
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000001001</rptOwnerCik>
+      <rptOwnerName>SYNTHETIC SOURCE OWNER 1</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerAddress>
+      <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+      <rptOwnerStreet1>SYNTHETIC STREET 1</rptOwnerStreet1>
+      <rptOwnerStreet2>SYNTHETIC SUITE</rptOwnerStreet2>
+      <rptOwnerCity>SYNTHETIC CITY</rptOwnerCity>
+      <rptOwnerState>ZZ</rptOwnerState>
+      <rptOwnerZipCode>00000</rptOwnerZipCode>
+      <rptOwnerStateDescription />
+    </reportingOwnerAddress>
+    <reportingOwnerRelationship>
+      <isDirector>0</isDirector>
+      <isOfficer>1</isOfficer>
+      <isTenPercentOwner>0</isTenPercentOwner>
+      <isOther>0</isOther>
+      <officerTitle>SYNTHETIC OFFICER ROLE</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>38950.274</value>
+          <footnoteId id="F1" />
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+    <nonDerivativeHolding>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>0</value>
+          <footnoteId id="F1" />
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+        <natureOfOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+  </nonDerivativeTable>
+  <footnotes>
+    <footnote id="F1">SYNTHETIC FOOTNOTE F1</footnote>
+  </footnotes>
+  <ownerSignature>
+    <signatureName>SYNTHETIC SOURCE SIGNATORY</signatureName>
+    <signatureDate>2026-08-07</signatureDate>
+  </ownerSignature>
+</ownershipDocument>

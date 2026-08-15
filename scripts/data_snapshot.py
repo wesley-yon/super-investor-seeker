@@ -50,6 +50,7 @@ CACHE_FILES = (
     Path(".cache/openfigi_details.json"),
     Path(".cache/sec_fund_names.json"),
 )
+PRIVATE_INSIDER_PREFIX = "data/insiders/private"
 
 
 class SnapshotError(ValueError):
@@ -222,6 +223,16 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _archive_mode(name: str, *, is_dir: bool) -> int:
+    is_private_insider = (
+        name == PRIVATE_INSIDER_PREFIX
+        or name.startswith(f"{PRIVATE_INSIDER_PREFIX}/")
+    )
+    if is_private_insider:
+        return 0o700 if is_dir else 0o600
+    return 0o755 if is_dir else 0o644
+
+
 def _tar_info(entry: SourceEntry) -> tarfile.TarInfo:
     info = tarfile.TarInfo(entry.name)
     info.uid = 0
@@ -229,19 +240,19 @@ def _tar_info(entry: SourceEntry) -> tarfile.TarInfo:
     info.uname = ""
     info.gname = ""
     info.mtime = 0
+    info.mode = _archive_mode(entry.name, is_dir=entry.is_dir)
     if entry.is_dir:
         info.type = tarfile.DIRTYPE
-        info.mode = 0o755
         info.size = 0
     else:
         info.type = tarfile.REGTYPE
-        info.mode = 0o644
         info.size = entry.size
     return info
 
 
 def _write_archive(entries: Iterable[SourceEntry], destination: Path) -> None:
     with destination.open("xb") as raw_output:
+        os.fchmod(raw_output.fileno(), 0o600)
         with gzip.GzipFile(
             filename="",
             mode="wb",
@@ -481,7 +492,10 @@ def _verify_archive_contents(
                     raise SnapshotError(
                         f"archive member has invalid size: {member.name}"
                     )
-                expected_mode = 0o755 if member.isdir() else 0o644
+                expected_mode = _archive_mode(
+                    member.name,
+                    is_dir=member.isdir(),
+                )
                 if (
                     member.uid != 0
                     or member.gid != 0
@@ -505,7 +519,7 @@ def _verify_archive_contents(
                     if extract_root is not None:
                         destination = extract_root.joinpath(*member.name.split("/"))
                         destination.mkdir()
-                        destination.chmod(0o755)
+                        destination.chmod(expected_mode)
                     continue
 
                 file_count += 1
@@ -532,7 +546,7 @@ def _verify_archive_contents(
                     destination = extract_root.joinpath(*member.name.split("/"))
                     with source, destination.open("xb") as output:
                         _copy_exact(source, output, digest, member.size)
-                    destination.chmod(0o644)
+                    destination.chmod(expected_mode)
                     os.utime(destination, (0, 0))
     except SnapshotError:
         raise
@@ -571,6 +585,8 @@ def verify_snapshot(
     archive_path = Path(archive_path)
     manifest_path = Path(manifest_path)
     archive_metadata = _regular_file(archive_path, "archive")
+    if stat.S_IMODE(archive_metadata.st_mode) != 0o600:
+        raise SnapshotError("archive mode must be exactly 0600")
     manifest = _load_manifest(manifest_path)
     if archive_path.name != manifest["archive"]["filename"]:
         raise SnapshotError("archive filename does not match manifest")
@@ -821,6 +837,7 @@ def _download_url(
                     )
             total = 0
             with destination.open("xb") as output:
+                os.fchmod(output.fileno(), 0o600)
                 while True:
                     block = response.read(1024 * 1024)
                     if not block:

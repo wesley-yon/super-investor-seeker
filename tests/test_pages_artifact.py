@@ -36,6 +36,17 @@ class PagesArtifactTests(unittest.TestCase):
         (source / "data/cusip_registry.json").write_text('{"private":true}\n')
         (source / "data/cache").mkdir()
         (source / "data/cache/openfigi.json").write_text('{"private":true}\n')
+        insider_accession = (
+            source
+            / "data/insiders/private/accessions/0000000001-26-000001"
+        )
+        (insider_accession / "normalized").mkdir(parents=True)
+        (insider_accession / "raw.xml").write_text(
+            "<ownershipDocument>PRIVATE INSIDER SENTINEL</ownershipDocument>\n"
+        )
+        (insider_accession / "normalized/1.0.0.json").write_text(
+            '{"private":"PRIVATE INSIDER SENTINEL"}\n'
+        )
         (source / ".cache").mkdir()
         (source / ".cache/cusip-map.json").write_text('{"private":true}\n')
         (source / "data/funds/1.json").write_text(
@@ -106,6 +117,14 @@ class PagesArtifactTests(unittest.TestCase):
             )
             self.assertEqual(SHA, manifest["source_sha"])
             self.assertEqual(DATASET_ID, manifest["dataset_id"])
+            self.assertFalse((first / "data/insiders").exists())
+            self.assertFalse(
+                any(
+                    b"PRIVATE INSIDER SENTINEL" in path.read_bytes()
+                    for path in first.rglob("*")
+                    if path.is_file()
+                )
+            )
 
             public_files = {
                 path.relative_to(first).as_posix()

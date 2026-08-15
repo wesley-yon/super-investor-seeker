@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ownershipDocument xmlns="http://www.sec.gov/edgar/document/ownership">
+  <schemaVersion>X0306</schemaVersion>
+  <documentType>4</documentType>
+  <periodOfReport>2026-01-15</periodOfReport>
+  <notSubjectToSection16>0</notSubjectToSection16>
+  <issuer>
+    <issuerCik>0000000001</issuerCik>
+    <issuerName>SYNTHETIC ISSUER ONE</issuerName>
+    <issuerTradingSymbol>TST1</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000000002</rptOwnerCik>
+      <rptOwnerName>SYNTHETIC OWNER ALPHA</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerAddress>
+      <rptOwnerStreet1>TEST DATA ONLY</rptOwnerStreet1>
+      <rptOwnerCity>SYNTHETIC CITY</rptOwnerCity>
+      <rptOwnerState>ZZ</rptOwnerState>
+      <rptOwnerZipCode>00000</rptOwnerZipCode>
+      <rptOwnerStateDescription>TEST REGION</rptOwnerStateDescription>
+    </reportingOwnerAddress>
+    <reportingOwnerRelationship>
+      <isDirector>1</isDirector>
+      <isOfficer>false</isOfficer>
+      <isTenPercentOwner>0</isTenPercentOwner>
+      <isOther>false</isOther>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <securityTitle><value>Class A Common Stock</value></securityTitle>
+      <transactionDate><value>2026-01-15</value></transactionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>P</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>00123.4500</value></transactionShares>
+        <transactionPricePerShare><value>10.2500</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>1000.000</value></sharesOwnedFollowingTransaction>
+        <valueOwnedFollowingTransaction><value>10250.0000</value></valueOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership><value>D</value></directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+  <ownerSignature>
+    <signatureName>/s/ SYNTHETIC SIGNER</signatureName>
+    <signatureDate>2026-01-16</signatureDate>
+  </ownerSignature>
+</ownershipDocument>
