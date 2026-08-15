@@ -15,6 +15,9 @@ htmlcov/
 .ruff_cache/
 .mypy_cache/
 .claude/
+node_modules/
+test-results/
+playwright-report/
 
 # Local operating-system and runtime output
 .DS_Store
