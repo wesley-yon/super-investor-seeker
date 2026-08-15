@@ -89,6 +89,10 @@ if [ "$(find "$remote_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 2 ]; th
   echo "::error::Draft release does not contain exactly two snapshot assets"
   exit 1
 fi
+if ! chmod 600 "$remote_dir/$archive_name"; then
+  echo "::error::Failed to restrict downloaded snapshot archive"
+  exit 1
+fi
 python scripts/data_snapshot.py verify \
   --archive "$remote_dir/$archive_name" \
   --manifest "$remote_dir/$manifest_name"

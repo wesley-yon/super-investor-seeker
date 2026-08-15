@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ownershipDocument xmlns="http://www.sec.gov/edgar/document/ownership">
+  <schemaVersion>X0306</schemaVersion>
+  <documentType>5/A</documentType>
+  <dateOfOriginalSubmission>2026-05-01</dateOfOriginalSubmission>
+  <periodOfReport>2026-04-30</periodOfReport>
+  <notSubjectToSection16>true</notSubjectToSection16>
+  <noSecuritiesOwned>0</noSecuritiesOwned>
+  <form3HoldingsReported>1</form3HoldingsReported>
+  <form4TransactionsReported>false</form4TransactionsReported>
+  <issuer>
+    <issuerCik>0000000007</issuerCik>
+    <issuerName>SYNTHETIC ISSUER SEVEN</issuerName>
+    <issuerTradingSymbol>TST7</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000000008</rptOwnerCik>
+      <rptOwnerName>SYNTHETIC OWNER DELTA</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerAddress>
+      <rptOwnerStreet1>FORM 5A TEST DATA ONLY</rptOwnerStreet1>
+      <rptOwnerCity>FIXTURE CITY</rptOwnerCity>
+      <rptOwnerState>ZZ</rptOwnerState>
+      <rptOwnerZipCode>00000</rptOwnerZipCode>
+    </reportingOwnerAddress>
+    <reportingOwnerRelationship>
+      <isDirector>false</isDirector>
+      <isOfficer>true</isOfficer>
+      <isTenPercentOwner>false</isTenPercentOwner>
+      <isOther>false</isOther>
+      <officerTitle>TEST OPERATIONS OFFICER</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <securityTitle><value>Common Stock</value></securityTitle>
+      <transactionDate><value>2026-04-29</value></transactionDate>
+      <transactionCoding>
+        <transactionFormType>5</transactionFormType>
+        <transactionCode>G</transactionCode>
+        <equitySwapInvolved>false</equitySwapInvolved>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>77.000</value></transactionShares>
+        <transactionTotalValue><value>900.123456789</value></transactionTotalValue>
+        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>177.000</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership><value>D</value></directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+    <nonDerivativeHolding>
+      <securityTitle><value>Common Stock</value></securityTitle>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>177.000</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership><value>D</value></directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeHolding>
+  </nonDerivativeTable>
+  <remarks>SYNTHETIC FORM 5/A TEST-ONLY REMARK.</remarks>
+  <ownerSignature>
+    <signatureName>/s/ SYNTHETIC SIGNER DELTA</signatureName>
+    <signatureDate>2026-05-05</signatureDate>
+  </ownerSignature>
+</ownershipDocument>

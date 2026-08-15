@@ -1,0 +1,145 @@
+{
+  "fixture_kind": "synthetic_test_only_section16_oracle",
+  "network_source": null,
+  "filings": {
+    "form4_simple_purchase": {
+      "filename": "form4_simple_purchase.xml",
+      "sha256": "290a119c39ae9116a19c1c0214505fa0e6275d690ff95a2f92ca9c45447ba38b",
+      "accession_number": "0000000001-26-000001",
+      "filing_date": "2026-01-16",
+      "accepted_at": "2026-01-16T16:30:00Z",
+      "source_index_url": "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.html",
+      "source_document_url": "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/form4-test-only.xml",
+      "expected": {
+        "form_type": "4",
+        "base_form_type": "4",
+        "issuer_cik": "0000000001",
+        "owner_cik": "0000000002",
+        "transaction_code": "P",
+        "shares": "123.45",
+        "price_per_share": "10.25",
+        "calculated_value": "1265.3625",
+        "post_transaction_shares": "1000",
+        "post_transaction_value": "10250"
+      }
+    },
+    "form4_joint_sale_derivative": {
+      "filename": "form4_joint_sale_derivative.xml",
+      "sha256": "ad2ecf39ab37413ca390b2c655fa4a7fe7b124165b3924b9852020ef285431dd",
+      "accession_number": "0000000001-26-000002",
+      "filing_date": "2026-02-11",
+      "accepted_at": "2026-02-11T17:45:12Z",
+      "source_index_url": "https://www.sec.gov/Archives/edgar/data/1/000000000126000002/0000000001-26-000002-index.html",
+      "source_document_url": "https://www.sec.gov/Archives/edgar/data/1/000000000126000002/form4-joint-test-only.xml",
+      "expected": {
+        "owner_ciks": ["0000000003", "0000000004"],
+        "foreign_trading_symbol": "TST1.L",
+        "priced_sale_value": "5031.25",
+        "missing_price_shares": "5.00000001",
+        "footnote_ids": ["F1", "F2", "F3"],
+        "weighted_average_refs": ["F1", "F2"]
+      }
+    },
+    "form3_holdings_only": {
+      "filename": "form3_holdings_only.xml",
+      "sha256": "6f7bb9f812ba76197c9382c210ee5faeae22737190c80f8ce2c74b0accc002af",
+      "accession_number": "0000000005-26-000003",
+      "filing_date": "2026-03-02",
+      "accepted_at": "2026-03-02T18:01:02Z",
+      "source_index_url": "https://www.sec.gov/Archives/edgar/data/5/000000000526000003/0000000005-26-000003-index.html",
+      "source_document_url": "https://www.sec.gov/Archives/edgar/data/5/000000000526000003/form3-test-only.xml",
+      "expected": {
+        "non_derivative_shares": "100.000000001",
+        "non_derivative_value": "1234.567890123",
+        "derivative_shares": "25.5",
+        "footnote_id": "H1"
+      }
+    },
+    "form3_amendment": {
+      "filename": "form3_amendment.xml",
+      "sha256": "b271f237d4e0907687bc6801e67c7c8719924ae9b139b7b1070f269c5c22c3f6",
+      "accession_number": "0000000005-26-000007",
+      "filing_date": "2026-03-04",
+      "accepted_at": "2026-03-04T18:01:02Z",
+      "source_index_url": "https://www.sec.gov/Archives/edgar/data/5/000000000526000007/0000000005-26-000007-index.html",
+      "source_document_url": "https://www.sec.gov/Archives/edgar/data/5/000000000526000007/form3a-test-only.xml",
+      "expected": {
+        "original_submission_date": "2026-03-02"
+      }
+    },
+    "form5_annual": {
+      "filename": "form5_annual.xml",
+      "sha256": "bb16982ce65450f4f156ea9ebcfb49d823afc20d1904eb843b2d3786e52424de",
+      "accession_number": "0000000007-26-000004",
+      "filing_date": "2026-05-01",
+      "accepted_at": "2026-05-01T19:02:03Z",
+      "source_index_url": "https://www.sec.gov/Archives/edgar/data/7/000000000726000004/0000000007-26-000004-index.html",
+      "source_document_url": "https://www.sec.gov/Archives/edgar/data/7/000000000726000004/form5-test-only.xml",
+      "expected": {
+        "transaction_code": "G",
+        "reported_total_value": "900.123456789",
+        "holding_shares": "177"
+      }
+    },
+    "form5_amendment": {
+      "filename": "form5_amendment.xml",
+      "sha256": "a74e5310b53cef9a265c0a1c65f0dba0ed998ec6c6f4a78e87026b485bd150a7",
+      "accession_number": "0000000007-26-000008",
+      "filing_date": "2026-05-05",
+      "accepted_at": "2026-05-05T19:02:03Z",
+      "source_index_url": "https://www.sec.gov/Archives/edgar/data/7/000000000726000008/0000000007-26-000008-index.html",
+      "source_document_url": "https://www.sec.gov/Archives/edgar/data/7/000000000726000008/form5a-test-only.xml",
+      "expected": {
+        "original_submission_date": "2026-05-01"
+      }
+    },
+    "form4_amendment": {
+      "filename": "form4_amendment.xml",
+      "sha256": "9118380608af86d420dbcac90d0691cc939a705e902d6bd34473da9c088472dc",
+      "accession_number": "0000000001-26-000005",
+      "filing_date": "2026-01-20",
+      "accepted_at": "2026-01-20T20:03:04Z",
+      "source_index_url": "https://www.sec.gov/Archives/edgar/data/1/000000000126000005/0000000001-26-000005-index.html",
+      "source_document_url": "https://www.sec.gov/Archives/edgar/data/1/000000000126000005/form4a-test-only.xml",
+      "expected": {
+        "original_submission_date": "2026-01-16",
+        "transaction_value": "1296.225"
+      }
+    },
+    "form4_unknown_extension": {
+      "filename": "form4_unknown_extension.xml",
+      "sha256": "3dc721f2e080075bc46f5dd5e363e7bf4179284a623cd07ed552ae74d6339f0a",
+      "accession_number": "0000000009-26-000006",
+      "filing_date": "2026-06-02",
+      "accepted_at": "2026-06-02T20:04:05Z",
+      "source_index_url": "https://www.sec.gov/Archives/edgar/data/9/000000000926000006/0000000009-26-000006-index.html",
+      "source_document_url": "https://www.sec.gov/Archives/edgar/data/9/000000000926000006/form4-unknown-test-only.xml",
+      "expected": {
+        "unknown_code": "Q",
+        "shares": "1.0000000001",
+        "price": "3.1415926535",
+        "unresolved_footnote_id": "F404",
+        "unknown_names": [
+          "issuerCountry",
+          "newRelationshipFlag",
+          "rowExtension",
+          "filingExtension"
+        ]
+      }
+    }
+  },
+  "unsafe_filings": {
+    "file_entity": {
+      "filename": "unsafe_file_entity.xml",
+      "sha256": "dc2d5d7ad05967aa66b19659d832ba7cdbc8f4766b541eeec13e09e4d3b0d4b9"
+    },
+    "internal_entity": {
+      "filename": "unsafe_internal_entity.xml",
+      "sha256": "6b07a80b71de125fcb40ef519291ef620980c4b62c5c12d289770c56309a5601"
+    },
+    "network_dtd": {
+      "filename": "unsafe_network_dtd.xml",
+      "sha256": "403fb63a9c9cec48b7bb951651038a99210d0f2709c3890a3d6ecc3aa495d59f"
+    }
+  }
+}

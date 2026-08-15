@@ -38,6 +38,19 @@ class DataSnapshotTests(unittest.TestCase):
             '{"cursor":"current"}\n',
             encoding="utf-8",
         )
+        insider_accession = (
+            source
+            / "data/insiders/private/accessions/0000000001-26-000001"
+        )
+        (insider_accession / "normalized").mkdir(parents=True)
+        (insider_accession / "raw.xml").write_text(
+            "<ownershipDocument>SYNTHETIC TEST-ONLY RAW</ownershipDocument>\n",
+            encoding="utf-8",
+        )
+        (insider_accession / "normalized/1.0.0.json").write_text(
+            '{"fixture":"SYNTHETIC TEST-ONLY NORMALIZED"}\n',
+            encoding="utf-8",
+        )
         for index, relative in enumerate(data_snapshot.CACHE_FILES):
             (source / relative).write_text(
                 json.dumps({"cache": index}, sort_keys=True) + "\n",
@@ -111,12 +124,85 @@ class DataSnapshotTests(unittest.TestCase):
                 (extracted / "data/funds/1.json").read_bytes(),
             )
             self.assertTrue((extracted / "data/empty").is_dir())
+            insider_relative = Path(
+                "data/insiders/private/accessions/"
+                "0000000001-26-000001"
+            )
+            self.assertEqual(
+                (source / insider_relative / "raw.xml").read_bytes(),
+                (extracted / insider_relative / "raw.xml").read_bytes(),
+            )
+            self.assertEqual(
+                (
+                    source
+                    / insider_relative
+                    / "normalized/1.0.0.json"
+                ).read_bytes(),
+                (
+                    extracted
+                    / insider_relative
+                    / "normalized/1.0.0.json"
+                ).read_bytes(),
+            )
             for relative in data_snapshot.CACHE_FILES:
                 self.assertEqual(
                     (source / relative).read_bytes(),
                     (extracted / relative).read_bytes(),
                 )
             self.assertFalse((extracted / ".cache/local-only.txt").exists())
+
+    def test_private_insider_snapshot_uses_restricted_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = self.make_source(root)
+            summary = self.pack(source, root / "output")
+            extracted = root / "extracted"
+
+            self.assertEqual(
+                0o600,
+                Path(summary["archive_path"]).stat().st_mode & 0o777,
+            )
+
+            data_snapshot.verify_snapshot(
+                archive_path=Path(summary["archive_path"]),
+                manifest_path=Path(summary["manifest_path"]),
+                max_archive_bytes=1_000_000,
+                extract_root=extracted,
+            )
+
+            private_root = extracted / "data/insiders/private"
+            raw_xml = (
+                private_root
+                / "accessions/0000000001-26-000001/raw.xml"
+            )
+            normalized = (
+                private_root
+                / "accessions/0000000001-26-000001/normalized/1.0.0.json"
+            )
+            self.assertEqual(0o700, private_root.stat().st_mode & 0o777)
+            self.assertEqual(0o600, raw_xml.stat().st_mode & 0o777)
+            self.assertEqual(0o600, normalized.stat().st_mode & 0o777)
+
+    def test_verify_rejects_non_owner_only_private_insider_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = self.make_source(root)
+            summary = self.pack(source, root / "output")
+            archive = Path(summary["archive_path"])
+            archive.chmod(0o644)
+            destination = root / "must-not-exist"
+
+            with self.assertRaisesRegex(
+                data_snapshot.SnapshotError,
+                "archive mode must be exactly 0600",
+            ):
+                data_snapshot.verify_snapshot(
+                    archive_path=archive,
+                    manifest_path=Path(summary["manifest_path"]),
+                    max_archive_bytes=1_000_000,
+                    extract_root=destination,
+                )
+            self.assertFalse(destination.exists())
 
     def test_pack_rejects_missing_cache_and_source_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -256,6 +342,7 @@ class DataSnapshotTests(unittest.TestCase):
                             info,
                             None if content is None else io.BytesIO(content),
                         )
+        archive_path.chmod(0o600)
         manifest = {
             "archive": {
                 "bytes": archive_path.stat().st_size,
@@ -355,6 +442,7 @@ class DataSnapshotTests(unittest.TestCase):
                 asset = kwargs["asset"]
                 destination = kwargs["destination"]
                 shutil.copyfile(sources[asset["name"]], destination)
+                Path(str(destination)).chmod(0o600)
 
             with mock.patch.object(
                 data_snapshot,

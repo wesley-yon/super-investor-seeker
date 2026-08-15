@@ -11,9 +11,10 @@ requirements.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import date
 
 
@@ -28,6 +29,7 @@ INSTRUMENT_TYPES = (
 )
 VALID_INSTRUMENT_TYPES = frozenset(INSTRUMENT_TYPES)
 DEFAULT_INSTRUMENT_TYPE = "EQUITY"
+SECTION16_SECURITY_KEY_VERSION = 1
 SECURITY_KINDS = (
     "COMMON",
     "PREFERRED",
@@ -52,6 +54,8 @@ FUND_IDENTITY_TICKER_SOURCES = frozenset({
     "openfigi_plain_ticker",
     "openfigi_prior_registry_ticker",
 })
+
+_SEC_CIK_RE = re.compile(r"[0-9]{1,10}")
 
 _UNSAFE_FILENAME_CHARS_RE = re.compile(r"[^A-Z0-9._-]")
 _MUTUAL_FUND_TICKER_RE = re.compile(r"^[A-Z]{4}X$")
@@ -231,6 +235,86 @@ _SEC_ISSUER_IGNORED_TOKENS = {
     "USA",
     "WITH",
 }
+
+
+def normalize_sec_cik(cik: object) -> str:
+    """Return a canonical ten-digit SEC CIK or fail closed."""
+
+    if isinstance(cik, bool):
+        raise ValueError("SEC CIK must contain one to ten digits")
+    raw = str(cik).strip()
+    if not _SEC_CIK_RE.fullmatch(raw) or int(raw) == 0:
+        raise ValueError("SEC CIK must contain one to ten digits")
+    return raw.zfill(10)
+
+
+def normalize_section16_cik(cik: object) -> str:
+    """Named Section 16 alias for the strict canonical SEC CIK hook."""
+
+    return normalize_sec_cik(cik)
+
+
+def section16_owner_group_key(owner_ciks: Iterable[object]) -> str:
+    """Hash the sorted canonical reporting-owner CIK set deterministically."""
+
+    if isinstance(owner_ciks, (str, bytes)):
+        raise ValueError("owner CIKs must be a collection")
+    canonical = sorted({normalize_sec_cik(cik) for cik in owner_ciks})
+    if not canonical:
+        raise ValueError("an owner group must contain at least one CIK")
+    digest = hashlib.sha256(
+        f"section16-owner-group-v{SECTION16_SECURITY_KEY_VERSION}\0".encode(
+            "ascii"
+        )
+    )
+    for cik in canonical:
+        digest.update(cik.encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def normalize_section16_security_title(title: object) -> str:
+    """Normalize an as-filed Section 16 title without collapsing its class."""
+
+    raw = unicodedata.normalize("NFKC", str(title or ""))
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+        for character in raw
+    ):
+        raise ValueError("Section 16 security title contains unsafe characters")
+    normalized = " ".join(raw.strip().split()).upper()
+    if (
+        not normalized
+        or len(normalized) > _MAX_SECURITY_LABEL_LENGTH
+        or not re.search(r"[A-Z0-9]", normalized)
+    ):
+        raise ValueError("Section 16 security title is missing or invalid")
+    return normalized
+
+
+def section16_security_class_key(
+    issuer_cik: object,
+    security_title: object,
+    *,
+    is_derivative: bool,
+) -> str:
+    """Return a private candidate key; it is not a public stock identity."""
+
+    if type(is_derivative) is not bool:
+        raise ValueError("is_derivative must be a boolean")
+    digest = hashlib.sha256(
+        f"section16-security-class-v{SECTION16_SECURITY_KEY_VERSION}\0".encode(
+            "ascii"
+        )
+    )
+    for component in (
+        normalize_sec_cik(issuer_cik),
+        "derivative" if is_derivative else "non_derivative",
+        normalize_section16_security_title(security_title),
+    ):
+        digest.update(component.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def normalize_instrument_type(instrument_type: object | None) -> str:
@@ -653,6 +737,7 @@ __all__ = [
     "EQUITY_FUND_SECURITY_KINDS",
     "FUND_IDENTITY_TICKER_SOURCES",
     "INSTRUMENT_TYPES",
+    "SECTION16_SECURITY_KEY_VERSION",
     "SECURITY_KINDS",
     "VALID_INSTRUMENT_TYPES",
     "VALID_SECURITY_KINDS",
@@ -666,11 +751,16 @@ __all__ = [
     "normalize_security_kind",
     "normalize_security_label",
     "normalize_security_identifier",
+    "normalize_sec_cik",
+    "normalize_section16_cik",
+    "normalize_section16_security_title",
     "parse_stock_lookup_id",
     "published_holding_instrument_type",
     "registry_entry_has_equity_fund_identity",
     "registry_entry_has_trusted_fund_symbol_evidence",
     "safe_ticker",
+    "section16_owner_group_key",
+    "section16_security_class_key",
     "stock_file_stem",
     "stock_filename",
     "stock_lookup_id",

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE ownershipDocument [
+  <!ENTITY synthetic SYSTEM "file:///synthetic-test-only-never-read">
+]>
+<ownershipDocument>
+  <schemaVersion>X0306</schemaVersion>
+  <documentType>4</documentType>
+  <periodOfReport>2026-07-01</periodOfReport>
+  <issuer>
+    <issuerCik>0000000011</issuerCik>
+    <issuerName>&synthetic;</issuerName>
+    <issuerTradingSymbol>TSTX</issuerTradingSymbol>
+  </issuer>
+</ownershipDocument>

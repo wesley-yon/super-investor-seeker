@@ -1,4 +1,5 @@
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -249,6 +250,29 @@ class WorkflowResilienceTests(unittest.TestCase):
                 self.assertNotIn("actions/cache", workflow)
                 self.assertIn("permissions:\n  contents: read", workflow)
                 self.assertNotRegex(workflow, r"(?m)^  contents: write$")
+
+    def test_publisher_restricts_0644_downloaded_archive_before_verify(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        round_trip = publisher.split(
+            'remote_dir=$(mktemp -d "$RUNNER_TEMP/remote-snapshot.XXXXXX")', 1
+        )[1].split('remote_dataset_id=$(jq -er', 1)[0]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloaded_archive = Path(tmpdir) / "downloaded.tar.gz"
+            downloaded_archive.write_bytes(b"release asset")
+            downloaded_archive.chmod(0o644)
+            self.assertEqual(0o644, downloaded_archive.stat().st_mode & 0o777)
+
+        chmod = 'chmod 600 "$remote_dir/$archive_name"'
+        chmod_guard = (
+            'if ! chmod 600 "$remote_dir/$archive_name"; then\n'
+            '  echo "::error::Failed to restrict downloaded snapshot archive"\n'
+            "  exit 1\n"
+            "fi"
+        )
+        verify = "python scripts/data_snapshot.py verify"
+        self.assertIn(chmod_guard, round_trip)
+        self.assertLess(round_trip.index(chmod), round_trip.index(verify))
 
     def test_publishers_output_exact_deployment_identity(self):
         publisher = read(PUBLISHER_SCRIPT)
@@ -563,6 +587,7 @@ class WorkflowResilienceTests(unittest.TestCase):
 
     def test_ci_privacy_guard_covers_current_history_and_test_residue(self):
         workflow = read(".github/workflows/test.yml")
+        gitignore = read(".gitignore")
 
         self.assertRegex(workflow, r"(?m)^  push:\s*$")
         self.assertNotIn("branches: [main]", workflow)
@@ -580,6 +605,7 @@ class WorkflowResilienceTests(unittest.TestCase):
         self.assertIn("Tests left private generated data", workflow)
         self.assertNotIn("git status --porcelain", workflow)
         self.assertNotIn("git diff --exit-code -- data/", workflow)
+        self.assertRegex(gitignore, r"(?m)^data/$")
 
 
 if __name__ == "__main__":

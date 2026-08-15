@@ -1,0 +1,164 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ownershipDocument>
+  <schemaVersion>X0609</schemaVersion>
+  <documentType>4/A</documentType>
+  <periodOfReport>2026-08-03</periodOfReport>
+  <dateOfOriginalSubmission>2026-08-04</dateOfOriginalSubmission>
+  <issuer>
+    <issuerCik>0000000001</issuerCik>
+    <issuerName>SYNTHETIC SOURCE ISSUER</issuerName>
+    <issuerTradingSymbol>SYNTHETIC</issuerTradingSymbol>
+    <issuerForeignTradingSymbol />
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000001001</rptOwnerCik>
+      <rptOwnerName>SYNTHETIC SOURCE OWNER 1</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerAddress>
+      <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+      <rptOwnerStreet1>SYNTHETIC STREET 1</rptOwnerStreet1>
+      <rptOwnerStreet2 />
+      <rptOwnerCity>SYNTHETIC CITY</rptOwnerCity>
+      <rptOwnerState>ZZ</rptOwnerState>
+      <rptOwnerZipCode>00000</rptOwnerZipCode>
+      <rptOwnerStateDescription />
+    </reportingOwnerAddress>
+    <reportingOwnerRelationship>
+      <isOfficer>1</isOfficer>
+      <officerTitle>SYNTHETIC OFFICER ROLE</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <aff10b5One>0</aff10b5One>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <transactionDate>
+        <value>2026-08-03</value>
+      </transactionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>S</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionTimeliness />
+      <transactionAmounts>
+        <transactionShares>
+          <value>1500</value>
+        </transactionShares>
+        <transactionPricePerShare>
+          <value>63.00</value>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode>
+          <value>SYNTHETIC TEXT</value>
+        </transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>5200</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+    <nonDerivativeTransaction>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <transactionDate>
+        <value>2026-08-04</value>
+      </transactionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>M</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionTimeliness />
+      <transactionAmounts>
+        <transactionShares>
+          <value>1500</value>
+        </transactionShares>
+        <transactionPricePerShare>
+          <value>35.65</value>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode>
+          <value>SYNTHETIC TEXT</value>
+        </transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>6700</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+  <derivativeTable>
+    <derivativeTransaction>
+      <securityTitle>
+        <value>SYNTHETIC TEXT</value>
+      </securityTitle>
+      <conversionOrExercisePrice>
+        <value>35.65</value>
+      </conversionOrExercisePrice>
+      <transactionDate>
+        <value>2026-08-04</value>
+      </transactionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>M</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionTimeliness />
+      <transactionAmounts>
+        <transactionShares>
+          <value>1500</value>
+        </transactionShares>
+        <transactionPricePerShare>
+          <value>0</value>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode>
+          <value>SYNTHETIC TEXT</value>
+        </transactionAcquiredDisposedCode>
+      </transactionAmounts>
+      <exerciseDate>
+        <value>2018-01-17</value>
+      </exerciseDate>
+      <expirationDate>
+        <value>2027-01-17</value>
+      </expirationDate>
+      <underlyingSecurity>
+        <underlyingSecurityTitle>
+          <value>SYNTHETIC TEXT</value>
+        </underlyingSecurityTitle>
+        <underlyingSecurityShares>
+          <value>1500</value>
+        </underlyingSecurityShares>
+      </underlyingSecurity>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction>
+          <value>0</value>
+        </sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership>
+          <value>SYNTHETIC TEXT</value>
+        </directOrIndirectOwnership>
+      </ownershipNature>
+    </derivativeTransaction>
+  </derivativeTable>
+  <footnotes />
+  <ownerSignature>
+    <signatureName>SYNTHETIC SOURCE SIGNATORY</signatureName>
+    <signatureDate>2026-08-13</signatureDate>
+  </ownerSignature>
+</ownershipDocument>
