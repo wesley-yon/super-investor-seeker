@@ -497,6 +497,48 @@ th.sort.active,th.sort.active .arr{color:var(--ac)}
 .stock-summary-name:hover{color:var(--ac)}
 .stock-summary-value{color:var(--tx);font-size:13px;font-weight:600}
 
+/* Phase 1 insider fixture preview. It reuses the live light-theme tokens and
+   remains inert unless the explicit local-only preview gate is enabled. */
+.insider-shell{min-width:0}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+.insider-identity{margin-bottom:0}
+.insider-identity .stock-title{margin-bottom:14px}
+.security-tabs{display:flex;gap:0;margin-bottom:14px;border-bottom:1px solid var(--bd)}
+.security-tab{min-width:185px;padding:11px 18px 10px;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--mt);cursor:pointer;font-size:14px}
+.security-tab:hover{color:var(--ac);background:rgba(0,107,79,.035)}
+.security-tab.active{color:var(--ac);border-bottom-color:var(--ac);font-weight:600}
+.fixture-notice{display:flex;gap:8px;align-items:baseline;margin-bottom:9px;padding:7px 14px;background:#f5ead8;border:1px solid #d8c6a8;border-radius:4px;color:#624a29;font-size:11px}
+.fixture-notice strong{white-space:nowrap;text-transform:uppercase;letter-spacing:.045em;font-size:10px}
+.insider-layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}
+.insider-main,.insider-summary-rail{min-width:0}
+.insider-methodology{min-height:37px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 14px;margin-bottom:12px;background:var(--cd);border:1px solid var(--bd);border-radius:4px;color:var(--mt);font-size:12px}
+.insider-methodology>span:first-child{color:var(--ac);font-size:14px}
+.insider-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:14px;overflow:hidden;background:var(--cd);border:1px solid var(--bd);border-radius:4px}
+.insider-kpi{min-height:116px;display:flex;justify-content:space-between;gap:10px;padding:17px 18px;border-right:1px solid var(--bd)}
+.insider-kpi:last-child{border-right:0}
+.insider-kpi-label{margin-bottom:9px;color:var(--tx);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.075em;white-space:nowrap}
+.insider-kpi-label span{margin-left:7px;color:var(--mt);font-weight:500;letter-spacing:0}
+.insider-kpi-value{font-size:26px;line-height:1.05;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.025em}
+.insider-kpi-meta{margin-top:8px;color:var(--mt);font-size:11px;line-height:1.35}
+.insider-kpi-icon{align-self:center;font-size:18px}.insider-kpi-icon.purchase{color:var(--gn)}.insider-kpi-icon.sale{color:#c65c4a}.insider-kpi-icon.net{color:#c65c4a;font-size:24px}
+.insider-latest-name{font-size:16px;font-weight:600;white-space:nowrap}.role-chip{display:inline-block;margin-left:6px;padding:1px 6px;border:1px solid var(--bd);border-radius:9px;color:var(--mt);font-size:9px;font-weight:600;vertical-align:2px}
+.insider-card{margin-bottom:12px;background:var(--cd);border:1px solid var(--bd);border-radius:4px;overflow:hidden}
+.insider-chart-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 15px 0}
+.insider-chart-title{font-family:var(--serif);font-size:20px;font-weight:600;letter-spacing:-.015em}
+.range-controls{display:flex;border:1px solid var(--bd);border-radius:4px;overflow:hidden}
+.range-button{min-width:50px;padding:5px 10px;background:var(--cd);border:0;border-right:1px solid var(--bd);color:var(--tx);cursor:pointer;font-size:11px}.range-button:last-child{border-right:0}.range-button.active{background:var(--sf);box-shadow:inset 0 0 0 1px var(--bd2);font-weight:600}
+.chart-legend{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding:7px 15px 0;color:var(--mt);font-size:10px}.legend-price{display:inline-block;width:13px;border-top:2px solid #363834;vertical-align:3px}.legend-purchase{color:var(--gn)}.legend-sale{color:#c65c4a}.legend-other{color:#898b87}
+.insider-chart-wrap{height:176px;padding:3px 8px 8px}.insider-chart-wrap svg{width:100%;height:100%;overflow:visible}.chart-grid{stroke:var(--bd);stroke-width:.8}.chart-price-line{fill:none;stroke:#2f312e;stroke-width:1.5}.chart-axis{fill:var(--mt);font-family:var(--sans);font-size:9px}.chart-marker{cursor:pointer;stroke-width:1.5}.chart-marker:focus{outline:none;filter:drop-shadow(0 0 2px var(--ac))}
+.insider-filter-bar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:var(--cd2);border-bottom:1px solid var(--bd)}
+.filter-button,.date-filter{height:32px;padding:6px 13px;background:var(--cd);border:1px solid var(--bd);border-radius:4px;color:var(--tx);cursor:pointer;font-size:11px;white-space:nowrap}.filter-button.active{border-color:var(--ac);color:var(--ac);box-shadow:inset 0 0 0 1px rgba(0,107,79,.12)}
+.date-filter{display:flex;align-items:center;gap:5px;margin-left:auto;min-width:250px;padding:3px 7px;cursor:default}.date-filter input{width:108px;background:transparent;border:0;color:var(--tx);font-size:10px}.insider-search-wrap{display:flex;gap:5px;margin-left:auto}.insider-search{height:32px;width:200px;padding:6px 11px;background:var(--cd);border:1px solid var(--bd);border-radius:4px;color:var(--tx);font-size:12px}.insider-search-wrap .icon-btn{height:32px;width:32px}
+#insiderTransactionTable{min-width:990px;font-size:12px}#insiderTransactionTable th{padding:9px 11px}#insiderTransactionTable td{padding:8px 11px}.insider-row{cursor:pointer}.insider-name{font-weight:600}.insider-role{margin-top:2px;color:var(--mt);font-size:10px}.txn-badge{display:inline-block;padding:3px 8px;border:1px solid;border-radius:4px;font-size:9px;font-weight:700;letter-spacing:.04em}.txn-badge.purchase{background:var(--gn-soft);border-color:#c6dbc9;color:var(--gn)}.txn-badge.sale{background:var(--rd-soft);border-color:#dfc6c0;color:#bd4a39}.plan-chip{display:inline-block;margin-left:5px;padding:2px 6px;background:#eeece7;border:1px solid var(--bd);border-radius:3px;color:var(--tx);font-size:9px}.positive{color:var(--gn);font-weight:600}.negative{color:#d14f3d;font-weight:600}.filing-cell{white-space:nowrap}.filing-cell strong{display:block}.filing-cell a{color:var(--mt);font-size:10px}.insider-empty{padding:42px 20px!important;text-align:center;color:var(--mt)}
+.insider-summary-rail .side-panel{margin:0;padding:20px 18px}.insider-rail-section{padding:0 0 14px;margin-bottom:14px;border-bottom:1px solid var(--bd)}.insider-rail-section:last-child{padding-bottom:0;margin-bottom:0;border-bottom:0}.insider-rail-head{display:flex;justify-content:space-between;gap:8px;margin-bottom:9px;font-size:12px;font-weight:600}.insider-rail-head small{margin-left:7px;color:var(--mt);font-weight:400}.insider-ranked-row{display:grid;grid-template-columns:17px minmax(0,1fr) auto;gap:7px;align-items:baseline;margin:8px 0;font-size:11px}.insider-ranked-row .rank{color:var(--mt)}.insider-ranked-name{min-width:0;color:var(--mt)}.insider-ranked-name small{margin-left:8px;color:var(--mt);font-size:9px}.insider-ranked-value{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}.insider-ranked-sub{grid-column:2/-1;text-align:right;margin-top:-6px;color:var(--mt);font-size:9px}.rail-subtitle{margin:8px 0 5px;font-size:11px;font-weight:600}.holding-row,.plan-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin:6px 0;color:var(--mt);font-size:11px}.holding-row strong,.plan-row strong{color:var(--tx);font-weight:600;text-align:right}
+.insider-footer{display:flex;justify-content:space-between;gap:18px;margin-top:13px;color:var(--mt);font-size:11px}.insider-footer span:last-child{text-align:right}
+.insider-drawer-backdrop{position:fixed;inset:0;z-index:300;background:rgba(32,31,27,.28)}.insider-drawer{position:absolute;top:0;right:0;width:min(580px,100vw);height:100%;overflow:auto;padding:25px;background:var(--cd);border-left:1px solid var(--bd);box-shadow:0 6px 20px rgba(25,30,27,.12)}.drawer-head{display:flex;justify-content:space-between;gap:18px;padding-bottom:15px;border-bottom:1px solid var(--bd)}.drawer-title{font-family:var(--serif);font-size:25px}.drawer-close{width:36px;height:36px;background:transparent;border:1px solid var(--bd);border-radius:4px;cursor:pointer}.drawer-meta{margin-top:5px;color:var(--mt);font-size:12px}.drawer-section{padding:17px 0;border-bottom:1px solid var(--bd)}.drawer-section h3{margin-bottom:10px;font-family:var(--serif);font-size:18px}.drawer-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px 18px;font-size:12px}.drawer-label{color:var(--mt);font-size:10px;text-transform:uppercase;letter-spacing:.05em}.drawer-source{display:inline-flex;margin-top:14px;padding:8px 12px;background:var(--ac);border-radius:4px;color:#fff!important;font-size:12px}.drawer-note{color:var(--mt);font-size:12px;line-height:1.55}.insider-skeleton{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px}.skeleton-block{min-height:112px;margin-bottom:12px;background:linear-gradient(90deg,var(--sf),var(--cd),var(--sf));background-size:200% 100%;border:1px solid var(--bd);border-radius:4px;animation:skeleton 1.2s linear infinite}.skeleton-chart{min-height:244px}.skeleton-table{min-height:290px}.skeleton-rail{min-height:650px}@keyframes skeleton{to{background-position:-200% 0}}
+.insider-error{padding:50px 24px;text-align:center;background:var(--cd);border:1px solid var(--bd);border-radius:4px}.insider-error h2{font-family:var(--serif);margin-bottom:8px}
+.holders-insider-link{padding:18px}.holders-insider-link h3{font-family:var(--serif);font-size:18px}.holders-insider-link p{margin:7px 0 10px;color:var(--mt);font-size:12px}.holders-insider-link button{padding:0;background:transparent;border:0;color:var(--ac);cursor:pointer;font-weight:600}
+
 .info-note{
   padding:14px 17px;
   color:var(--mt);
@@ -515,6 +557,7 @@ th.sort.active,th.sort.active .arr{color:var(--ac)}
   .stock-page{grid-template-columns:1fr}
   .stock-sidebar{position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
   .stock-sidebar .side-panel{margin-bottom:0}
+  .insider-layout,.insider-skeleton{grid-template-columns:1fr}.insider-summary-rail{order:2}.insider-summary-rail .side-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 28px}.insider-summary-rail .side-title{grid-column:1/-1}.insider-rail-section:nth-last-child(2){border-bottom:0}
 }
 @media(max-width:1100px){
   .fund-page{grid-template-columns:1fr}
@@ -569,13 +612,17 @@ th.sort.active,th.sort.active .arr{color:var(--ac)}
   th{padding:10px;font-size:9.5px}
   td{padding:11px 10px}
   #fundTable td.security-label-cell,#fundExitTable td.security-label-cell{white-space:normal!important;line-height:1.2}
+  .security-tabs{overflow-x:auto}.security-tab{min-width:max-content;padding-inline:17px}.fixture-notice{display:block}.fixture-notice strong{display:block;margin-bottom:3px}.insider-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.insider-kpi:nth-child(2){border-right:0}.insider-kpi:nth-child(-n+2){border-bottom:1px solid var(--bd)}.insider-chart-head{align-items:flex-start;flex-direction:column}.range-controls{max-width:100%;overflow-x:auto}.range-button{min-width:46px}.insider-filter-bar{align-items:stretch}.date-filter{order:3;margin-left:0;flex:1 1 220px}.insider-search-wrap{order:4;margin-left:0;flex:1 1 100%}.insider-search{width:100%}.insider-summary-rail .side-panel{grid-template-columns:1fr}.insider-summary-rail .side-title{grid-column:auto}.insider-rail-section:nth-last-child(2){border-bottom:1px solid var(--bd)}.insider-footer{flex-direction:column}.insider-footer span:last-child{text-align:left}.insider-drawer{width:100%;padding:20px}.drawer-grid{grid-template-columns:1fr}.insider-skeleton{grid-template-columns:1fr}.skeleton-rail{min-height:300px}
 }
 @media(max-width:520px){
   .logo-name{display:none}
+  .security-tabs{overflow-x:visible}
+  .security-tab{flex:1 1 0;min-width:0;min-height:48px;padding:7px 4px;font-size:12px;line-height:1.15;white-space:normal}
   .fund-stat-grid,.stock-stat-grid{grid-template-columns:1fr}
   .fund-stat,.stock-stat{border-right:0;border-bottom:1px solid var(--bd)!important;min-height:82px}
   .fund-stat:last-child,.stock-stat:last-child{border-bottom:0!important}
   .stock-title-line{align-items:flex-start}
+  .insider-kpis{grid-template-columns:1fr}.insider-kpi{min-height:96px;border-right:0!important;border-bottom:1px solid var(--bd)!important}.insider-kpi:last-child{border-bottom:0!important}.insider-chart-wrap{height:190px}.chart-legend{gap:10px}.filter-button{flex:1 1 auto}.insider-methodology{grid-template-columns:auto 1fr}.insider-methodology .summary-action{grid-column:2;text-align:left}.insider-latest-name{white-space:normal}
 }
 @media(prefers-reduced-motion:reduce){
   *,*:before,*:after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}
@@ -2115,8 +2162,11 @@ function enterDetailView(kind, id, opts = {}) {
   }
   clearAllSearchInputs();
   $("gsearchWrap").style.display = "";
+  $("gsearch").placeholder = insiderPreviewEnabled()
+    ? "Search funds, insiders, or tickers…"
+    : "Search funds or tickers…";
   $("backBtn").style.display = "";
-  if (opts.updateUrl !== false) setUrl(kind, id);
+  if (opts.updateUrl !== false) setUrl(kind, id, opts.view);
   return true;
 }
 
@@ -2384,16 +2434,72 @@ function stockIdNeedsSearchIndex(stockId) {
   }
 })();
 
+function insiderPreviewEnabled(locationLike = location) {
+  const hostname = String(locationLike?.hostname || "").toLowerCase();
+  const isLocal = hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]";
+  if (!isLocal) return false;
+  const params = new URLSearchParams(String(locationLike?.search || ""));
+  return params.get("insiderPreview") === "fixture";
+}
+
 // ---------- URL routing ----------
 // Hash-based routing: #fund/1067983, #stock/AAPL, or no hash for home.
 // We use the URL fragment rather than real paths because GitHub Pages serves
 // the same index.html for any path, and real paths would require a 404.html
 // redirect trick. The fragment is invisible to the server and lets us route
 // client-side cleanly.
+function parseAppRoute(hashValue, previewEnabled = insiderPreviewEnabled()) {
+  const hash = String(hashValue || "").replace(/^#/, "");
+  const fundMatch = hash.match(/^fund\/(.+)$/);
+  if (fundMatch) {
+    return { kind: "fund", id: fundMatch[1] };
+  }
+  const stockMatch = hash.match(
+    /^stock\/([^/]+)(?:\/(insiders|reporting-insiders))?$/
+  );
+  if (!stockMatch) return null;
+  let id;
+  try {
+    id = decodeURIComponent(stockMatch[1]);
+  } catch (_) {
+    return null;
+  }
+  const requestedView = stockMatch[2] || "holders";
+  return {
+    kind: "stock",
+    id,
+    view: previewEnabled ? requestedView : "holders",
+  };
+}
+
 function wireUrlRouting() {
   // User pressed back/forward, or edited the hash in the URL bar
   window.addEventListener("hashchange", () => routeFromHash());
   window.addEventListener("popstate",   () => routeFromHash());
+}
+
+const INSIDER_VIEW_QUERY_KEYS = [
+  "range",
+  "transactionScope",
+  "ownerScope",
+  "plan",
+  "start",
+  "end",
+  "search",
+  "sort",
+  "order",
+  "filing",
+];
+
+function navigationSearch(kind, view) {
+  const params = new URLSearchParams(location.search);
+  if (kind !== "stock" || view !== "insiders") {
+    for (const key of INSIDER_VIEW_QUERY_KEYS) params.delete(key);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
 }
 
 function routeFromHash() {
@@ -2401,31 +2507,37 @@ function routeFromHash() {
     showDataMaintenance();
     return;
   }
-  const hash = (location.hash || "").replace(/^#/, "");
-  const m = hash.match(/^(fund|stock)\/(.+)$/);
-  if (!m) {
+  const hash = location.hash || "";
+  const route = parseAppRoute(hash);
+  if (!route) {
     // No hash → home. Don't push another history entry for this (it's the
     // current URL already).
     goHome({ updateUrl: false });
     return;
   }
-  const [, kind, id] = m;
-  if (kind === "fund") {
-    const cik = parseInt(id, 10);
+  if (route.kind === "fund") {
+    const cik = parseInt(route.id, 10);
     if (Number.isFinite(cik)) loadFund(cik, { updateUrl: false });
     else goHome({ updateUrl: false });
-  } else if (kind === "stock") {
-    loadStock(decodeURIComponent(id), { updateUrl: false });
+  } else if (route.kind === "stock") {
+    loadStock(route.id, { updateUrl: false, view: route.view });
   }
 }
 
-function setUrl(kind, id) {
+function setUrl(kind, id, view = "holders") {
   // Push a new history entry so browser back works. replaceState would
   // swallow the previous entry, which is wrong semantically.
-  const newHash = kind === "home" ? "" : `#${kind}/${encodeURIComponent(id)}`;
-  const newUrl = location.pathname + location.search + newHash;
+  const stockSuffix = kind === "stock"
+    && insiderPreviewEnabled()
+    && ["insiders", "reporting-insiders"].includes(view)
+    ? `/${view}`
+    : "";
+  const newHash = kind === "home"
+    ? ""
+    : `#${kind}/${encodeURIComponent(id)}${stockSuffix}`;
+  const newUrl = location.pathname + navigationSearch(kind, view) + newHash;
   if (location.pathname + location.search + (location.hash || "") !== newUrl) {
-    history.pushState({ kind, id }, "", newUrl);
+    history.pushState({ kind, id, view }, "", newUrl);
   }
 }
 
@@ -3092,6 +3204,896 @@ function renderFundTbody() {
   }
 }
 
+// ---------- insider fixture UI ----------
+function safeSecDocumentUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    const hostname = url.hostname.toLowerCase();
+    const isSecHost = hostname === "sec.gov" || hostname.endsWith(".sec.gov");
+    if (
+      url.protocol !== "https:"
+      || !isSecHost
+      || url.username
+      || url.password
+      || url.port
+    ) return "";
+    return url.href;
+  } catch (_error) {
+    return "";
+  }
+}
+
+function safeInsiderAccession(value) {
+  const accession = String(value || "").trim();
+  return /^\d{10}-\d{2}-\d{6}$/.test(accession) ? accession : "";
+}
+
+function insiderSecurityTabs(stockId, activeView = "holders") {
+  const tabs = [
+    ["holders", "Institutional Holders"],
+    ["insiders", "Insider Activity"],
+    ["reporting-insiders", "Reporting Insiders"],
+  ];
+  return `<nav class="security-tabs" role="tablist" aria-label="Security views">
+    ${tabs.map(([view, label]) => {
+      const selected = view === activeView;
+      return `<button class="security-tab ${selected ? "active" : ""}" role="tab" onclick="loadStock('${esc(stockId)}',{view:'${view}'})" aria-selected="${selected}">${esc(label)}</button>`;
+    }).join("")}
+  </nav>`;
+}
+
+function insiderHoldersCrossLink(stockId) {
+  return `<section class="side-panel holders-insider-link" aria-label="Insider Activity preview link"><h3>Insider Activity — 90D</h3><p>Illustrative fixture preview · not real filing data</p><button onclick="setInsiderQuery({start:'2026-04-01',end:'2026-06-30',range:'6m'});loadStock('${esc(stockId)}',{view:'insiders'})">View insider activity →</button></section>`;
+}
+
+function insiderSummaryMarkup(fixture, stockId, summary = fixture.summary || {}) {
+  const purchases = summary.purchases || {};
+  const sales = summary.sales || {};
+  const net = summary.netPS || {};
+  const latest = summary.latestMeaningfulTransaction || null;
+  const owner = latest?.ownerGroup || {};
+  const windowLabel = summary.window === "filtered" ? "Filtered" : "12M";
+  const unavailableValues = aggregate => aggregate.missingValueCount
+    ? `<br>${esc(aggregate.missingValueCount)} ${aggregate.missingValueCount === 1 ? "value" : "values"} unavailable`
+    : "";
+  const latestMarkup = latest
+    ? `<div><div class="insider-kpi-label">Latest Meaningful Transaction</div>
+        <div class="insider-latest-name">${esc(owner.displayName || "—")} ${owner.primaryTitle ? `<span class="role-chip">${esc(owner.primaryTitle)}</span>` : ""}</div>
+        <div class="insider-kpi-meta">${latest.code === "S" ? "Sold" : "Purchased"} ${esc(exactWholeDisplay(latest.shares))} shares<br>${esc(latest.displayValue || "—")}&nbsp; · &nbsp;${esc(latest.relativeAgeLabel || "")}</div></div>
+        <span class="insider-kpi-icon ${latest.code === "S" ? "sale" : "purchase"}" aria-hidden="true">${latest.code === "S" ? "▼" : "▲"}</span>`
+    : `<div><div class="insider-kpi-label">Latest Meaningful Transaction</div><div class="insider-latest-name">No matching transaction</div><div class="insider-kpi-meta">No P/S transactions match the active filters.</div></div>`;
+  return `${insiderSecurityTabs(stockId, "insiders")}
+    <div class="fixture-notice" role="note">
+      <strong>Fixture preview — not real filing data.</strong>
+      ${esc(fixture._fixtureNotice || "Illustrative UI fixture only.")}
+    </div>
+    <div class="insider-methodology" role="note">
+      <span aria-hidden="true">ⓘ</span>
+      <span>${esc(fixture.methodologyBanner?.text || "")}</span>
+      <button type="button" class="summary-action" onclick="openInsiderMethodology()">${esc(fixture.methodologyBanner?.actionLabel || "Learn more")}</button>
+    </div>
+    <section class="insider-kpis" aria-label="Insider activity summary">
+      <article class="insider-kpi">
+        <div><div class="insider-kpi-label">Reported Purchases (P) <span>${esc(windowLabel)}</span></div>
+        <div class="insider-kpi-value">${esc(purchases.displayValue || "—")}</div>
+        <div class="insider-kpi-meta">${esc(purchases.transactionCount ?? 0)} transactions&nbsp; · &nbsp;${esc(purchases.ownerGroupCount ?? 0)} insiders${unavailableValues(purchases)}</div></div>
+        <span class="insider-kpi-icon purchase" aria-hidden="true">▲</span>
+      </article>
+      <article class="insider-kpi">
+        <div><div class="insider-kpi-label">Reported Sales (S) <span>${esc(windowLabel)}</span></div>
+        <div class="insider-kpi-value">${esc(sales.displayValue || "—")}</div>
+        <div class="insider-kpi-meta">${esc(sales.transactionCount ?? 0)} transactions&nbsp; · &nbsp;${esc(sales.ownerGroupCount ?? 0)} insiders${unavailableValues(sales)}<br>${sales.planMarkedKnownValuePercentage == null ? "Plan value share unavailable" : `${esc(fractionPercentDisplay(sales.planMarkedKnownValuePercentage))} plan-marked`}</div></div>
+        <span class="insider-kpi-icon sale" aria-hidden="true">▼</span>
+      </article>
+      <article class="insider-kpi">
+        <div><div class="insider-kpi-label">Net P/S Activity <span>${esc(windowLabel)}</span></div>
+        <div class="insider-kpi-value">${esc(net.displayValue || "—")}</div>
+        <div class="insider-kpi-meta">${esc(net.directionLabel || "")}${net.ratioDisplay ? `<br>${esc(net.ratioDisplay)}` : ""}${unavailableValues(net)}</div></div>
+        <span class="insider-kpi-icon net" aria-hidden="true">⚖</span>
+      </article>
+      <article class="insider-kpi latest">${latestMarkup}</article>
+    </section>`;
+}
+
+// ---------- insider fixture loading ----------
+const INSIDER_FIXTURE_PATH = "13f-insider-activity-prd/fixtures/apge-insider-activity.example.json";
+let insiderFixtureCache = null;
+let currentInsiderFixture = null;
+let currentInsiderStock = null;
+let currentInsiderStockId = "";
+let currentInsiderView = "insiders";
+let insiderSearchTimer = null;
+let insiderDrawerReturnFocus = null;
+
+function exactWholeDisplay(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  const match = raw.match(/^(-?)(\d+)(?:\.(\d+))?$/);
+  if (!match) return raw;
+  const integer = match[2].replace(/^0+(?=\d)/, "");
+  const fraction = String(match[3] || "").replace(/0+$/, "");
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${match[1]}${grouped}${fraction ? `.${fraction}` : ""}`;
+}
+
+function fractionPercentDisplay(value, digits = 0) {
+  const match = String(value ?? "").match(/^(\d+)(?:\.(\d+))?$/);
+  if (!match) return "Unknown";
+  const fraction = String(match[2] || "");
+  const rawDigits = `${match[1]}${fraction}`;
+  const scale = 10n ** BigInt(fraction.length);
+  const outputScale = 10n ** BigInt(digits);
+  const numerator = BigInt(rawDigits) * 100n * outputScale;
+  const rounded = (numerator + (scale / 2n)) / scale;
+  const text = rounded.toString().padStart(digits + 1, "0");
+  return digits
+    ? `${text.slice(0, -digits)}.${text.slice(-digits)}%`
+    : `${text}%`;
+}
+
+function fixtureDecimal(value) {
+  const match = String(value ?? "").trim().match(/^(-?)(\d+)(?:\.(\d+))?$/);
+  if (!match) return null;
+  const fraction = match[3] || "";
+  const magnitude = BigInt(`${match[2]}${fraction}`);
+  return {
+    units: match[1] ? -magnitude : magnitude,
+    scale: fraction.length,
+  };
+}
+
+function fixtureDecimalText(decimal) {
+  if (!decimal) return null;
+  const negative = decimal.units < 0n;
+  const magnitude = (negative ? -decimal.units : decimal.units)
+    .toString()
+    .padStart(decimal.scale + 1, "0");
+  const whole = decimal.scale ? magnitude.slice(0, -decimal.scale) : magnitude;
+  const fraction = decimal.scale
+    ? magnitude.slice(-decimal.scale).replace(/0+$/, "")
+    : "";
+  return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
+function sumFixtureDecimals(values) {
+  const parsed = values.map(fixtureDecimal).filter(Boolean);
+  const scale = parsed.reduce((maximum, value) => Math.max(maximum, value.scale), 0);
+  const units = parsed.reduce(
+    (total, value) => total + value.units * (10n ** BigInt(scale - value.scale)),
+    0n
+  );
+  return { units, scale };
+}
+
+function fixtureDecimalDifference(left, right) {
+  const [a, b] = [fixtureDecimal(left), fixtureDecimal(right)];
+  if (!a || !b) return null;
+  const scale = Math.max(a.scale, b.scale);
+  return {
+    units:
+      a.units * (10n ** BigInt(scale - a.scale))
+      - b.units * (10n ** BigInt(scale - b.scale)),
+    scale,
+  };
+}
+
+function compareFixtureDecimals(left, right) {
+  const difference = fixtureDecimalDifference(left, right);
+  if (!difference) return 0;
+  return difference.units < 0n ? -1 : difference.units > 0n ? 1 : 0;
+}
+
+function fixtureDecimalRatio(numerator, denominator, digits = 6) {
+  const [top, bottom] = [fixtureDecimal(numerator), fixtureDecimal(denominator)];
+  if (!top || !bottom || bottom.units === 0n) return null;
+  const scale = Math.max(top.scale, bottom.scale);
+  const alignedTop = top.units * (10n ** BigInt(scale - top.scale));
+  const alignedBottom = bottom.units * (10n ** BigInt(scale - bottom.scale));
+  const negative = (alignedTop < 0n) !== (alignedBottom < 0n);
+  const absoluteTop = alignedTop < 0n ? -alignedTop : alignedTop;
+  const absoluteBottom = alignedBottom < 0n ? -alignedBottom : alignedBottom;
+  const outputScale = 10n ** BigInt(digits);
+  const rounded = (absoluteTop * outputScale + absoluteBottom / 2n) / absoluteBottom;
+  return fixtureDecimalText({
+    units: negative ? -rounded : rounded,
+    scale: digits,
+  });
+}
+
+function compactFixtureMoney(value) {
+  const raw = String(value ?? "");
+  const match = raw.match(/^(-?)(\d+)(?:\.(\d+))?$/);
+  if (!match) return raw || "—";
+  const sign = match[1] ? "-" : "";
+  const integer = match[2].replace(/^0+(?=\d)/, "");
+  const units = [
+    [10, "B"],
+    [7, "M"],
+    [4, "K"],
+  ];
+  const unit = units.find(([length]) => integer.length >= length);
+  if (!unit) return `${sign}$${exactWholeDisplay(`${integer}${match[3] ? `.${match[3]}` : ""}`)}`;
+  const [length, suffix] = unit;
+  const places = length - 1;
+  const whole = integer.slice(0, integer.length - places);
+  const remainder = integer.slice(integer.length - places).padEnd(places, "0");
+  const decimals = remainder.slice(0, 2).replace(/0+$/, "");
+  return `${sign}$${whole}${decimals ? `.${decimals}` : ""}${suffix}`;
+}
+
+function validFixtureIsoDate(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  const date = new Date(`${text}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === text
+    ? text
+    : "";
+}
+
+function shiftFixtureIsoMonths(value, months) {
+  const valid = validFixtureIsoDate(value);
+  if (!valid) return "";
+  const [year, month, day] = valid.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, 1));
+  shifted.setUTCMonth(shifted.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth() + 1,
+    0
+  )).getUTCDate();
+  shifted.setUTCDate(Math.min(day, lastDay));
+  return shifted.toISOString().slice(0, 10);
+}
+
+function insiderEffectiveDateWindow(fixture, state) {
+  let explicitStart = validFixtureIsoDate(state.start);
+  let explicitEnd = validFixtureIsoDate(state.end);
+  if (explicitStart && explicitEnd && explicitStart > explicitEnd) {
+    [explicitStart, explicitEnd] = [explicitEnd, explicitStart];
+  }
+  if (explicitStart || explicitEnd) {
+    return { start: explicitStart, end: explicitEnd, explicit: true };
+  }
+  if (state.range === "all") return { start: "", end: "", explicit: false };
+  const fallbackTransactionDate = (fixture.transactions?.items || [])
+    .map(item => validFixtureIsoDate(item.transactionDate))
+    .filter(Boolean)
+    .sort()
+    .at(-1) || "";
+  const end = [
+    fixture.priceSeries?.at(-1)?.date,
+    fixture.dataFreshness?.latestPriceDate,
+    String(fixture.asOf || "").slice(0, 10),
+  ].map(validFixtureIsoDate).find(Boolean) || fallbackTransactionDate;
+  const months = { "6m": 6, "1y": 12, "2y": 24, "5y": 60 }[state.range];
+  return {
+    start: end && months ? shiftFixtureIsoMonths(end, -months) : "",
+    end,
+    explicit: false,
+  };
+}
+
+function insiderFixturePathForStock(stockId, stockMeta = {}) {
+  if (!insiderPreviewEnabled()) return null;
+  const identities = [
+    stockId,
+    stockMeta.stock_id,
+    stockMeta.cusip,
+    stockMeta.ticker,
+  ].map(value => String(value || "").toUpperCase());
+  return identities.some(value => value === "03770N101" || value === "APGE")
+    ? INSIDER_FIXTURE_PATH
+    : null;
+}
+
+function insiderQueryState(fixture) {
+  const defaults = fixture?.filters || {};
+  const params = new URLSearchParams(location.search);
+  const allow = (key, values, fallback) => {
+    const value = params.get(key);
+    return values.includes(value) ? value : fallback;
+  };
+  let start = validFixtureIsoDate(params.get("start"));
+  let end = validFixtureIsoDate(params.get("end"));
+  if (start && end && start > end) [start, end] = [end, start];
+  const state = {
+    range: allow("range", ["6m", "1y", "2y", "5y", "all"], defaults.range || "1y"),
+    transactionScope: allow("transactionScope", ["ps", "all"], defaults.transactionScope || "ps"),
+    ownerScope: allow("ownerScope", ["all", "officers-directors", "ten-percent"], defaults.ownerScope || "all"),
+    plan: allow("plan", ["all", "10b5-1", "not-10b5-1"], defaults.plan || "all"),
+    start,
+    end,
+    search: params.get("search") || "",
+    sort: allow("sort", ["tradeDate", "value", "shares", "holdingsAfter", "percentChange"], defaults.sort || "tradeDate"),
+    order: allow("order", ["asc", "desc"], defaults.order || "desc"),
+    filing: params.get("filing") || "",
+  };
+  const dateWindow = insiderEffectiveDateWindow(fixture, state);
+  state.dateInputStart = dateWindow.start;
+  state.dateInputEnd = dateWindow.end;
+  return state;
+}
+
+function setInsiderQuery(updates, { replace = false } = {}) {
+  const params = new URLSearchParams(location.search);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value == null || value === "") params.delete(key);
+    else params.set(key, value);
+  }
+  const query = params.toString();
+  const url = `${location.pathname}${query ? `?${query}` : ""}${location.hash}`;
+  history[replace ? "replaceState" : "pushState"]({}, "", url);
+  if (currentInsiderFixture) renderCurrentInsiderView();
+}
+
+function insiderIdentityMarkup(fixture, stockId, view) {
+  const security = fixture.security || {};
+  const latestQuarter = String(security.latest13FPeriod || "").match(/^(\d{4})-Q([1-4])$/);
+  return `<header class="insider-identity">
+    <div class="stock-title">
+      <div class="ticker-mark">${esc(security.ticker || "—")}</div>
+      <div>
+        <div class="stock-title-line"><h1>${esc(security.companyName || "—")}</h1><span class="ht-tag stock">${esc(security.securityTypeLabel || "COMMON STOCK")}</span></div>
+        <div class="stock-meta">
+          <span>Security <span class="mono">${esc(security.ticker || "—")}</span></span>
+          <span>CUSIP <span class="mono">${esc(security.cusip || "—")}</span></span>
+          ${security.marketCap ? `<span>Market Cap <span class="mono">${esc(compactFixtureMoney(security.marketCap))}</span></span>` : ""}
+          ${security.sector ? `<span>Sector ${esc(security.sector)}</span>` : ""}
+          ${latestQuarter ? `<span>Latest 13F Q${esc(latestQuarter[2])} ${esc(latestQuarter[1])}</span>` : ""}
+        </div>
+      </div>
+    </div>
+    ${insiderSecurityTabs(stockId, view)}
+  </header>`;
+}
+
+function filteredInsiderTransactions(fixture, state) {
+  let rows = [...(fixture.transactions?.items || [])];
+  if (state.transactionScope === "ps") {
+    rows = rows.filter(item => ["P", "S"].includes(item.transactionCode));
+  }
+  if (state.ownerScope === "officers-directors") {
+    rows = rows.filter(item => !(item.ownerGroup?.roles || []).every(role => role === "TenPercentOwner"));
+  } else if (state.ownerScope === "ten-percent") {
+    rows = rows.filter(item => (item.ownerGroup?.roles || []).includes("TenPercentOwner"));
+  }
+  if (state.plan === "10b5-1") {
+    rows = rows.filter(item => item.planStatus === "filing_marked");
+  } else if (state.plan === "not-10b5-1") {
+    rows = rows.filter(item => item.planStatus === "not_marked");
+  }
+  const dateWindow = insiderEffectiveDateWindow(fixture, state);
+  if (dateWindow.start) {
+    rows = rows.filter(item => validFixtureIsoDate(item.transactionDate) >= dateWindow.start);
+  }
+  if (dateWindow.end) {
+    rows = rows.filter(item => {
+      const date = validFixtureIsoDate(item.transactionDate);
+      return date && date <= dateWindow.end;
+    });
+  }
+  const needle = state.search.trim().toUpperCase();
+  if (needle) {
+    rows = rows.filter(item => `${item.ownerGroup?.displayName || ""} ${item.ownerGroup?.primaryTitle || ""}`.toUpperCase().includes(needle));
+  }
+  const field = {
+    tradeDate: "transactionDate",
+    value: "value",
+    shares: "shares",
+    holdingsAfter: "postTransactionShares",
+    percentChange: "percentChange",
+  }[state.sort];
+  const numeric = state.sort !== "tradeDate";
+  rows.sort((a, b) => {
+    const left = String(a[field] ?? "");
+    const right = String(b[field] ?? "");
+    let comparison;
+    if (!numeric) comparison = left.localeCompare(right);
+    else {
+      const normalize = value => {
+        const sign = value.startsWith("-") ? -1 : 1;
+        const digits = value.replace(/^-/, "").split(".");
+        return { sign, whole: digits[0].replace(/^0+/, "") || "0", fraction: digits[1] || "" };
+      };
+      const x = normalize(left || "0");
+      const y = normalize(right || "0");
+      if (x.sign !== y.sign) comparison = x.sign - y.sign;
+      else if (x.whole.length !== y.whole.length) comparison = (x.whole.length - y.whole.length) * x.sign;
+      else comparison = (x.whole.localeCompare(y.whole) || x.fraction.localeCompare(y.fraction)) * x.sign;
+    }
+    return state.order === "asc" ? comparison : -comparison;
+  });
+  return rows;
+}
+
+function insiderDataFiltersActive(fixture, state) {
+  const defaults = fixture.filters || {};
+  return (
+    state.range !== (defaults.range || "1y")
+    || state.transactionScope !== (defaults.transactionScope || "ps")
+    || state.ownerScope !== (defaults.ownerScope || "all")
+    || state.plan !== (defaults.plan || "all")
+    || Boolean(state.start || state.end)
+    || state.search.trim() !== String(defaults.search || "").trim()
+  );
+}
+
+function insiderOwnerKey(item) {
+  return item.ownerGroup?.key || item.ownerGroup?.displayName || "";
+}
+
+function aggregateFilteredCode(rows, code) {
+  const selected = rows.filter(item => item.transactionCode === code);
+  const values = selected.map(item => item.value).filter(value => fixtureDecimal(value));
+  const value = fixtureDecimalText(sumFixtureDecimals(values));
+  return {
+    rows: selected,
+    value,
+    displayValue: selected.length && !values.length ? "—" : compactFixtureMoney(value),
+    transactionCount: selected.length,
+    ownerGroupCount: new Set(selected.map(insiderOwnerKey).filter(Boolean)).size,
+    knownValueCount: values.length,
+    missingValueCount: selected.length - values.length,
+  };
+}
+
+function filteredPlanMarkedFraction(sales) {
+  const known = sales.filter(
+    item => ["filing_marked", "not_marked"].includes(item.planStatus)
+      && fixtureDecimal(item.value)
+  );
+  const knownValue = fixtureDecimalText(sumFixtureDecimals(known.map(item => item.value)));
+  if (!known.length || compareFixtureDecimals(knownValue, "0") === 0) return null;
+  const markedValue = fixtureDecimalText(sumFixtureDecimals(
+    known.filter(item => item.planStatus === "filing_marked").map(item => item.value)
+  ));
+  return fixtureDecimalRatio(markedValue, knownValue);
+}
+
+function rankedFilteredOwners(rows, code) {
+  const owners = new Map();
+  for (const item of rows.filter(row => row.transactionCode === code)) {
+    const key = insiderOwnerKey(item);
+    if (!key) continue;
+    const owner = owners.get(key) || {
+      ownerGroupKey: key,
+      displayName: item.ownerGroup?.displayName || "—",
+      roleLabel: item.ownerGroup?.primaryTitle || "",
+      values: [],
+      sales: [],
+    };
+    if (fixtureDecimal(item.value)) owner.values.push(item.value);
+    if (code === "S") owner.sales.push(item);
+    owners.set(key, owner);
+  }
+  return [...owners.values()]
+    .map(owner => {
+      const value = fixtureDecimalText(sumFixtureDecimals(owner.values));
+      return {
+        ...owner,
+        value,
+        displayValue: owner.values.length ? compactFixtureMoney(value) : "—",
+        planMarkedKnownValuePercentage:
+          code === "S" ? filteredPlanMarkedFraction(owner.sales) : null,
+      };
+    })
+    .sort((left, right) => compareFixtureDecimals(right.value, left.value))
+    .map((owner, index) => ({ ...owner, rank: index + 1 }));
+}
+
+function filteredLatestHoldings(rows) {
+  const latestByOwner = new Map();
+  for (const item of rows) {
+    const key = insiderOwnerKey(item);
+    if (!key) continue;
+    const previous = latestByOwner.get(key);
+    const itemOrder = `${item.transactionDate || ""}|${item.acceptedAt || ""}`;
+    const previousOrder = previous
+      ? `${previous.transactionDate || ""}|${previous.acceptedAt || ""}`
+      : "";
+    if (!previous || itemOrder > previousOrder) latestByOwner.set(key, item);
+  }
+  const holdings = [...latestByOwner.values()].map(item => ({
+    displayName: item.ownerGroup?.displayName || "—",
+    roleLabel: item.ownerGroup?.primaryTitle || "",
+    roles: item.ownerGroup?.roles || [],
+    shares: item.postTransactionShares,
+    ownershipPercentage: null,
+  }));
+  holdings.sort((left, right) => compareFixtureDecimals(right.shares, left.shares));
+  return {
+    officersAndDirectors: holdings.filter(item =>
+      item.roles.some(role => ["Officer", "Director"].includes(role))
+    ),
+    tenPercentOwnersAndEntities: holdings.filter(item =>
+      item.roles.includes("TenPercentOwner")
+    ),
+  };
+}
+
+function filteredInsiderProjection(fixture, state, rows) {
+  if (!insiderDataFiltersActive(fixture, state)) {
+    return {
+      summary: fixture.summary || {},
+      sidebar: fixture.sidebar || {},
+    };
+  }
+  const purchases = aggregateFilteredCode(rows, "P");
+  const sales = aggregateFilteredCode(rows, "S");
+  const net = fixtureDecimalDifference(purchases.value, sales.value);
+  const netValue = fixtureDecimalText(net);
+  const latest = rows
+    .filter(item => ["P", "S"].includes(item.transactionCode))
+    .sort((left, right) =>
+      `${right.transactionDate || ""}|${right.acceptedAt || ""}`.localeCompare(
+        `${left.transactionDate || ""}|${left.acceptedAt || ""}`
+      )
+    )[0] || null;
+  const ratio = compareFixtureDecimals(purchases.value, "0") === 0
+    ? null
+    : fixtureDecimalRatio(sales.value, purchases.value, 1);
+  const markedSales = sales.rows.filter(item => item.planStatus === "filing_marked");
+  const markedSalesValues = markedSales
+    .map(item => item.value)
+    .filter(value => fixtureDecimal(value));
+  const markedSalesValue = fixtureDecimalText(sumFixtureDecimals(
+    markedSalesValues
+  ));
+  const missingValueCount = purchases.missingValueCount + sales.missingValueCount;
+  const hasKnownValue = purchases.knownValueCount + sales.knownValueCount > 0;
+  const hasUnavailablePSValues = missingValueCount > 0;
+  return {
+    summary: {
+      window: "filtered",
+      purchases,
+      sales: {
+        ...sales,
+        planMarkedKnownValuePercentage: filteredPlanMarkedFraction(sales.rows),
+      },
+      netPS: {
+        value: netValue,
+        displayValue: hasUnavailablePSValues ? "—" : compactFixtureMoney(netValue),
+        directionLabel:
+          hasUnavailablePSValues
+            ? "Value unavailable"
+            : net.units < 0n
+            ? "Net reported selling"
+            : net.units > 0n
+              ? "Net reported buying"
+              : "Balanced reported activity",
+        ratioDisplay:
+          hasUnavailablePSValues || !hasKnownValue || ratio == null
+            ? ""
+            : `Sales/Purchases: ${ratio}x`,
+        missingValueCount,
+      },
+      latestMeaningfulTransaction: latest ? {
+        ...latest,
+        code: latest.transactionCode,
+        displayValue: latest.valueDisplay || compactFixtureMoney(latest.value),
+        relativeAgeLabel: "filtered view",
+      } : null,
+    },
+    sidebar: {
+      window: "filtered",
+      topBuyers: rankedFilteredOwners(rows, "P"),
+      topSellers: rankedFilteredOwners(rows, "S"),
+      latestReportedHoldings: filteredLatestHoldings(rows),
+      rule10b51: {
+        planMarkedSalesValue: markedSalesValue,
+        planMarkedSalesDisplayValue:
+          markedSales.length && !markedSalesValues.length
+            ? "—"
+            : compactFixtureMoney(markedSalesValue),
+        distinctOwnerGroupCount: new Set(
+          markedSales.map(insiderOwnerKey).filter(Boolean)
+        ).size,
+        missingValueCount: markedSales.length - markedSalesValues.length,
+        latestPlanAdoptionDate: null,
+      },
+    },
+  };
+}
+
+function insiderChartMarkup(fixture, state, rows) {
+  const allSeries = fixture.priceSeries || [];
+  const rangeMonths = { "6m": 6, "1y": 12, "2y": 24, "5y": 60, all: 9999 }[state.range];
+  const endDate = allSeries.at(-1)?.date || state.end;
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const start = new Date(end);
+  start.setUTCMonth(start.getUTCMonth() - rangeMonths);
+  const series = allSeries.filter(point => state.range === "all" || new Date(`${point.date}T00:00:00Z`) >= start);
+  const width = 1030;
+  const height = 158;
+  const pad = { left: 38, right: 32, top: 12, bottom: 24 };
+  const closes = series.map(point => Number(point.close)).filter(Number.isFinite);
+  const min = Math.min(...closes, 5);
+  const max = Math.max(...closes, 25);
+  const dateValue = value => new Date(`${value}T00:00:00Z`).getTime();
+  const minDate = dateValue(series[0]?.date || state.start);
+  const maxDate = dateValue(series.at(-1)?.date || state.end);
+  const x = date => pad.left + ((dateValue(date) - minDate) / Math.max(1, maxDate - minDate)) * (width - pad.left - pad.right);
+  const y = value => pad.top + ((max - Number(value)) / Math.max(1, max - min)) * (height - pad.top - pad.bottom);
+  const line = series.map((point, index) => `${index ? "L" : "M"}${x(point.date).toFixed(1)},${y(point.close).toFixed(1)}`).join(" ");
+  const closeForDate = date => {
+    let candidate = series[0];
+    for (const point of series) if (point.date <= date) candidate = point;
+    return candidate?.close || String((min + max) / 2);
+  };
+  const markers = rows.map((item, index) => {
+    const chartEvent = (fixture.chartEvents || []).find(event => event.displayGroupKey === item.displayGroupKey);
+    const px = Math.max(pad.left, Math.min(width - pad.right, x(item.transactionDate))) + ((index % 3) - 1) * 3;
+    const py = y(chartEvent?.plotPrice || closeForDate(item.transactionDate));
+    const isPurchase = item.transactionCode === "P";
+    const isPlanSale = item.transactionCode === "S" && item.planStatus === "filing_marked";
+    const isOther = !["P", "S"].includes(item.transactionCode);
+    const numericValue = Number(item.value);
+    const markerSize = Number.isFinite(numericValue) && numericValue !== 0
+      ? Math.max(5, Math.min(9, 5 + Math.log10(Math.abs(numericValue)) - 5))
+      : 5;
+    const size = markerSize.toFixed(1);
+    const label = `${item.ownerGroup?.displayName || "Insider"}, ${item.transactionLabel}, ${item.transactionDate}, ${item.shares || "unknown"} shares, ${item.priceDisplay || "price not reported"}, ${item.valueDisplay || "value unavailable"}, Form ${item.formType}`;
+    const accession = safeInsiderAccession(item.accessionNumber);
+    const interaction = accession
+      ? `tabindex="0" role="button" data-insider-accession="${esc(accession)}"`
+      : "";
+    const titleAction = accession ? "Click for details." : "Filing detail unavailable.";
+    if (isOther) return `<circle class="chart-marker other" cx="${px}" cy="${py}" r="${size}" fill="#898b87" stroke="#898b87" aria-label="${esc(label)}" ${interaction}><title>${esc(label)}. ${titleAction}</title></circle>`;
+    if (isPurchase) return `<polygon class="chart-marker" points="${px},${py-markerSize} ${px-markerSize},${py+markerSize*.84} ${px+markerSize},${py+markerSize*.84}" fill="var(--gn)" stroke="var(--gn)" aria-label="${esc(label)}" ${interaction}><title>${esc(label)}. ${titleAction}</title></polygon>`;
+    if (isPlanSale) return `<polygon class="chart-marker" points="${px},${py+markerSize} ${px-markerSize},${py-markerSize*.84} ${px+markerSize},${py-markerSize*.84}" fill="var(--cd)" stroke="#c65c4a" aria-label="${esc(label)}" ${interaction}><title>${esc(label)}. Filing marked Rule 10b5-1. ${titleAction}</title></polygon>`;
+    return `<polygon class="chart-marker" points="${px},${py+markerSize} ${px-markerSize},${py-markerSize*.84} ${px+markerSize},${py-markerSize*.84}" fill="#c65c4a" stroke="#c65c4a" aria-label="${esc(label)}" ${interaction}><title>${esc(label)}. ${titleAction}</title></polygon>`;
+  }).join("");
+  const grids = [0, 1, 2, 3].map(index => {
+    const gy = pad.top + index * ((height - pad.top - pad.bottom) / 3);
+    const value = max - index * ((max - min) / 3);
+    return `<line class="chart-grid" x1="${pad.left}" y1="${gy}" x2="${width-pad.right}" y2="${gy}"/><text class="chart-axis" x="2" y="${gy+3}">$${value.toFixed(0)}</text>`;
+  }).join("");
+  const labels = series.filter((_, index) => index % Math.max(1, Math.floor(series.length / 7)) === 0).map(point => `<text class="chart-axis" x="${x(point.date)}" y="${height-4}" text-anchor="middle">${esc(displayDate(point.date).replace(/ \d{1,2},/, ""))}</text>`).join("");
+  return `<section class="insider-card" aria-labelledby="insiderChartTitle">
+    <div class="insider-chart-head"><h2 class="insider-chart-title" id="insiderChartTitle">Share Price &amp; Insider Transactions</h2><div class="range-controls" aria-label="Chart range">${[["6m","6M"],["1y","1Y"],["2y","2Y"],["5y","5Y"],["all","All"]].map(([value,label]) => `<button class="range-button ${state.range === value ? "active" : ""}" aria-pressed="${state.range === value}" onclick="setInsiderQuery({range:'${value}'})">${label}</button>`).join("")}</div></div>
+    <div class="chart-legend"><span><i class="legend-price"></i> Price</span><span class="legend-purchase">▲ Purchase (P)</span><span class="legend-sale">▼ Sale (S)</span><span class="legend-sale">▽ Sale (10b5-1)</span><span class="legend-other">● Other</span></div>
+    <p class="sr-only" style="position:absolute;left:-10000px">The transaction table below is the canonical text alternative for this price chart.</p>
+    <div class="insider-chart-wrap"><svg id="insiderPriceChart" viewBox="0 0 ${width} ${height}" role="group" aria-label="Share price and insider transaction chart">${grids}<path class="chart-price-line" d="${line}"/>${markers}${labels}</svg></div>
+  </section>`;
+}
+
+function insiderFilterMarkup(state) {
+  return `<div class="insider-filter-bar" aria-label="Insider transaction filters">
+    <button class="filter-button ${state.transactionScope === "ps" ? "active" : ""}" aria-pressed="${state.transactionScope === "ps"}" onclick="setInsiderQuery({transactionScope:'ps'})">P/S Only</button>
+    <button class="filter-button ${state.transactionScope === "all" ? "active" : ""}" aria-pressed="${state.transactionScope === "all"}" onclick="setInsiderQuery({transactionScope:'all'})">All Transactions</button>
+    <button class="filter-button ${state.ownerScope === "officers-directors" ? "active" : ""}" aria-pressed="${state.ownerScope === "officers-directors"}" onclick="setInsiderQuery({ownerScope:'officers-directors'})">Officers &amp; Directors</button>
+    <button class="filter-button ${state.ownerScope === "all" ? "active" : ""}" aria-pressed="${state.ownerScope === "all"}" onclick="setInsiderQuery({ownerScope:'all'})">Include 10% Owners</button>
+    <select class="filter-button" aria-label="Rule 10b5-1 filter" onchange="setInsiderQuery({plan:this.value})"><option value="all" ${state.plan === "all" ? "selected" : ""}>All plan statuses</option><option value="10b5-1" ${state.plan === "10b5-1" ? "selected" : ""}>10b5-1 only</option><option value="not-10b5-1" ${state.plan === "not-10b5-1" ? "selected" : ""}>Not marked 10b5-1</option></select>
+    <div class="date-filter"><input id="insiderStartDate" type="date" aria-label="Start date" value="${esc(state.dateInputStart || "")}" onchange="setInsiderQuery({start:this.value,end:document.getElementById('insiderEndDate').value})"><span aria-hidden="true">–</span><input id="insiderEndDate" type="date" aria-label="End date" value="${esc(state.dateInputEnd || "")}" onchange="setInsiderQuery({start:document.getElementById('insiderStartDate').value,end:this.value})"></div>
+    <div class="insider-search-wrap"><input id="insiderSearch" class="insider-search" value="${esc(state.search)}" placeholder="Search insiders…" aria-label="Search insiders" oninput="clearTimeout(insiderSearchTimer);insiderSearchTimer=setTimeout(()=>setInsiderQuery({search:this.value}),250)"><button class="icon-btn" aria-label="Clear insider search" onclick="setInsiderQuery({search:null})">×</button></div>
+  </div>`;
+}
+
+function insiderTransactionTableMarkup(rows, state) {
+  const sortHeader = (key, label, align = "right") => `<th scope="col" style="text-align:${align}"><button class="table-sort" aria-label="Sort by ${esc(label)}" onclick="setInsiderQuery({sort:'${key}',order:'${state.sort === key && state.order === "desc" ? "asc" : "desc"}'})">${esc(label)}${state.sort === key ? (state.order === "desc" ? " ↓" : " ↑") : ""}</button></th>`;
+  const body = rows.length ? rows.map(item => {
+    const sourceUrl = safeSecDocumentUrl(item.secDocumentUrl);
+    const source = sourceUrl
+      ? `<a href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="Open SEC Form ${esc(item.formType)} filed ${esc(displayDate(item.filingDate))}">${esc(displayDate(item.filingDate))} ↗</a>`
+      : `<span title="SEC source URL unavailable">${esc(displayDate(item.filingDate))}</span>`;
+    const accession = safeInsiderAccession(item.accessionNumber);
+    const interaction = accession
+      ? `tabindex="0" data-insider-accession="${esc(accession)}" aria-label="Open ${esc(item.ownerGroup?.displayName)} ${esc(item.transactionLabel)} filing detail"`
+      : `aria-label="${esc(item.ownerGroup?.displayName)} ${esc(item.transactionLabel)}; filing detail unavailable"`;
+    return `<tr class="insider-row" ${interaction}>
+    <td>${esc(displayDate(item.transactionDate))}</td>
+    <td><div class="insider-name">${esc(item.ownerGroup?.displayName || "—")}</div><div class="insider-role">${esc(item.ownerGroup?.primaryTitle || "—")}${item.ownerGroup?.roles?.length ? ` · ${esc(item.ownerGroup.roles.join(" / "))}` : ""}</div></td>
+    <td><span class="txn-badge ${esc(item.normalizedCategory)}">${esc(item.transactionLabel)}</span>${item.planStatus === "filing_marked" ? `<span class="plan-chip" title="Filing marked Rule 10b5-1">10b5-1</span>` : ""}</td>
+    <td style="text-align:right">${esc(exactWholeDisplay(item.shares))}</td>
+    <td style="text-align:right" title="${item.pricePerShare == null ? "Price not reported" : (item.priceIsWeightedAverage ? "Reported weighted-average price" : "Reported price")}">${esc(item.priceDisplay || "—")}${item.priceIsWeightedAverage ? " ⓘ" : ""}</td>
+    <td style="text-align:right" title="${esc(item.valueMethod === "calculated_shares_times_price" ? "Calculated from reported shares and reported price per share." : item.valueMethod || "Value unavailable")}">${esc(item.valueDisplay || "—")}</td>
+    <td style="text-align:right" title="${esc(item.directIndirectOwnership === "I" ? `Indirect ownership${item.natureOfOwnership ? `: ${item.natureOfOwnership}` : ""}` : "Direct ownership")}">${esc(exactWholeDisplay(item.postTransactionShares))}</td>
+    <td class="${String(item.percentChange || "").startsWith("-") ? "negative" : "positive"}" style="text-align:right">${esc(item.percentChangeDisplay || "—")}</td>
+    <td class="filing-cell"><strong>Form ${esc(item.formType)}</strong>${source}&nbsp; ›</td>
+  </tr>`;
+  }).join("") : `<tr><td class="insider-empty" colspan="9"><strong>No transactions match these filters.</strong><br>Clear the insider search or broaden the owner and transaction filters.</td></tr>`;
+  return `<section class="insider-card" aria-label="Insider transactions">${insiderFilterMarkup(state)}<div class="tbl-wrap"><table id="insiderTransactionTable"><thead><tr>
+    ${sortHeader("tradeDate", "Date (Trade)", "left")}<th scope="col" style="text-align:left">Insider / Role</th><th scope="col" style="text-align:left">Transaction</th>${sortHeader("shares", "Shares")}<th scope="col" style="text-align:right">Price</th>${sortHeader("value", "Value")}${sortHeader("holdingsAfter", "Holdings After")}${sortHeader("percentChange", "% Change")}<th scope="col" style="text-align:left">Filing</th>
+  </tr></thead><tbody>${body}</tbody></table></div></section>`;
+}
+
+function wireInsiderFilingTriggers() {
+  for (const trigger of app().querySelectorAll("[data-insider-accession]")) {
+    const accession = safeInsiderAccession(trigger.dataset.insiderAccession);
+    if (!accession) continue;
+    trigger.addEventListener("click", event => {
+      if (event.target.closest("a")) return;
+      openInsiderFiling(accession, trigger);
+    });
+    trigger.addEventListener("keydown", event => {
+      if (!["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      openInsiderFiling(accession, trigger);
+    });
+  }
+}
+
+function insiderSummaryRailMarkup(fixture, sidebar = fixture.sidebar || {}) {
+  const windowLabel = sidebar.window === "filtered" ? "Filtered" : "12M";
+  const ranked = (rows, seller = false) => (rows || []).map(item => `<div class="insider-ranked-row"><span class="rank">${esc(item.rank)}</span><span class="insider-ranked-name">${esc(item.displayName)}<small>${esc(item.roleLabel || "")}</small></span><span class="insider-ranked-value">${esc(item.displayValue || "—")}</span>${seller && item.planMarkedKnownValuePercentage != null ? `<span class="insider-ranked-sub">${esc(fractionPercentDisplay(item.planMarkedKnownValuePercentage))} plan-marked</span>` : ""}</div>`).join("") || `<div class="drawer-note">No data</div>`;
+  const holdings = rows => (rows || []).map(item => `<div class="holding-row"><span>${esc(item.displayName)} <small>${esc(item.roleLabel || "")}</small></span><strong>${esc(exactWholeDisplay(item.shares))}${item.ownershipPercentage == null ? "" : ` (${esc(fractionPercentDisplay(item.ownershipPercentage, item.ownershipPercentage >= "0.1" ? 1 : 2))})`}</strong></div>`).join("") || `<div class="drawer-note">No data</div>`;
+  return `<aside class="insider-summary-rail"><section class="side-panel"><h2 class="side-title">Insider Activity Summary</h2>
+    <div class="insider-rail-section"><div class="insider-rail-head"><span>Top Buyers by Value <small>${esc(windowLabel)}</small></span><button class="summary-action" onclick="setInsiderQuery({sort:'value',order:'desc'})">View all</button></div>${ranked(sidebar.topBuyers)}</div>
+    <div class="insider-rail-section"><div class="insider-rail-head"><span>Top Sellers by Value <small>${esc(windowLabel)}</small></span><button class="summary-action" onclick="setInsiderQuery({sort:'value',order:'desc'})">View all</button></div>${ranked(sidebar.topSellers, true)}</div>
+    <div class="insider-rail-section"><div class="insider-rail-head"><span>Largest Latest-Reported Holdings</span><button class="summary-action" onclick="loadStock('${esc(currentInsiderStockId)}',{view:'reporting-insiders'})">View all</button></div><div class="rail-subtitle">Officers &amp; Directors</div>${holdings(sidebar.latestReportedHoldings?.officersAndDirectors)}<div class="rail-subtitle">10% Owners &amp; Entities</div>${holdings(sidebar.latestReportedHoldings?.tenPercentOwnersAndEntities)}</div>
+    <div class="insider-rail-section"><div class="insider-rail-head"><span>Rule 10b5-1 Activity <small>${esc(windowLabel)}</small></span><button class="summary-action" onclick="openInsiderMethodology()">View all</button></div><div class="plan-row"><span>Plan-Marked Sales</span><strong>${esc(sidebar.rule10b51?.planMarkedSalesDisplayValue || "—")}</strong></div><div class="plan-row"><span>Distinct Insiders</span><strong>${esc(sidebar.rule10b51?.distinctOwnerGroupCount ?? "—")}</strong></div><div class="plan-row"><span>Latest Plan Adoption</span><strong>${esc(displayDate(sidebar.rule10b51?.latestPlanAdoptionDate) || "—")}</strong></div></div>
+  </section></aside>`;
+}
+
+function insiderFooterMarkup(fixture) {
+  const freshness = fixture.dataFreshness || {};
+  const updated = fixture.asOf ? new Date(fixture.asOf).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short", timeZone: "America/New_York" }) : "—";
+  return `<footer class="insider-footer"><span>Fixture preview sourced only from the bundled illustrative JSON. No names, values, or dates are real APGE filing evidence.</span><span>Fixture updated: ${esc(updated)} &nbsp;ⓘ<span class="sr-only"> Latest fixture price date ${esc(freshness.latestPriceDate || "unknown")}</span></span></footer>`;
+}
+
+function renderInsiderActivity(fixture, stockId) {
+  const state = insiderQueryState(fixture);
+  const rows = filteredInsiderTransactions(fixture, state);
+  const projection = filteredInsiderProjection(fixture, state, rows);
+  app().innerHTML = `<div class="insider-shell">${insiderIdentityMarkup(fixture, stockId, "insiders")}<div class="insider-layout"><main class="insider-main">${insiderSummaryMarkup(fixture, stockId, projection.summary).replace(insiderSecurityTabs(stockId, "insiders"), "")}${insiderChartMarkup(fixture, state, rows)}${insiderTransactionTableMarkup(rows, state)}</main>${insiderSummaryRailMarkup(fixture, projection.sidebar)}</div>${insiderFooterMarkup(fixture)}</div><div id="insiderDrawerHost"></div>`;
+  wireInsiderFilingTriggers();
+  if (state.filing) queueMicrotask(() => openInsiderFiling(state.filing));
+}
+
+function reportingOwnersFromFixture(fixture) {
+  const transactions = fixture.transactions?.items || [];
+  const map = new Map();
+  for (const item of transactions) {
+    const key = item.ownerGroup?.key || item.ownerGroup?.displayName;
+    if (!key) continue;
+    const previous = map.get(key);
+    if (!previous || item.filingDate > previous.filingDate) map.set(key, item);
+  }
+  for (const item of [
+    ...(fixture.sidebar?.latestReportedHoldings?.officersAndDirectors || []),
+    ...(fixture.sidebar?.latestReportedHoldings?.tenPercentOwnersAndEntities || []),
+  ]) {
+    if (![...map.values()].some(row => row.ownerGroup?.displayName === item.displayName)) {
+      map.set(item.displayName, { ownerGroup: { displayName: item.displayName, primaryTitle: item.roleLabel, roles: [item.roleLabel] }, filingDate: null, postTransactionShares: item.shares, valueDisplay: "—" });
+    }
+  }
+  const buyers = new Map(
+    (fixture.sidebar?.topBuyers || []).map(item => [item.displayName, item])
+  );
+  const sellers = new Map(
+    (fixture.sidebar?.topSellers || []).map(item => [item.displayName, item])
+  );
+  return [...map.values()].map(item => {
+    const displayName = item.ownerGroup?.displayName || "";
+    const buyer = buyers.get(displayName);
+    const seller = sellers.get(displayName);
+    return {
+      ...item,
+      reportingPurchaseDisplay: buyer?.displayValue || "—",
+      reportingSaleDisplay: seller?.displayValue || "—",
+      reportingPlanMarkedSalePercentage:
+        seller?.planMarkedKnownValuePercentage ?? null,
+    };
+  });
+}
+
+function renderReportingInsiders(fixture, stockId) {
+  const owners = reportingOwnersFromFixture(fixture);
+  const tenPercentCount = owners.filter(item => (item.ownerGroup?.roles || []).some(role => String(role).includes("10%") || role === "TenPercentOwner")).length;
+  const rows = owners.map(item => `<tr><td><strong>${esc(item.ownerGroup?.displayName || "—")}</strong></td><td>${esc((item.ownerGroup?.roles || []).join(" / ") || "—")}</td><td>${esc(item.ownerGroup?.primaryTitle || "—")}</td><td>${esc(item.filingDate ? displayDate(item.filingDate) : "—")}</td><td style="text-align:right">${esc(exactWholeDisplay(item.postTransactionShares))}</td><td style="text-align:right">${esc(item.reportingPurchaseDisplay)}</td><td style="text-align:right">${esc(item.reportingSaleDisplay)}</td><td style="text-align:right">${item.reportingPlanMarkedSalePercentage == null ? "—" : esc(fractionPercentDisplay(item.reportingPlanMarkedSalePercentage))}</td></tr>`).join("");
+  app().innerHTML = `<div class="insider-shell">${insiderIdentityMarkup(fixture, stockId, "reporting-insiders")}<div class="fixture-notice" role="note"><strong>Fixture preview — not real filing data.</strong>${esc(fixture._fixtureNotice)}</div><section class="insider-kpis" aria-label="Reporting insider summary"><article class="insider-kpi"><div><div class="insider-kpi-label">Active Reporting Owners</div><div class="insider-kpi-value">${owners.length}</div></div></article><article class="insider-kpi"><div><div class="insider-kpi-label">Officers / Directors</div><div class="insider-kpi-value">${owners.length - tenPercentCount}</div></div></article><article class="insider-kpi"><div><div class="insider-kpi-label">10% Owners / Entities</div><div class="insider-kpi-value">${tenPercentCount}</div></div></article><article class="insider-kpi"><div><div class="insider-kpi-label">Latest New Relationship</div><div class="insider-latest-name">Fixture unavailable</div><div class="insider-kpi-meta">Form 3 relationship history is not present in this illustrative fixture.</div></div></article></section><section class="insider-card"><div class="insider-chart-head"><h2 class="insider-chart-title">Reporting Insiders</h2></div><div class="tbl-wrap"><table id="reportingInsidersTable"><thead><tr><th>Reporting Owner</th><th>Relationship</th><th>Officer Title</th><th>Latest Filing</th><th style="text-align:right">Latest-Reported Holdings</th><th style="text-align:right">12M Purchases</th><th style="text-align:right">12M Sales</th><th style="text-align:right">Plan-Marked Sale %</th></tr></thead><tbody>${rows}</tbody></table></div></section>${insiderFooterMarkup(fixture)}</div>`;
+}
+
+function renderCurrentInsiderView() {
+  if (!currentInsiderFixture) return;
+  if (currentInsiderView === "reporting-insiders") renderReportingInsiders(currentInsiderFixture, currentInsiderStockId);
+  else renderInsiderActivity(currentInsiderFixture, currentInsiderStockId);
+}
+
+function renderInsiderLoading(stock, stockId, view) {
+  const fixtureShell = { security: { ticker: stock.ticker || "APGE", companyName: stock.issuer || "Loading security", securityTypeLabel: "COMMON STOCK", cusip: stock.cusip || stockId } };
+  app().innerHTML = `<div class="insider-shell" aria-busy="true">${insiderIdentityMarkup(fixtureShell, stockId, view)}<div class="insider-skeleton"><main><div class="skeleton-block"></div><div class="skeleton-block skeleton-chart"></div><div class="skeleton-block skeleton-table"></div></main><aside class="skeleton-block skeleton-rail"></aside></div></div>`;
+}
+
+function renderInsiderError(stock, stockId, view, message) {
+  const shell = { security: { ticker: stock.ticker || "APGE", companyName: stock.issuer || "Security", securityTypeLabel: "COMMON STOCK", cusip: stock.cusip || stockId } };
+  app().innerHTML = `<div class="insider-shell">${insiderIdentityMarkup(shell, stockId, view)}<div class="insider-error" role="alert"><h2>Insider preview couldn’t load</h2><p>${esc(message)}</p><button class="filter-button" style="margin-top:16px" onclick="loadStock('${esc(stockId)}',{view:'${esc(view)}'})">Try again</button></div></div>`;
+}
+
+async function loadInsiderFixture(stock, stockId, view) {
+  const path = insiderFixturePathForStock(stockId, stock);
+  if (!path) {
+    renderInsiderError(stock, stockId, view, "The Phase 1 fixture preview is available only for the APGE security identity.");
+    return;
+  }
+  renderInsiderLoading(stock, stockId, view);
+  try {
+    if (!insiderFixtureCache) {
+      const response = await fetch(path, { cache: "no-cache" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const fixture = await response.json();
+      if (!fixture?._fixtureNotice || fixture.security?.cusip !== "03770N101" || !Array.isArray(fixture.transactions?.items)) throw new Error("Fixture contract is invalid");
+      insiderFixtureCache = fixture;
+    }
+    currentInsiderFixture = insiderFixtureCache;
+    currentInsiderStock = stock;
+    currentInsiderStockId = stockId;
+    currentInsiderView = view;
+    renderCurrentInsiderView();
+  } catch (error) {
+    console.error("insider fixture fetch failed:", error);
+    renderInsiderError(stock, stockId, view, "The illustrative fixture file is missing or unreachable. No live filing data was requested.");
+  }
+}
+
+function filingForAccession(accession) {
+  const safeAccession = safeInsiderAccession(accession);
+  if (!safeAccession) return null;
+  return currentInsiderFixture?.transactions?.items?.find(
+    item => safeInsiderAccession(item.accessionNumber) === safeAccession
+  ) || null;
+}
+
+function drawerKeydown(event) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeInsiderDrawer();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const drawer = $("insiderDrawer");
+  if (!drawer) return;
+  const focusable = [...drawer.querySelectorAll('button,a[href],input,[tabindex]:not([tabindex="-1"])')].filter(element => !element.disabled);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
+
+function openInsiderFiling(accession, trigger = null) {
+  const safeAccession = safeInsiderAccession(accession);
+  const item = filingForAccession(safeAccession);
+  if (!item) return;
+  insiderDrawerReturnFocus = trigger || document.activeElement;
+  const host = $("insiderDrawerHost") || document.body;
+  const sourceUrl = safeSecDocumentUrl(item.secDocumentUrl);
+  const sourceLink = sourceUrl
+    ? `<a class="drawer-source" href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">Open SEC source ↗</a>`
+    : `<p class="drawer-note">SEC source URL unavailable.</p>`;
+  host.innerHTML = `<div class="insider-drawer-backdrop" onclick="if(event.target===this)closeInsiderDrawer()"><aside class="insider-drawer" id="insiderDrawer" role="dialog" aria-modal="true" aria-labelledby="insiderDrawerTitle" onkeydown="drawerKeydown(event)"><div class="drawer-head"><div><h2 class="drawer-title" id="insiderDrawerTitle">Form ${esc(item.formType)} Filing Detail</h2><div class="drawer-meta">Filed ${esc(displayDate(item.filingDate))} · Accepted ${esc(item.acceptedAt || "—")}<br>Accession ${esc(item.accessionNumber)}</div></div><button class="drawer-close" aria-label="Close filing detail" onclick="closeInsiderDrawer()">×</button></div>
+    <section class="drawer-section"><h3>Reporting Owner</h3><div class="drawer-grid"><div><div class="drawer-label">Name</div><strong>${esc(item.ownerGroup?.displayName || "—")}</strong></div><div><div class="drawer-label">Relationship</div>${esc((item.ownerGroup?.roles || []).join(" / ") || "—")}</div><div><div class="drawer-label">Officer title</div>${esc(item.ownerGroup?.primaryTitle || "—")}</div><div><div class="drawer-label">Ownership</div>${item.directIndirectOwnership === "I" ? "Indirect" : "Direct"}</div></div></section>
+    <section class="drawer-section"><h3>Transaction Line</h3><div class="drawer-grid"><div><div class="drawer-label">Trade date</div>${esc(displayDate(item.transactionDate))}</div><div><div class="drawer-label">Transaction</div>${esc(item.transactionLabel)}</div><div><div class="drawer-label">Shares</div>${esc(exactWholeDisplay(item.shares))}</div><div><div class="drawer-label">Reported price</div>${esc(item.priceDisplay || "—")}${item.priceIsWeightedAverage ? " · weighted average" : ""}</div><div><div class="drawer-label">Value</div>${esc(item.valueDisplay || "—")}</div><div><div class="drawer-label">Holdings after</div>${esc(exactWholeDisplay(item.postTransactionShares))}</div></div>${item.planStatus === "filing_marked" ? `<p class="drawer-note" style="margin-top:12px"><strong>Filing marked Rule 10b5-1.</strong> This fixture does not assert transaction-level plan attribution beyond the filing-level flag.</p>` : ""}</section>
+    <section class="drawer-section"><h3>Footnotes &amp; Remarks</h3><p class="drawer-note">No fixture footnotes or remarks were supplied for this illustrative transaction. The SEC filing remains the authoritative source for real data.</p></section>
+    <section class="drawer-section"><h3>Amendment History</h3><p class="drawer-note">${item.isAmended ? "This fixture row is marked amended." : "No amendment is linked in the fixture."}</p></section>
+    <section class="drawer-section"><h3>Data Lineage</h3><div class="drawer-grid"><div><div class="drawer-label">Value method</div>${esc(item.valueMethod || "unavailable")}</div><div><div class="drawer-label">Source table</div>${esc(item.sourceTable || "—")}</div><div><div class="drawer-label">Preview source</div>Bundled illustrative JSON</div><div><div class="drawer-label">Fixture status</div>Not real APGE filing evidence</div></div>${sourceLink}</section></aside></div>`;
+  const params = new URLSearchParams(location.search);
+  params.set("filing", safeAccession);
+  history.replaceState({}, "", `${location.pathname}?${params.toString()}${location.hash}`);
+  queueMicrotask(() => $("insiderDrawer")?.querySelector(".drawer-close")?.focus());
+}
+
+function closeInsiderDrawer() {
+  const host = $("insiderDrawerHost");
+  if (host) host.innerHTML = "";
+  const params = new URLSearchParams(location.search);
+  if (params.has("filing")) {
+    params.delete("filing");
+    const query = params.toString();
+    history.replaceState({}, "", `${location.pathname}${query ? `?${query}` : ""}${location.hash}`);
+  }
+  const returnFocus = insiderDrawerReturnFocus;
+  insiderDrawerReturnFocus = null;
+  if (returnFocus?.isConnected) returnFocus.focus();
+}
+
+function openInsiderMethodology() {
+  insiderDrawerReturnFocus = document.activeElement;
+  const host = $("insiderDrawerHost") || document.body;
+  host.innerHTML = `<div class="insider-drawer-backdrop" onclick="if(event.target===this)closeInsiderDrawer()"><aside class="insider-drawer" id="insiderDrawer" role="dialog" aria-modal="true" aria-labelledby="insiderDrawerTitle" onkeydown="drawerKeydown(event)"><div class="drawer-head"><div><h2 class="drawer-title" id="insiderDrawerTitle">Insider Activity Methodology</h2><div class="drawer-meta">Phase 1 fixture preview</div></div><button class="drawer-close" aria-label="Close methodology" onclick="closeInsiderDrawer()">×</button></div><section class="drawer-section"><h3>What the preview shows</h3><p class="drawer-note">Headline totals include only P-coded purchases and S-coded sales. Missing prices are excluded from dollar-value totals, never treated as zero. Rule 10b5-1 is a filing-level structured flag unless a filing clearly supports row-level attribution. Latest-reported holdings are not a definitive current ownership calculation. The SEC filing is authoritative.</p></section><section class="drawer-section"><h3>Fixture limitation</h3><p class="drawer-note">Every name, transaction, value, and date shown here is illustrative and is not asserted to be real APGE filing evidence.</p></section></aside></div>`;
+  queueMicrotask(() => $("insiderDrawer")?.querySelector(".drawer-close")?.focus());
+}
+
 // ---------- STOCK: home ----------
 // ---------- STOCK: detail ----------
 async function loadStock(stockId, opts = {}) {
@@ -3137,10 +4139,26 @@ async function loadStock(stockId, opts = {}) {
     return;
   }
   if (!stock) return;
-  renderStock(stock, stockEntry);
+  const view = opts.view || "holders";
+  if (
+    insiderPreviewEnabled()
+    && ["insiders", "reporting-insiders"].includes(view)
+  ) {
+    await loadInsiderFixture(stock, resolvedId, view);
+    if (dataContractBlocked) {
+      showDataMaintenance();
+      return;
+    }
+    return;
+  }
+  currentInsiderFixture = null;
+  currentInsiderStock = null;
+  currentInsiderStockId = "";
+  currentInsiderView = "insiders";
+  renderStock(stock, stockEntry, opts);
 }
 
-function renderStock(sd, stockEntry = null) {
+function renderStock(sd, stockEntry = null, opts = {}) {
   $("backBtn").style.display = "block";
   stockHoldersFilter = "";
   stockPage = 1;
@@ -3409,6 +4427,8 @@ function renderStock(sd, stockEntry = null) {
           </div>
         </div>
 
+        ${insiderPreviewEnabled() ? insiderSecurityTabs(stockMeta.stock_id || sd.stock_id || cusipText, "holders") : ""}
+
         ${classificationWarning}
         ${aggregateTrendNotice}
         <div class="stock-stat-grid">
@@ -3487,6 +4507,8 @@ function renderStock(sd, stockEntry = null) {
           <div class="summary-line"></div>
           ${summarySection("Largest Reductions vs Prior Filing", largestReductions, h => changeText(h.ch), "qoq", "asc", h => changeClass(h.ch))}
         </section>
+
+        ${insiderPreviewEnabled() ? insiderHoldersCrossLink(stockMeta.stock_id || sd.stock_id || cusipText) : ""}
 
       </aside>
       <div class="fineprint stock-data-footer">Data note: 13F aggregates only include institutional managers that file Form 13F-HR; retail and smaller institutions are not captured. Current holders must have a valid, non-withheld filing calendar at least as recent as the modal site baseline (${esc(quarterCodeLabel(currentReportingQuarter))}). Source dates can still differ during filing season. Latest common current-holder date: ${esc(latestDateText)}.${historicalCount ? ` ${historicalCount.toLocaleString()} older former-holder ${historicalCount === 1 ? "record is" : "records are"} omitted.` : ""}</div>
