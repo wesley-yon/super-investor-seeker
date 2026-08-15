@@ -78,6 +78,15 @@ jobs:
       - name: Run deterministic visual and interaction suite
         run: npm run test:visual
 
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results-${{ runner.os }}
+          path: test-results/playwright/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Run data-integrity regression tests
         run: python -m unittest discover -s tests -v
 
