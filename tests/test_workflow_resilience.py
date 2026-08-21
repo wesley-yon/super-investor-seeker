@@ -335,6 +335,88 @@ reconcile_tag_deletion() {
             deleted_tags = deletion_log.read_text(encoding="utf-8").splitlines()
         return result, deleted_tags
 
+    def _run_release_tag_reconciliation(
+        self,
+        *,
+        tag_sequence: str,
+        mutation_sequence: str,
+    ) -> tuple[subprocess.CompletedProcess[str], int, int]:
+        finalization = self._finalization_shell()
+        function_start = finalization.index("          wait_for_release_missing() {")
+        function_end = finalization.index(
+            "          marker_matches_remote() {", function_start
+        )
+        function_source = textwrap.dedent(
+            finalization[function_start:function_end]
+        )
+        loop_start = finalization.index(
+            '          for release_tag in "${delete_tags[@]}"; do'
+        )
+        loop_end = finalization.index(
+            "\n\n          # A prior run can be interrupted", loop_start
+        )
+        loop_source = textwrap.dedent(finalization[loop_start:loop_end])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            counters = Path(tmpdir)
+            for name in ("tag", "tag_mutation", "release_mutation"):
+                (counters / name).write_text("0\n", encoding="utf-8")
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    SHELL_SEQUENCE_HELPER,
+                    "readonly TRANSIENT_MUTATION_EXIT_CODE=75",
+                    'DATA_REPOSITORY="owner/private-data"',
+                    'delete_tags=("dataset-stale")',
+                    "sleep_before_retry() { return 0; }",
+                    r"""
+release_state() {
+  printf 'missing\n'
+}
+tag_ref_state() {
+  next_sequence_value "$TAG_SEQUENCE" "$COUNTER_DIR/tag"
+}
+gh_delete_once() {
+  local count
+  count=$(<"$COUNTER_DIR/release_mutation")
+  printf '%s\n' "$((count + 1))" > "$COUNTER_DIR/release_mutation"
+  return 0
+}
+gh_mutate_once() {
+  local status
+  status=$(next_sequence_value "$MUTATION_SEQUENCE" "$COUNTER_DIR/tag_mutation")
+  return "$status"
+}
+""",
+                    function_source,
+                    loop_source,
+                )
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "COUNTER_DIR": tmpdir,
+                    "MUTATION_SEQUENCE": mutation_sequence,
+                    "TAG_SEQUENCE": tag_sequence,
+                }
+            )
+            result = subprocess.run(
+                ["bash"],
+                cwd=ROOT,
+                env=env,
+                input=script,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            release_mutation_count = int(
+                (counters / "release_mutation").read_text(encoding="utf-8").strip()
+            )
+            tag_mutation_count = int(
+                (counters / "tag_mutation").read_text(encoding="utf-8").strip()
+            )
+        return result, release_mutation_count, tag_mutation_count
+
     def test_lxml_dependency_requires_patched_release(self):
         requirement = next(
             line
@@ -629,6 +711,19 @@ reconcile_tag_deletion() {
         self.assertIn("verified=true", result.stdout)
         self.assertEqual(1, mutation_count)
 
+    def test_publication_refuses_changed_latest_pointer_after_mutation(self):
+        for mutation_status in ("0", "75"):
+            with self.subTest(mutation_status=mutation_status):
+                result, mutation_count = self._run_publication_reconciliation(
+                    draft_sequence="true,false",
+                    latest_sequence="dataset-old,dataset-unexpected",
+                    mutation_sequence=mutation_status,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("latest release pointer changed during", result.stdout)
+                self.assertEqual(1, mutation_count)
+
     def test_publication_refuses_changed_latest_pointer_without_mutating(self):
         result, mutation_count = self._run_publication_reconciliation(
             draft_sequence="true",
@@ -672,6 +767,18 @@ reconcile_tag_deletion() {
                 self.assertIn("verified=true active=dataset-new", result.stdout)
                 self.assertEqual(1, mutation_count)
 
+    def test_rollback_refuses_changed_latest_pointer_after_mutation(self):
+        for mutation_status in ("0", "75"):
+            with self.subTest(mutation_status=mutation_status):
+                result, mutation_count = self._run_rollback_reconciliation(
+                    latest_sequence="dataset-old,dataset-unexpected",
+                    mutation_sequence=mutation_status,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("a different release became latest", result.stdout)
+                self.assertEqual(1, mutation_count)
+
     def test_rollback_refuses_changed_latest_pointer_without_mutating(self):
         result, mutation_count = self._run_rollback_reconciliation(
             latest_sequence="dataset-unexpected",
@@ -710,6 +817,37 @@ reconcile_tag_deletion() {
         self.assertNotEqual(0, result.returncode)
         self.assertIn("Refusing to delete protected snapshot tag", result.stdout)
         self.assertEqual([], deleted_tags)
+
+    def test_orphan_sweep_fails_closed_if_fallback_release_is_missing(self):
+        result, deleted_tags = self._run_orphan_tag_sweep(
+            release_pages='[[{"tag_name":"dataset-active"}]]',
+            ref_pages=(
+                '[[{"ref":"refs/tags/dataset-active"},'
+                '{"ref":"refs/tags/dataset-fallback"}]]'
+            ),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Refusing to delete protected snapshot tag", result.stdout)
+        self.assertEqual([], deleted_tags)
+
+    def test_release_cleanup_reconciles_tag_after_release_is_already_missing(self):
+        for mutation_status in ("0", "75"):
+            with self.subTest(mutation_status=mutation_status):
+                result, release_mutations, tag_mutations = (
+                    self._run_release_tag_reconciliation(
+                        tag_sequence="present,missing",
+                        mutation_sequence=mutation_status,
+                    )
+                )
+
+                self.assertEqual(
+                    0,
+                    result.returncode,
+                    result.stdout + result.stderr,
+                )
+                self.assertEqual(0, release_mutations)
+                self.assertEqual(1, tag_mutations)
 
     def test_github_cli_retries_are_bounded_and_replay_safe(self):
         publisher = read(PUBLISHER_SCRIPT)
