@@ -8,6 +8,7 @@ artifact_paths=(
   site-data-loader.js
   scripts/build_pages_artifact.py
   scripts/data_snapshot.py
+  scripts/github_cli_retry.py
   scripts/pages_deploy_needed.sh
   .github/workflows/deploy-pages.yml
 )

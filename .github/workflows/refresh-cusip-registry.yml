@@ -22,6 +22,10 @@ env:
 jobs:
   refresh-cusips:
     runs-on: ubuntu-latest
+    concurrency:
+      group: private-release-publication
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 90
     outputs:
       code_sha: ${{ steps.publish_snapshot.outputs.code_sha }}

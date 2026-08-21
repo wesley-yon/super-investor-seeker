@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -20,6 +21,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +36,19 @@ CONTRACT_VERSION = 1
 DEFAULT_MAX_ARCHIVE_BYTES = 1_932_735_283
 MAX_MANIFEST_BYTES = 1_000_000
 MAX_API_RESPONSE_BYTES = 10_000_000
+GITHUB_RETRY_DELAYS_SECONDS = (1, 3)
+# The Python restore helpers perform GET requests only. A newly minted GitHub App
+# token can briefly return 403 while repository permissions propagate, so those
+# read-only paths may retry it without replaying a mutation. The CLI wrapper
+# exposes the same behavior only through an explicit read-only opt-in; mutation
+# callers never use that mode.
+GITHUB_RETRY_STATUS_CODES = frozenset({403, 429, 500, 502, 503, 504})
+GITHUB_RETRY_EXCEPTIONS = (
+    urllib.error.URLError,
+    ConnectionError,
+    TimeoutError,
+    http.client.HTTPException,
+)
 TOKEN_ENV = "DATA_ARCHIVE_TOKEN"
 API_BASE = "https://api.github.com"
 ARCHIVE_PREFIX = "super-investor-data-"
@@ -796,12 +811,24 @@ def _authorized_request(url: str, token: str, accept: str) -> urllib.request.Req
 
 
 def _github_json(url: str, token: str) -> Any:
-    request = _authorized_request(url, token, "application/vnd.github+json")
-    try:
-        with _URL_OPENER.open(request, timeout=60) as response:
-            payload = response.read(MAX_API_RESPONSE_BYTES + 1)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-        raise SnapshotError(f"GitHub API request failed: {error}") from error
+    payload = b""
+    for attempt in range(len(GITHUB_RETRY_DELAYS_SECONDS) + 1):
+        request = _authorized_request(url, token, "application/vnd.github+json")
+        try:
+            with _URL_OPENER.open(request, timeout=60) as response:
+                payload = response.read(MAX_API_RESPONSE_BYTES + 1)
+            break
+        except urllib.error.HTTPError as error:
+            retryable = error.code in GITHUB_RETRY_STATUS_CODES
+            if retryable and attempt < len(GITHUB_RETRY_DELAYS_SECONDS):
+                time.sleep(GITHUB_RETRY_DELAYS_SECONDS[attempt])
+                continue
+            raise SnapshotError(f"GitHub API request failed: {error}") from error
+        except GITHUB_RETRY_EXCEPTIONS as error:
+            if attempt < len(GITHUB_RETRY_DELAYS_SECONDS):
+                time.sleep(GITHUB_RETRY_DELAYS_SECONDS[attempt])
+                continue
+            raise SnapshotError(f"GitHub API request failed: {error}") from error
     if len(payload) > MAX_API_RESPONSE_BYTES:
         raise SnapshotError("GitHub API response is too large")
     try:
@@ -818,47 +845,58 @@ def _download_url(
     max_bytes: int,
     expected_bytes: Optional[int] = None,
 ) -> None:
-    request = _authorized_request(url, token, "application/octet-stream")
-    try:
-        with _URL_OPENER.open(request, timeout=120) as response:
-            content_length = response.headers.get("Content-Length")
-            if content_length is not None:
-                try:
-                    declared_bytes = int(content_length)
-                except ValueError as error:
-                    raise SnapshotError(
-                        "download response has invalid Content-Length"
-                    ) from error
-                if declared_bytes > max_bytes:
-                    raise SnapshotError("download exceeds maximum allowed size")
-                if expected_bytes is not None and declared_bytes != expected_bytes:
-                    raise SnapshotError(
-                        "download Content-Length does not match release asset"
-                    )
-            total = 0
-            with destination.open("xb") as output:
-                os.fchmod(output.fileno(), 0o600)
-                while True:
-                    block = response.read(1024 * 1024)
-                    if not block:
-                        break
-                    total += len(block)
-                    if total > max_bytes:
+    total = 0
+    for attempt in range(len(GITHUB_RETRY_DELAYS_SECONDS) + 1):
+        request = _authorized_request(url, token, "application/octet-stream")
+        total = 0
+        try:
+            with _URL_OPENER.open(request, timeout=120) as response:
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None:
+                    try:
+                        declared_bytes = int(content_length)
+                    except ValueError as error:
                         raise SnapshotError(
-                            "download exceeds maximum allowed size"
+                            "download response has invalid Content-Length"
+                        ) from error
+                    if declared_bytes > max_bytes:
+                        raise SnapshotError("download exceeds maximum allowed size")
+                    if expected_bytes is not None and declared_bytes != expected_bytes:
+                        raise SnapshotError(
+                            "download Content-Length does not match release asset"
                         )
-                    output.write(block)
-    except SnapshotError:
-        destination.unlink(missing_ok=True)
-        raise
-    except (
-        urllib.error.HTTPError,
-        urllib.error.URLError,
-        TimeoutError,
-        OSError,
-    ) as error:
-        destination.unlink(missing_ok=True)
-        raise SnapshotError(f"release asset download failed: {error}") from error
+                with destination.open("xb") as output:
+                    os.fchmod(output.fileno(), 0o600)
+                    while True:
+                        block = response.read(1024 * 1024)
+                        if not block:
+                            break
+                        total += len(block)
+                        if total > max_bytes:
+                            raise SnapshotError(
+                                "download exceeds maximum allowed size"
+                            )
+                        output.write(block)
+            break
+        except SnapshotError:
+            destination.unlink(missing_ok=True)
+            raise
+        except urllib.error.HTTPError as error:
+            destination.unlink(missing_ok=True)
+            retryable = error.code in GITHUB_RETRY_STATUS_CODES
+            if retryable and attempt < len(GITHUB_RETRY_DELAYS_SECONDS):
+                time.sleep(GITHUB_RETRY_DELAYS_SECONDS[attempt])
+                continue
+            raise SnapshotError(f"release asset download failed: {error}") from error
+        except GITHUB_RETRY_EXCEPTIONS as error:
+            destination.unlink(missing_ok=True)
+            if attempt < len(GITHUB_RETRY_DELAYS_SECONDS):
+                time.sleep(GITHUB_RETRY_DELAYS_SECONDS[attempt])
+                continue
+            raise SnapshotError(f"release asset download failed: {error}") from error
+        except OSError as error:
+            destination.unlink(missing_ok=True)
+            raise SnapshotError(f"release asset download failed: {error}") from error
     if expected_bytes is not None and total != expected_bytes:
         destination.unlink(missing_ok=True)
         raise SnapshotError("downloaded byte count does not match release asset")
