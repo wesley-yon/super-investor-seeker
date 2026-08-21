@@ -65,6 +65,10 @@ jobs:
     needs: filing-window
     if: needs.filing-window.outputs.run_update == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: private-release-publication
+      cancel-in-progress: false
+      queue: max
     outputs:
       code_sha: ${{ steps.publish_snapshot.outputs.code_sha }}
       release_tag: ${{ steps.publish_snapshot.outputs.release_tag }}
@@ -274,7 +278,7 @@ jobs:
         # In the normal case OpenFIGI work is limited to missing/suspect
         # CUSIPs. The private snapshot restores the durable cache, while this
         # step retains enough headroom for a larger-than-usual repair set.
-        timeout-minutes: 35
+        timeout-minutes: 45
         env:
           # Not strictly needed for regenerate-only, but kept for consistency
           # with the main pipeline step. OPENFIGI_API_KEY enables the higher

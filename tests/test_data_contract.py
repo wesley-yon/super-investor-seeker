@@ -1444,9 +1444,9 @@ class GeneratedDataContractTests(unittest.TestCase):
                 )
                 self.assertIn("python scripts/data_snapshot.py pull", workflow)
                 self.assertIn("python scripts/data_snapshot.py pack", publisher)
-                self.assertIn("gh release create", publisher)
-                self.assertIn("gh release download", publisher)
-                self.assertIn("gh release edit", publisher)
+                self.assertIn("gh_mutate_once release create", publisher)
+                self.assertIn("gh_read_retry release download", publisher)
+                self.assertIn("gh_mutate_once release edit", publisher)
                 self.assertNotIn("git add data/", publisher)
                 self.assertIn(
                     "uses: ./.github/workflows/deploy-pages.yml",
@@ -1471,6 +1471,7 @@ class GeneratedDataContractTests(unittest.TestCase):
             "site-data-loader.js",
             "scripts/build_pages_artifact.py",
             "scripts/data_snapshot.py",
+            "scripts/github_cli_retry.py",
             ".github/workflows/deploy-pages.yml",
         ):
             self.assertIn(required_path, deploy_check)

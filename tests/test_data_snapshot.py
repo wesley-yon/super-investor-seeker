@@ -535,6 +535,261 @@ class DataSnapshotTests(unittest.TestCase):
                     )
             self.assertEqual(before, (target / "data/funds/1.json").read_bytes())
 
+    def test_github_json_retries_transient_server_error(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"ok": true}'
+        transient_error = data_snapshot.urllib.error.HTTPError(
+            "https://api.github.com/test",
+            503,
+            "Service Unavailable",
+            mock.MagicMock(),
+            None,
+        )
+
+        with mock.patch.object(
+            data_snapshot._URL_OPENER,
+            "open",
+            side_effect=[transient_error, response],
+        ) as opener, mock.patch("time.sleep") as sleep:
+            payload = data_snapshot._github_json(
+                "https://api.github.com/test",
+                "secret",
+            )
+
+        self.assertEqual({"ok": True}, payload)
+        self.assertEqual(2, opener.call_count)
+        sleep.assert_called_once_with(1)
+
+    def test_github_json_retries_connection_reset(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"ok": true}'
+
+        with mock.patch.object(
+            data_snapshot._URL_OPENER,
+            "open",
+            side_effect=[ConnectionResetError("connection reset"), response],
+        ) as opener, mock.patch("time.sleep") as sleep:
+            payload = data_snapshot._github_json(
+                "https://api.github.com/test",
+                "secret",
+            )
+
+        self.assertEqual({"ok": True}, payload)
+        self.assertEqual(2, opener.call_count)
+        sleep.assert_called_once_with(1)
+
+    def test_github_json_retries_forbidden_read_after_app_token_mint(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"ok": true}'
+        transient_error = data_snapshot.urllib.error.HTTPError(
+            "https://api.github.com/test",
+            403,
+            "Forbidden",
+            mock.MagicMock(),
+            None,
+        )
+
+        with mock.patch.object(
+            data_snapshot._URL_OPENER,
+            "open",
+            side_effect=[transient_error, response],
+        ) as opener, mock.patch("time.sleep") as sleep:
+            payload = data_snapshot._github_json(
+                "https://api.github.com/test",
+                "fresh-app-token",
+            )
+
+        self.assertEqual({"ok": True}, payload)
+        self.assertEqual(2, opener.call_count)
+        sleep.assert_called_once_with(1)
+
+    def test_github_json_forbidden_retry_exhaustion_is_bounded(self) -> None:
+        forbidden = data_snapshot.urllib.error.HTTPError(
+            "https://api.github.com/test",
+            403,
+            "Forbidden",
+            mock.MagicMock(),
+            None,
+        )
+
+        with mock.patch.object(
+            data_snapshot._URL_OPENER,
+            "open",
+            side_effect=forbidden,
+        ) as opener, mock.patch("time.sleep") as sleep:
+            with self.assertRaisesRegex(data_snapshot.SnapshotError, "HTTP Error 403"):
+                data_snapshot._github_json(
+                    "https://api.github.com/test",
+                    "fresh-app-token",
+                )
+
+        self.assertEqual(3, opener.call_count)
+        self.assertEqual([mock.call(1), mock.call(3)], sleep.call_args_list)
+
+    def test_github_json_does_not_retry_missing_release(self) -> None:
+        missing = data_snapshot.urllib.error.HTTPError(
+            "https://api.github.com/missing",
+            404,
+            "Not Found",
+            mock.MagicMock(),
+            None,
+        )
+
+        with mock.patch.object(
+            data_snapshot._URL_OPENER,
+            "open",
+            side_effect=missing,
+        ) as opener, mock.patch("time.sleep") as sleep:
+            with self.assertRaisesRegex(data_snapshot.SnapshotError, "HTTP Error 404"):
+                data_snapshot._github_json(
+                    "https://api.github.com/missing",
+                    "secret",
+                )
+
+        opener.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_download_url_retries_transient_server_error(self) -> None:
+        payload = b"validated snapshot"
+        response = mock.MagicMock()
+        response.__enter__.return_value.headers = {
+            "Content-Length": str(len(payload)),
+        }
+        response.__enter__.return_value.read.side_effect = [payload, b""]
+        transient_error = data_snapshot.urllib.error.HTTPError(
+            "https://api.github.com/assets/1",
+            503,
+            "Service Unavailable",
+            mock.MagicMock(),
+            None,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "snapshot.tar.gz"
+            with mock.patch.object(
+                data_snapshot._URL_OPENER,
+                "open",
+                side_effect=[transient_error, response],
+            ) as opener, mock.patch("time.sleep") as sleep:
+                data_snapshot._download_url(
+                    url="https://api.github.com/assets/1",
+                    destination=destination,
+                    token="secret",
+                    max_bytes=1_000,
+                    expected_bytes=len(payload),
+                )
+
+            self.assertEqual(payload, destination.read_bytes())
+
+        self.assertEqual(2, opener.call_count)
+        sleep.assert_called_once_with(1)
+
+    def test_download_url_retries_connection_reset_and_replaces_partial_file(
+        self,
+    ) -> None:
+        payload = b"validated snapshot"
+        first_response = mock.MagicMock()
+        first_response.__enter__.return_value.headers = {}
+        first_response.__enter__.return_value.read.side_effect = [
+            b"partial",
+            ConnectionResetError("connection reset"),
+        ]
+        second_response = mock.MagicMock()
+        second_response.__enter__.return_value.headers = {
+            "Content-Length": str(len(payload)),
+        }
+        second_response.__enter__.return_value.read.side_effect = [payload, b""]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "snapshot.tar.gz"
+            with mock.patch.object(
+                data_snapshot._URL_OPENER,
+                "open",
+                side_effect=[first_response, second_response],
+            ) as opener, mock.patch("time.sleep") as sleep:
+                data_snapshot._download_url(
+                    url="https://api.github.com/assets/1",
+                    destination=destination,
+                    token="secret",
+                    max_bytes=1_000,
+                    expected_bytes=len(payload),
+                )
+
+            self.assertEqual(payload, destination.read_bytes())
+
+        self.assertEqual(2, opener.call_count)
+        sleep.assert_called_once_with(1)
+
+    def test_download_url_retries_incomplete_read_and_replaces_partial_file(
+        self,
+    ) -> None:
+        payload = b"validated snapshot"
+        first_response = mock.MagicMock()
+        first_response.__enter__.return_value.headers = {}
+        first_response.__enter__.return_value.read.side_effect = [
+            b"partial",
+            data_snapshot.http.client.IncompleteRead(b"truncated", len(payload)),
+        ]
+        second_response = mock.MagicMock()
+        second_response.__enter__.return_value.headers = {
+            "Content-Length": str(len(payload)),
+        }
+        second_response.__enter__.return_value.read.side_effect = [payload, b""]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "snapshot.tar.gz"
+            with mock.patch.object(
+                data_snapshot._URL_OPENER,
+                "open",
+                side_effect=[first_response, second_response],
+            ) as opener, mock.patch("time.sleep") as sleep:
+                data_snapshot._download_url(
+                    url="https://api.github.com/assets/1",
+                    destination=destination,
+                    token="secret",
+                    max_bytes=1_000,
+                    expected_bytes=len(payload),
+                )
+
+            self.assertEqual(payload, destination.read_bytes())
+
+        self.assertEqual(2, opener.call_count)
+        sleep.assert_called_once_with(1)
+
+    def test_download_url_retry_exhaustion_is_bounded_and_cleans_partial_file(
+        self,
+    ) -> None:
+        unavailable = data_snapshot.urllib.error.HTTPError(
+            "https://api.github.com/assets/1",
+            503,
+            "Service Unavailable",
+            mock.MagicMock(),
+            None,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "snapshot.tar.gz"
+            with mock.patch.object(
+                data_snapshot._URL_OPENER,
+                "open",
+                side_effect=unavailable,
+            ) as opener, mock.patch("time.sleep") as sleep:
+                with self.assertRaisesRegex(
+                    data_snapshot.SnapshotError,
+                    "HTTP Error 503",
+                ):
+                    data_snapshot._download_url(
+                        url="https://api.github.com/assets/1",
+                        destination=destination,
+                        token="secret",
+                        max_bytes=1_000,
+                    )
+
+            self.assertFalse(destination.exists())
+
+        self.assertEqual(3, opener.call_count)
+        self.assertEqual([mock.call(1), mock.call(3)], sleep.call_args_list)
+
     def test_resolve_release_uses_newest_stable_published_dataset(self) -> None:
         releases = [
             {
