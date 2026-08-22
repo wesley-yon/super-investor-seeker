@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import date, datetime
+from typing import cast
 from urllib.parse import urlsplit
 
 from lxml import etree
@@ -1460,7 +1461,9 @@ def _parse_ownership_xml_impl(
             "source_path": row["field_sources"][field_name]["source_path"],
         }
         for row in transactions
-        for field_name, footnote_ids in row["field_footnotes"].items()
+        for field_name, footnote_ids in sorted(
+            cast(dict[str, list[str]], row["field_footnotes"]).items()
+        )
         for reference_order, footnote_id in enumerate(footnote_ids)
     ]
     field_footnote_links.extend(
@@ -1475,7 +1478,9 @@ def _parse_ownership_xml_impl(
             "source_path": row["field_sources"][field_name]["source_path"],
         }
         for row in holdings
-        for field_name, footnote_ids in row["field_footnotes"].items()
+        for field_name, footnote_ids in sorted(
+            cast(dict[str, list[str]], row["field_footnotes"]).items()
+        )
         for reference_order, footnote_id in enumerate(footnote_ids)
     )
     unknown_elements = _unknown_element_records(root)

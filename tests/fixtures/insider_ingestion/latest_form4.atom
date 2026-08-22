@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Sanitized current Form 4 filings</title>
+  <entry>
+    <title>4 - Synthetic Issuer (0000000001) (Issuer)</title>
+    <updated>2026-01-16T16:30:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.html" />
+  </entry>
+  <entry>
+    <title>4 - Synthetic Owner (0000000002) (Reporting)</title>
+    <updated>2026-01-16T16:30:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/2/000000000126000001/owner-entry.html" />
+  </entry>
+  <entry>
+    <title>4 - Synthetic Co-Owner (0000000003) (Reporting)</title>
+    <updated>2026-01-16T16:30:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/3/000000000126000001/co-owner-entry.html" />
+  </entry>
+</feed>

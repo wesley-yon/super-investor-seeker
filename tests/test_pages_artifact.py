@@ -11,6 +11,34 @@ from scripts import build_pages_artifact
 
 SHA = "a" * 40
 DATASET_ID = "b" * 64
+INSIDER_ACCESSION = "0000000001-26-000001"
+PRIVATE_INSIDER_FILES = {
+    Path(
+        f"data/insiders/private/accessions/{INSIDER_ACCESSION}/index.html"
+    ): b"<html>PRIVATE_SENTINEL_INDEX</html>\n",
+    Path(
+        f"data/insiders/private/accessions/{INSIDER_ACCESSION}/source-metadata.json"
+    ): b'{"private":"PRIVATE_SENTINEL_SOURCE_METADATA"}\n',
+    Path(
+        f"data/insiders/private/accessions/{INSIDER_ACCESSION}/raw.xml"
+    ): b"<ownershipDocument>PRIVATE_SENTINEL_RAW_XML</ownershipDocument>\n",
+    Path(
+        f"data/insiders/private/accessions/{INSIDER_ACCESSION}/normalized/1.0.0.json"
+    ): b'{"private":"PRIVATE_SENTINEL_NORMALIZED_V1"}\n',
+    Path(
+        f"data/insiders/private/accessions/{INSIDER_ACCESSION}/normalized/2.0.0.json"
+    ): b'{"private":"PRIVATE_SENTINEL_NORMALIZED_V2"}\n',
+    Path("data/insiders/private/state/incremental-v1.json"): b'{"private":"PRIVATE_SENTINEL_INCREMENTAL"}\n',
+    Path("data/insiders/private/state/backfill/2026Q1.json"): b'{"private":"PRIVATE_SENTINEL_BACKFILL"}\n',
+    Path("data/insiders/private/state/reparse-v1.json"): b'{"private":"PRIVATE_SENTINEL_REPARSE"}\n',
+    Path("data/insiders/private/state/issuers/0000000001.json"): b'{"private":"PRIVATE_SENTINEL_ISSUER"}\n',
+    Path(
+        f"data/insiders/private/state/quarantine/accessions/{INSIDER_ACCESSION}.json"
+    ): b'{"private":"PRIVATE_SENTINEL_ACCESSION_QUARANTINE"}\n',
+    Path("data/insiders/private/state/quarantine/quarters/2026Q1.json"): b'{"private":"PRIVATE_SENTINEL_QUARTER_QUARANTINE"}\n',
+    Path("data/insiders/private/state/telemetry-v1.json"): b'{"private":"PRIVATE_SENTINEL_TELEMETRY"}\n',
+}
+PRIVATE_INSIDER_SENTINELS = tuple(PRIVATE_INSIDER_FILES.values())
 
 
 class PagesArtifactTests(unittest.TestCase):
@@ -23,7 +51,7 @@ class PagesArtifactTests(unittest.TestCase):
         (source / "site-data-loader.js").write_text("window.fetch = fetch;\n")
         (source / "index.html").write_text(
             "<html><head><script src=\"site-data-loader.js\"></script>"
-            "</head><body><script>const DATA_CONTRACT_VERSION = 3;</script>"
+            "</head><body><script>const DATA_CONTRACT_VERSION = 5;</script>"
             "</body></html>\n"
         )
         (source / "data/funds-index.json").write_text('{"funds":[]}\n')
@@ -36,17 +64,10 @@ class PagesArtifactTests(unittest.TestCase):
         (source / "data/cusip_registry.json").write_text('{"private":true}\n')
         (source / "data/cache").mkdir()
         (source / "data/cache/openfigi.json").write_text('{"private":true}\n')
-        insider_accession = (
-            source
-            / "data/insiders/private/accessions/0000000001-26-000001"
-        )
-        (insider_accession / "normalized").mkdir(parents=True)
-        (insider_accession / "raw.xml").write_text(
-            "<ownershipDocument>PRIVATE INSIDER SENTINEL</ownershipDocument>\n"
-        )
-        (insider_accession / "normalized/1.0.0.json").write_text(
-            '{"private":"PRIVATE INSIDER SENTINEL"}\n'
-        )
+        for relative, payload in PRIVATE_INSIDER_FILES.items():
+            target = source / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
         (source / ".cache").mkdir()
         (source / ".cache/cusip-map.json").write_text('{"private":true}\n')
         (source / "data/funds/1.json").write_text(
@@ -117,14 +138,28 @@ class PagesArtifactTests(unittest.TestCase):
             )
             self.assertEqual(SHA, manifest["source_sha"])
             self.assertEqual(DATASET_ID, manifest["dataset_id"])
-            self.assertFalse((first / "data/insiders").exists())
-            self.assertFalse(
-                any(
-                    b"PRIVATE INSIDER SENTINEL" in path.read_bytes()
-                    for path in first.rglob("*")
-                    if path.is_file()
-                )
+            self.assertIn(
+                "const DATA_CONTRACT_VERSION = 5;",
+                (first / "index.html").read_text(),
             )
+            self.assertFalse((first / "data/insiders").exists())
+            for path in first.rglob("*"):
+                if not path.is_file():
+                    continue
+                payload = path.read_bytes()
+                for sentinel in PRIVATE_INSIDER_SENTINELS:
+                    self.assertNotIn(sentinel, payload, path.as_posix())
+            for relative in (
+                *build_pages_artifact.STATIC_FILES,
+                *build_pages_artifact.INDEX_FILES,
+                *build_pages_artifact.COMPRESSED_DIRECTORIES,
+            ):
+                public_input = relative.as_posix()
+                self.assertFalse(
+                    public_input == "data/insiders"
+                    or public_input.startswith("data/insiders/"),
+                    public_input,
+                )
 
             public_files = {
                 path.relative_to(first).as_posix()
@@ -146,6 +181,31 @@ class PagesArtifactTests(unittest.TestCase):
                 },
                 public_files,
             )
+
+    def test_private_only_change_does_not_change_public_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = self.make_source(root)
+            first = root / "first"
+            second = root / "second"
+
+            first_summary = self.build(source, first)
+            telemetry = source / "data/insiders/private/state/telemetry-v1.json"
+            telemetry.write_bytes(b'{"private":"PRIVATE_SENTINEL_CHANGED"}\n')
+            second_summary = self.build(source, second)
+
+            first_files = {
+                path.relative_to(first).as_posix(): path.read_bytes()
+                for path in first.rglob("*")
+                if path.is_file()
+            }
+            second_files = {
+                path.relative_to(second).as_posix(): path.read_bytes()
+                for path in second.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(first_summary, second_summary)
+            self.assertEqual(first_files, second_files)
 
     def test_build_rejects_missing_loader_integration(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
