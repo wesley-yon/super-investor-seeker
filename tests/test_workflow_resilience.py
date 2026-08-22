@@ -261,6 +261,123 @@ gh_mutate_once() {
             )
         return result, mutation_count
 
+    def _run_nonrollback_finalization_until_cleanup(
+        self,
+        *,
+        active_release_json: str,
+        expected_previous_latest_release_tag: str = "dataset-expected",
+    ) -> tuple[subprocess.CompletedProcess[str], int]:
+        finalization = self._finalization_shell()
+        block_start = finalization.index(
+            '          release_json=$(gh_read_retry api "/repos/$DATA_REPOSITORY/releases/tags/$EXPECTED_RELEASE_TAG")'
+        )
+        block_end = finalization.index(
+            "\n          releases_json=$(\n", block_start
+        )
+        block_source = textwrap.dedent(finalization[block_start:block_end])
+
+        expected_release_json = (
+            '{"tag_name":"dataset-expected","draft":false,'
+            '"prerelease":false,"published_at":"2026-08-21T20:09:07Z"}'
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            counters = Path(tmpdir)
+            mutation_counter = counters / "mutation"
+            mutation_counter.write_text("0\n", encoding="utf-8")
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    "readonly TRANSIENT_MUTATION_EXIT_CODE=75",
+                    'ALLOW_OLDER_RELEASE="false"',
+                    'EXPECTED_CODE_SHA="d3da4c385b1235e0aacb50982ddf454a6f182d55"',
+                    'EXPECTED_DATASET_ID="5e8b2383befa7ad2d6cb2109e93cf9ec38c3fd7c725b5da0d47a25478d624d67"',
+                    'EXPECTED_RELEASE_TAG="dataset-expected"',
+                    (
+                        'EXPECTED_PREVIOUS_LATEST_RELEASE_TAG="'
+                        f'{expected_previous_latest_release_tag}"'
+                    ),
+                    'DATA_REPOSITORY="owner/private-data"',
+                    'GITHUB_REPOSITORY="owner/public"',
+                    'PUBLIC_GITHUB_TOKEN="public-token"',
+                    'RUNNER_TEMP="$COUNTER_DIR"',
+                    r"""
+gh_read_retry() {
+  if [ "$1" = api ] && [[ "$2" == */releases/tags/* ]]; then
+    printf '%s\n' "$EXPECTED_RELEASE_JSON"
+    return 0
+  fi
+  if [ "$1" = release ] && [ "$2" = download ]; then
+    local output_dir=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --dir ]; then
+        output_dir=$2
+        break
+      fi
+      shift
+    done
+    mkdir -p "$output_dir"
+    printf '{"dataset_id":"%s"}\n' "$EXPECTED_DATASET_ID" > "$output_dir/snapshot.manifest.json"
+    return 0
+  fi
+  if [ "$1" = api ] && [[ "$2" == */deployments\?* ]]; then
+    printf '%s\n' '[{"id":101}]'
+    return 0
+  fi
+  if [ "$1" = api ] && [[ "$2" == */deployments/101/statuses\?* ]]; then
+    printf '%s\n' '[{"state":"success","created_at":"2026-08-21T21:10:00Z"}]'
+    return 0
+  fi
+  if [ "$1" = api ] && [[ "$2" == */releases/latest ]]; then
+    if [ "${3:-}" = --jq ]; then
+      jq -r "${4:-.}" <<<"$ACTIVE_RELEASE_JSON"
+    else
+      printf '%s\n' "$ACTIVE_RELEASE_JSON"
+    fi
+    return 0
+  fi
+  return 99
+}
+gh_mutate_once() {
+  local count
+  count=$(<"$COUNTER_DIR/mutation")
+  printf '%s\n' "$((count + 1))" > "$COUNTER_DIR/mutation"
+  return 0
+}
+wait_for_marker_match() { return 0; }
+sleep_before_retry() { return 0; }
+observe_latest_release() { return 99; }
+mapfile() {
+  local value
+  deployment_ids=()
+  while IFS= read -r value; do
+    deployment_ids[${#deployment_ids[@]}]=$value
+  done
+}
+""",
+                    block_source,
+                    'printf "reached-cleanup=true\\n"',
+                )
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "ACTIVE_RELEASE_JSON": active_release_json,
+                    "COUNTER_DIR": tmpdir,
+                    "EXPECTED_RELEASE_JSON": expected_release_json,
+                }
+            )
+            result = subprocess.run(
+                ["bash"],
+                cwd=ROOT,
+                env=env,
+                input=script,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            mutation_count = int(mutation_counter.read_text(encoding="utf-8").strip())
+        return result, mutation_count
+
     def _run_orphan_tag_sweep(
         self,
         *,
@@ -787,6 +904,99 @@ gh_mutate_once() {
 
         self.assertNotEqual(0, result.returncode)
         self.assertIn("Refusing stale rollback", result.stdout)
+        self.assertEqual(0, mutation_count)
+
+    def test_nonrollback_finalizer_noops_when_newer_release_supersedes_deploy(self):
+        result, mutation_count = self._run_nonrollback_finalization_until_cleanup(
+            active_release_json=(
+                '{"tag_name":"dataset-newer","draft":false,'
+                '"prerelease":false,"published_at":"2026-08-21T21:13:28Z"}'
+            )
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("superseded", result.stdout.lower())
+        self.assertNotIn("reached-cleanup=true", result.stdout)
+        self.assertEqual(0, mutation_count)
+
+    def test_nonrollback_finalizer_continues_when_target_remains_active(self):
+        result, mutation_count = self._run_nonrollback_finalization_until_cleanup(
+            active_release_json=(
+                '{"tag_name":"dataset-expected","draft":false,'
+                '"prerelease":false,"published_at":"2026-08-21T20:09:07Z"}'
+            )
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("reached-cleanup=true", result.stdout)
+        self.assertEqual(1, mutation_count)
+
+    def test_nonrollback_finalizer_fails_closed_for_untrusted_pointer_change(self):
+        cases = {
+            "older_release": (
+                '{"tag_name":"dataset-unexpected","draft":false,'
+                '"prerelease":false,"published_at":"2026-08-21T19:00:00Z"}'
+            ),
+            "unexpected_tag": (
+                '{"tag_name":"manual-release","draft":false,'
+                '"prerelease":false,"published_at":"2026-08-21T21:13:28Z"}'
+            ),
+            "draft_release": (
+                '{"tag_name":"dataset-unexpected","draft":true,'
+                '"prerelease":false,"published_at":"2026-08-21T21:13:28Z"}'
+            ),
+            "prerelease_release": (
+                '{"tag_name":"dataset-unexpected","draft":false,'
+                '"prerelease":true,"published_at":"2026-08-21T21:13:28Z"}'
+            ),
+            "missing_draft": (
+                '{"tag_name":"dataset-unexpected","prerelease":false,'
+                '"published_at":"2026-08-21T21:13:28Z"}'
+            ),
+            "null_draft": (
+                '{"tag_name":"dataset-unexpected","draft":null,'
+                '"prerelease":false,"published_at":"2026-08-21T21:13:28Z"}'
+            ),
+            "missing_prerelease": (
+                '{"tag_name":"dataset-unexpected","draft":false,'
+                '"published_at":"2026-08-21T21:13:28Z"}'
+            ),
+            "null_prerelease": (
+                '{"tag_name":"dataset-unexpected","draft":false,'
+                '"prerelease":null,"published_at":"2026-08-21T21:13:28Z"}'
+            ),
+            "invalid_timestamp": (
+                '{"tag_name":"dataset-unexpected","draft":false,'
+                '"prerelease":false,"published_at":"not-a-timestamp"}'
+            ),
+        }
+        for name, active_release_json in cases.items():
+            with self.subTest(name=name):
+                result, mutation_count = (
+                    self._run_nonrollback_finalization_until_cleanup(
+                        active_release_json=active_release_json
+                    )
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(
+                    "active release changed unexpectedly", result.stdout.lower()
+                )
+                self.assertNotIn("reached-cleanup=true", result.stdout)
+                self.assertEqual(0, mutation_count)
+
+    def test_nonrollback_finalizer_requires_target_was_latest_at_resolve(self):
+        result, mutation_count = self._run_nonrollback_finalization_until_cleanup(
+            active_release_json=(
+                '{"tag_name":"dataset-newer","draft":false,'
+                '"prerelease":false,"published_at":"2026-08-21T21:13:28Z"}'
+            ),
+            expected_previous_latest_release_tag="dataset-other",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("active release changed unexpectedly", result.stdout.lower())
+        self.assertNotIn("reached-cleanup=true", result.stdout)
         self.assertEqual(0, mutation_count)
 
     def test_orphan_sweep_recovers_crash_between_release_and_tag_deletion(self):

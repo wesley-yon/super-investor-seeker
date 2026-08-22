@@ -802,6 +802,39 @@ jobs:
             exit 1
           fi
 
+          # A non-rollback deployment can wait behind a concurrent publisher at
+          # this job's shared lock. If that publisher installed a genuinely
+          # newer latest release while Pages was deploying, this run is safely
+          # superseded: its exact artifact already deployed, but the newer
+          # release's own Pages run must own marker repair and retention.
+          active_release_json=$(
+            gh_read_retry api "/repos/$DATA_REPOSITORY/releases/latest"
+          )
+          active_release_tag=$(jq -r '.tag_name // empty' <<<"$active_release_json")
+          if [ "$ALLOW_OLDER_RELEASE" != true ] &&
+             [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+            if [ "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" != "$EXPECTED_RELEASE_TAG" ] ||
+               [[ ! "$active_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
+               ! jq -e --argjson expected_release "$release_json" '
+                   type == "object"
+                   and ((.tag_name | type) == "string")
+                   and ((.draft | type) == "boolean")
+                   and (.draft == false)
+                   and ((.prerelease | type) == "boolean")
+                   and (.prerelease == false)
+                   and ((.published_at | type) == "string")
+                   and (($expected_release | type) == "object")
+                   and (($expected_release.published_at | type) == "string")
+                   and ((.published_at | fromdateiso8601)
+                     > ($expected_release.published_at | fromdateiso8601))
+                 ' <<<"$active_release_json" >/dev/null; then
+              echo "::error::The active release changed unexpectedly before finalization"
+              exit 1
+            fi
+            echo "::notice::Deployment target $EXPECTED_RELEASE_TAG was superseded by newer active release $active_release_tag before finalization; leaving marker repair and retention to the newer deployment"
+            exit 0
+          fi
+
           deployment_json=$(
             GH_TOKEN="$PUBLIC_GITHUB_TOKEN" gh_read_retry api \
               "/repos/$GITHUB_REPOSITORY/deployments?environment=github-pages&per_page=20"
