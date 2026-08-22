@@ -59,6 +59,184 @@ class WorkflowResilienceTests(unittest.TestCase):
         self.assertIn('echo "targeted_cik=$targeted_cik" >> "$GITHUB_OUTPUT"', workflow)
         self.assertIn("steps.pipeline.outputs.targeted_cik != 'true'", workflow)
 
+    def test_manual_insider_inputs_are_explicit_and_default_off(self):
+        workflow = read(".github/workflows/update-data.yml")
+        dispatch = workflow.split("  workflow_dispatch:", 1)[1].split(
+            "\nconcurrency:", 1
+        )[0]
+
+        mode = dispatch.split("      insider_mode:", 1)[1].split(
+            "\n      insider_issuer_cik:", 1
+        )[0]
+        self.assertIn("default: 'off'", mode)
+        self.assertIn("type: choice", mode)
+        for choice in ("off", "incremental", "backfill", "reparse"):
+            self.assertIn(f"- {choice}", mode)
+
+        for field, default, input_type in (
+            ("insider_issuer_cik", "''", "string"),
+            ("insider_quarter", "''", "string"),
+            ("insider_max_accessions", "25", "number"),
+            ("insider_deadline_seconds", "600", "number"),
+        ):
+            with self.subTest(field=field):
+                field_block = dispatch.split(f"      {field}:", 1)[1]
+                self.assertIn(f"default: {default}", field_block)
+                self.assertIn(f"type: {input_type}", field_block)
+
+    def test_insider_plan_is_bounded_and_scheduled_execution_is_opt_in(self):
+        workflow = read(".github/workflows/update-data.yml")
+        resolver = workflow.split(
+            "- name: Resolve bounded insider maintenance plan", 1
+        )[1].split("\n      - name:", 1)[0]
+
+        self.assertIn(
+            "SCHEDULED_ENABLED: ${{ vars.ENABLE_SCHEDULED_INSIDER_INGESTION }}",
+            resolver,
+        )
+        self.assertIn(
+            "SCHEDULED_ISSUER_CIK: ${{ vars.SCHEDULED_INSIDER_ISSUER_CIK }}",
+            resolver,
+        )
+        self.assertIn('[ "$EVENT_NAME" = "schedule" ]', resolver)
+        self.assertIn('[ "$SCHEDULED_ENABLED" = "true" ]', resolver)
+        self.assertNotIn('[ -n "$SCHEDULED_ENABLED" ]', resolver)
+        self.assertIn("mode=off", resolver)
+        self.assertIn("mode=incremental", resolver)
+        self.assertIn("Backfill and reparse are manual-only", resolver)
+        self.assertIn('[[ ! "$issuer_cik" =~ ^[0-9]{1,10}$ ]]', resolver)
+        self.assertIn('[[ "$issuer_cik" =~ ^0+$ ]]', resolver)
+        self.assertIn('[[ ! "$max_accessions" =~ ^[1-9][0-9]*$ ]]', resolver)
+        self.assertIn('"$max_accessions" -gt 100', resolver)
+        self.assertIn('[[ ! "$deadline_seconds" =~ ^[1-9][0-9]*$ ]]', resolver)
+        self.assertIn('"$deadline_seconds" -lt 60', resolver)
+        self.assertIn('"$deadline_seconds" -gt 840', resolver)
+        self.assertIn('[[ ! "$quarter" =~ ^[0-9]{4}Q[1-4]$ ]]', resolver)
+        self.assertIn('if [ -n "$quarter" ]; then', resolver)
+        for output in (
+            "mode",
+            "issuer_cik",
+            "quarter",
+            "max_accessions",
+            "deadline_seconds",
+        ):
+            self.assertIn(f'echo "{output}=', resolver)
+
+    def test_bounded_insider_step_is_sequential_and_checkpoint_aware(self):
+        workflow = read(".github/workflows/update-data.yml")
+        preflight = workflow.split(
+            "- name: Resolve validated insider resume state", 1
+        )[1].split("\n      - name:", 1)[0]
+        insider = workflow.split("- name: Run bounded insider maintenance", 1)[
+            1
+        ].split("- name: Validate private insider checkpoint state", 1)[0]
+        validation = workflow.split(
+            "- name: Validate private insider checkpoint state", 1
+        )[1].split("\n      - name:", 1)[0]
+
+        self.assertIn("InsiderStateStore", preflight)
+        self.assertIn("resolve_incremental_checkpoint_action", preflight)
+        self.assertIn('state_store.read("incremental-v1")', preflight)
+        self.assertIn('state_store.read(f"backfill/{quarter}")', preflight)
+        self.assertIn('state_store.read("reparse-v1")', preflight)
+        self.assertIn("INSIDER_PARSER_VERSION", preflight)
+        self.assertIn('{"running", "incomplete"}', preflight)
+        self.assertIn("existing backfill checkpoint is not resumable", preflight)
+        self.assertIn("existing reparse checkpoint is not resumable", preflight)
+        self.assertNotIn("json.load", preflight)
+        self.assertNotIn("Path.exists", preflight)
+
+        self.assertIn(
+            "if: ${{ steps.insider_plan.outputs.mode != 'off' }}",
+            insider,
+        )
+        self.assertIn("timeout-minutes: 15", insider)
+        self.assertIn("SEC_MAX_REQUESTS_PER_SECOND: '5'", insider)
+        self.assertIn("pipeline.require_declared_sec_user_agent()", insider)
+        self.assertIn("python scripts/refresh_recent_insider_filings.py", insider)
+        self.assertIn("python scripts/backfill_insider_transactions.py", insider)
+        self.assertIn("python scripts/reparse_insider_filings.py", insider)
+        self.assertIn('if [ "$INSIDER_ACTION" = "resume" ]; then', insider)
+        incremental_branch = insider.split("incremental)", 1)[1].split(";;", 1)[0]
+        self.assertIn("set +e", incremental_branch)
+        self.assertIn("incremental_status=$?", incremental_branch)
+        self.assertIn('if [ "$incremental_status" -eq 75 ]; then', incremental_branch)
+        self.assertIn('elif [ "$incremental_status" -ne 0 ]; then', incremental_branch)
+        self.assertIn('if [ "$reparse_status" -eq 75 ]; then', insider)
+        self.assertIn('elif [ "$reparse_status" -ne 0 ]; then', insider)
+        self.assertNotIn("reparse-telemetry-before.json", insider)
+        self.assertNotIn("--all", insider)
+        self.assertNotIn("--refetch", insider)
+        self.assertNotIn("continue-on-error", insider)
+        self.assertNotIn("strategy:", insider)
+        self.assertNotIn("xargs -P", insider)
+
+        self.assertIn('state_store.read("incremental-v1")', validation)
+        self.assertIn("validate_incremental_checkpoint_scope", validation)
+        incremental_validation = validation.split(
+            'if mode == "incremental":', 1
+        )[1].split('elif mode == "backfill":', 1)[0]
+        self.assertIn(
+            'expected_statuses = {"running", "incomplete"} if cooperative_checkpoint else {"completed"}',
+            incremental_validation,
+        )
+        self.assertIn(
+            'checkpoint["status"] not in expected_statuses',
+            incremental_validation,
+        )
+        self.assertIn('state_store.read(f"backfill/{quarter}")', validation)
+        self.assertIn('state_store.read("reparse-v1")', validation)
+        self.assertIn('state_store.read("telemetry-v1")', validation)
+        self.assertIn("cooperative_checkpoint", validation)
+        self.assertIn("reparse checkpoint did not validate", validation)
+
+        ordered_steps = (
+            "- name: Restore latest validated private snapshot",
+            "- name: Run pipeline",
+            "- name: Refresh recently accepted 13F filings",
+            "- name: Regenerate registry-backed site data",
+            "- name: Resolve bounded insider maintenance plan",
+            "- name: Resolve validated insider resume state",
+            "- name: Run bounded insider maintenance",
+            "- name: Validate private insider checkpoint state",
+            "- name: Validate generated data",
+            "- name: Run full Python regression suite",
+            "- name: Publish validated private snapshot",
+        )
+        offsets = tuple(workflow.index(step) for step in ordered_steps)
+        self.assertEqual(tuple(sorted(offsets)), offsets)
+
+    def test_private_only_snapshot_preserves_active_pages_target(self):
+        workflow = read(".github/workflows/update-data.yml")
+        publisher = read(PUBLISHER_SCRIPT)
+
+        baseline = workflow.split(
+            "- name: Capture restored public artifact identity", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn("python scripts/build_pages_artifact.py", baseline)
+        self.assertIn('echo "tree_sha256=$base_public_tree_sha256"', baseline)
+        self.assertLess(
+            workflow.index("- name: Capture restored public artifact identity"),
+            workflow.index("- name: Run pipeline"),
+        )
+        publish = workflow.split("- name: Publish validated private snapshot", 1)[
+            1
+        ].split("\n  deploy-pages:", 1)[0]
+        self.assertIn(
+            "BASE_PUBLIC_TREE_SHA256: ${{ steps.base_public.outputs.tree_sha256 }}",
+            publish,
+        )
+
+        for fragment in (
+            'if [ -n "${BASE_PUBLIC_TREE_SHA256:-}" ]; then',
+            "python scripts/build_pages_artifact.py",
+            'if [ "$current_public_tree_sha256" = "$BASE_PUBLIC_TREE_SHA256" ]; then',
+            "--latest=false",
+            'echo "site_changed=false"',
+        ):
+            self.assertIn(fragment, publisher)
+        self.assertNotIn("data/insiders", baseline)
+
     def test_keepalive_is_twice_monthly_empty_and_strictly_off_main(self):
         workflow = read(".github/workflows/keepalive.yml")
 

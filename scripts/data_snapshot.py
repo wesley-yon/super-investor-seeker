@@ -10,11 +10,17 @@ GitHub Actions.
 from __future__ import annotations
 
 import argparse
+import contextlib
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - pack_snapshot fails closed below.
+    fcntl = None  # type: ignore[assignment]
 import gzip
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import sys
@@ -26,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, Iterable, Optional
+from typing import Any, BinaryIO, Iterable, Iterator, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -216,10 +222,15 @@ def _source_content_digest(entries: Iterable[SourceEntry]) -> tuple[str, int, in
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
+        return _sha256_handle(handle)
+
+
+def _sha256_handle(handle: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    handle.seek(0)
+    for block in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(block)
     return digest.hexdigest()
 
 
@@ -250,8 +261,12 @@ def _tar_info(entry: SourceEntry) -> tarfile.TarInfo:
     return info
 
 
-def _write_archive(entries: Iterable[SourceEntry], destination: Path) -> None:
-    with destination.open("xb") as raw_output:
+def _write_archive(entries: Iterable[SourceEntry], destination: Path | int) -> None:
+    if isinstance(destination, int):
+        raw_stream = os.fdopen(os.dup(destination), "wb")
+    else:
+        raw_stream = destination.open("xb")
+    with raw_stream as raw_output:
         os.fchmod(raw_output.fileno(), 0o600)
         with gzip.GzipFile(
             filename="",
@@ -272,6 +287,410 @@ def _write_archive(entries: Iterable[SourceEntry], destination: Path) -> None:
                     else:
                         with entry.path.open("rb") as source:
                             archive.addfile(info, source)
+
+
+def _fsync_regular_file(path: Path, label: str) -> None:
+    """Flush a staged regular file before making its name visible."""
+    _regular_file(path, label)
+    try:
+        with path.open("rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise SnapshotError(f"{label} must be a regular file: {path}")
+            os.fsync(handle.fileno())
+    except SnapshotError:
+        raise
+    except OSError as error:
+        raise SnapshotError(f"could not fsync {label}: {path}: {error}") from error
+
+
+def _fsync_directory(path: Path, label: str) -> None:
+    """Flush directory entries after a transactional publication change."""
+    _regular_directory(path, label)
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError as error:
+        raise SnapshotError(f"could not open {label}: {path}: {error}") from error
+    try:
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise SnapshotError(f"{label} must be a real directory: {path}")
+        os.fsync(descriptor)
+    except SnapshotError:
+        raise
+    except OSError as error:
+        raise SnapshotError(f"could not fsync {label}: {path}: {error}") from error
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_containing_directory(path: Path, label: str) -> None:
+    """Flush the real directory that contains a possibly aliased path."""
+
+    try:
+        parent = path.parent.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise SnapshotError(
+            f"could not resolve {label}: {path.parent}: {error}"
+        ) from error
+    _fsync_directory(parent, label)
+
+
+def _open_directory_at(
+    parent_descriptor: int,
+    name: str,
+    label: str,
+) -> int:
+    """Open one child directory without following a replacement symlink."""
+
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+    except OSError as error:
+        raise SnapshotError(f"could not securely open {label}: {name}: {error}") from error
+    try:
+        _directory_descriptor_identity(descriptor, label)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _ensure_durable_directory(path: Path, label: str) -> None:
+    """Create a canonical directory tree with descriptor-relative entries."""
+
+    if not _directory_fd_capabilities_available():
+        raise SnapshotError("secure directory-descriptor publication is unavailable")
+    missing: list[Path] = []
+    current = path
+    while True:
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            if current.parent == current:
+                raise SnapshotError(
+                    f"{label} has no existing directory ancestor"
+                ) from None
+            missing.append(current)
+            current = current.parent
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise SnapshotError(f"{label} must be a real directory: {current}")
+        break
+
+    # `path` is the canonical target captured before this helper runs. Freeze
+    # the deepest existing ancestor and make every later name lookup relative
+    # to its verified descriptor, never to a mutable caller alias.
+    ancestor_identity = _directory_identity(current, f"{label} ancestor")
+    try:
+        parent_descriptor = os.open(
+            current,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise SnapshotError(
+            f"could not securely open {label} ancestor: {current}: {error}"
+        ) from error
+    try:
+        if (
+            _directory_descriptor_identity(
+                parent_descriptor,
+                f"{label} ancestor",
+            )
+            != ancestor_identity
+        ):
+            raise SnapshotError(f"{label} ancestor changed while preparing snapshot")
+        if not missing:
+            # Persist the existing output directory's entry before publication.
+            _fsync_containing_directory(path, f"{label} parent")
+            return
+
+        for directory in reversed(missing):
+            name = directory.name
+            created = False
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+                created = True
+            except FileExistsError:
+                pass
+            except OSError as error:
+                raise SnapshotError(
+                    f"could not create {label}: {directory}: {error}"
+                ) from error
+
+            child_descriptor = _open_directory_at(
+                parent_descriptor,
+                name,
+                label,
+            )
+            try:
+                if created:
+                    try:
+                        os.fchmod(child_descriptor, 0o700)
+                    except OSError as error:
+                        raise SnapshotError(
+                            f"could not restrict {label}: {directory}: {error}"
+                        ) from error
+                child_metadata = os.fstat(child_descriptor)
+                if (
+                    not stat.S_ISDIR(child_metadata.st_mode)
+                    or stat.S_IMODE(child_metadata.st_mode) != 0o700
+                ):
+                    raise SnapshotError(
+                        f"{label} must be a private real directory: {directory}"
+                    )
+                # The child contents/mode are durable before its parent names it.
+                _fsync_directory_at(child_descriptor, label)
+                _fsync_directory_at(parent_descriptor, f"{label} parent")
+            except BaseException:
+                os.close(child_descriptor)
+                raise
+            os.close(parent_descriptor)
+            parent_descriptor = child_descriptor
+    finally:
+        os.close(parent_descriptor)
+
+
+def _path_is_at_or_below(candidate: Path, roots: tuple[Path, ...]) -> bool:
+    """Compare paths lexically and by existing directory identity."""
+
+    if candidate in roots or any(parent in roots for parent in candidate.parents):
+        return True
+    for ancestor in (candidate, *candidate.parents):
+        for root in roots:
+            try:
+                if ancestor.samefile(root):
+                    return True
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise SnapshotError(
+                    f"could not validate output directory scope: {ancestor}: {error}"
+                ) from error
+    return False
+
+
+def _existing_regular_file(path: Path, label: str) -> bool:
+    """Return whether a final name is absent or a safe regular file."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SnapshotError(f"{label} must be a regular file: {path}")
+    return True
+
+
+def _directory_fd_capabilities_available() -> bool:
+    """Return whether this host can perform the descriptor-anchored transaction."""
+
+    return (
+        fcntl is not None
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+    )
+
+
+def _directory_identity(path: Path, label: str) -> tuple[int, int]:
+    """Return the identity of a real directory without following its final name."""
+
+    try:
+        metadata = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise SnapshotError(f"could not inspect {label}: {path}: {error}") from error
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise SnapshotError(f"{label} must be a real directory: {path}")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _directory_descriptor_identity(descriptor: int, label: str) -> tuple[int, int]:
+    """Return the identity of an opened real directory."""
+
+    try:
+        metadata = os.fstat(descriptor)
+    except OSError as error:
+        raise SnapshotError(f"could not inspect {label}: {error}") from error
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise SnapshotError(f"{label} must be a real directory")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _open_verified_output_directory(path: Path, label: str) -> int:
+    """Open the final output component without following a replacement symlink."""
+
+    if not _directory_fd_capabilities_available():
+        raise SnapshotError("secure directory-descriptor publication is unavailable")
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise SnapshotError(f"could not securely open {label}: {path}: {error}") from error
+    try:
+        _directory_descriptor_identity(descriptor, label)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+@contextlib.contextmanager
+def _locked_output_directory(descriptor: int) -> Iterator[None]:
+    """Serialize cooperating publishers without creating a lock-file artifact."""
+
+    try:
+        # flock on a directory fd is supported by the macOS and Linux hosts
+        # that provide the descriptor primitives required above.
+        fcntl.flock(descriptor, fcntl.LOCK_EX)  # type: ignore[union-attr]
+    except (AttributeError, OSError) as error:
+        raise SnapshotError(f"could not lock output directory: {error}") from error
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)  # type: ignore[union-attr]
+        except (AttributeError, OSError):
+            pass
+
+
+def _revalidate_output_directory(path: Path, descriptor: int) -> None:
+    """Reject a final path that no longer names the verified directory."""
+
+    try:
+        named = os.stat(path, follow_symlinks=False)
+        opened = os.fstat(descriptor)
+    except OSError as error:
+        raise SnapshotError(f"could not revalidate output directory: {path}: {error}") from error
+    if (
+        not stat.S_ISDIR(named.st_mode)
+        or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+    ):
+        raise SnapshotError("output directory changed while preparing snapshot")
+
+
+def _open_regular_file_at(
+    directory_descriptor: int,
+    name: str,
+    label: str,
+) -> tuple[int, os.stat_result]:
+    """Open one regular directory member without following a symlink."""
+
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=directory_descriptor,
+        )
+    except OSError as error:
+        raise SnapshotError(f"{label} must be a regular file: {name}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SnapshotError(f"{label} must be a regular file: {name}")
+        return descriptor, metadata
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _existing_regular_file_at(
+    directory_descriptor: int,
+    name: str,
+    label: str,
+) -> bool:
+    """Return whether a descriptor-relative final name is absent or regular."""
+
+    try:
+        metadata = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise SnapshotError(f"could not inspect {label}: {name}: {error}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SnapshotError(f"{label} must be a regular file: {name}")
+    return True
+
+
+def _create_staged_file_at(directory_descriptor: int, suffix: str) -> tuple[str, int]:
+    """Create a private staging member by name relative to the verified fd."""
+
+    for _ in range(100):
+        name = f".data-snapshot-{secrets.token_hex(16)}{suffix}"
+        try:
+            descriptor = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise SnapshotError(f"could not create staged snapshot member: {error}") from error
+        return name, descriptor
+    raise SnapshotError("could not allocate a unique staged snapshot member")
+
+
+def _fsync_regular_file_at(directory_descriptor: int, name: str, label: str) -> None:
+    """Flush a no-follow staged regular file before publishing its name."""
+
+    descriptor, _ = _open_regular_file_at(directory_descriptor, name, label)
+    try:
+        os.fsync(descriptor)
+    except OSError as error:
+        raise SnapshotError(f"could not fsync {label}: {name}: {error}") from error
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory_at(directory_descriptor: int, label: str) -> None:
+    """Flush the verified output directory after a descriptor-relative change."""
+
+    if not stat.S_ISDIR(os.fstat(directory_descriptor).st_mode):
+        raise SnapshotError(f"{label} must be a real directory")
+    try:
+        os.fsync(directory_descriptor)
+    except OSError as error:
+        raise SnapshotError(f"could not fsync {label}: {error}") from error
+
+
+def _replace_at(directory_descriptor: int, source_name: str, target_name: str) -> None:
+    """Rename a staged member without resolving either name through a path."""
+
+    try:
+        os.replace(
+            source_name,
+            target_name,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+    except (NotImplementedError, TypeError) as error:
+        raise SnapshotError(
+            "secure directory-descriptor publication is unavailable"
+        ) from error
+    except OSError as error:
+        raise SnapshotError(f"could not publish snapshot member: {error}") from error
+
+
+def _unlink_at(directory_descriptor: int, name: str) -> None:
+    """Unlink only the named entry in the verified output directory."""
+
+    try:
+        os.unlink(name, dir_fd=directory_descriptor)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise SnapshotError(f"could not remove snapshot member: {name}: {error}") from error
 
 
 def _manifest_names(dataset_sha256: str) -> tuple[str, str]:
@@ -316,12 +735,9 @@ def _require_exact_keys(
     return value
 
 
-def _load_manifest(path: Path) -> dict[str, Any]:
-    metadata = _regular_file(path, "manifest")
-    if metadata.st_size > MAX_MANIFEST_BYTES:
-        raise SnapshotError("manifest is too large")
+def _parse_manifest(serialized: str, manifest_name: str) -> dict[str, Any]:
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
+        parsed = json.loads(serialized)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SnapshotError(f"manifest is not valid UTF-8 JSON: {error}") from error
     manifest = _require_exact_keys(
@@ -397,11 +813,44 @@ def _load_manifest(path: Path) -> dict[str, Any]:
         raise SnapshotError(
             "manifest archive filename does not match dataset sha256"
         )
-    if path.name != expected_manifest_name:
+    if manifest_name != expected_manifest_name:
         raise SnapshotError(
             "manifest sidecar filename does not match dataset sha256"
         )
     return manifest
+
+
+def _load_manifest(path: Path) -> dict[str, Any]:
+    metadata = _regular_file(path, "manifest")
+    if metadata.st_size > MAX_MANIFEST_BYTES:
+        raise SnapshotError("manifest is too large")
+    try:
+        serialized = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise SnapshotError(f"manifest is not valid UTF-8 JSON: {error}") from error
+    return _parse_manifest(serialized, path.name)
+
+
+def _load_manifest_at(directory_descriptor: int, name: str) -> dict[str, Any]:
+    descriptor, metadata = _open_regular_file_at(
+        directory_descriptor,
+        name,
+        "manifest",
+    )
+    try:
+        if metadata.st_size > MAX_MANIFEST_BYTES:
+            raise SnapshotError("manifest is too large")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            descriptor = -1
+            serialized = handle.read(MAX_MANIFEST_BYTES + 1)
+        if len(serialized.encode("utf-8")) > MAX_MANIFEST_BYTES:
+            raise SnapshotError("manifest is too large")
+    except UnicodeDecodeError as error:
+        raise SnapshotError(f"manifest is not valid UTF-8 JSON: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return _parse_manifest(serialized, name)
 
 
 def _validate_member_name(name: str) -> None:
@@ -454,7 +903,7 @@ def _copy_exact(
 
 
 def _verify_archive_contents(
-    archive_path: Path,
+    archive_source: Path | BinaryIO,
     manifest: dict[str, Any],
     extract_root: Optional[Path],
 ) -> None:
@@ -468,7 +917,12 @@ def _verify_archive_contents(
     content_bytes = 0
 
     try:
-        with tarfile.open(archive_path, mode="r:gz") as archive:
+        if isinstance(archive_source, Path):
+            archive_context = tarfile.open(archive_source, mode="r:gz")
+        else:
+            archive_source.seek(0)
+            archive_context = tarfile.open(fileobj=archive_source, mode="r:gz")
+        with archive_context as archive:
             for member in archive:
                 _validate_member_scope(member)
                 if member.name in seen_names:
@@ -636,6 +1090,44 @@ def verify_snapshot(
     return summary
 
 
+def _verify_snapshot_at(
+    *,
+    directory_descriptor: int,
+    archive_name: str,
+    manifest_name: str,
+    max_archive_bytes: int,
+) -> dict[str, Any]:
+    """Verify a pair using only names resolved from the verified directory fd."""
+
+    archive_descriptor, archive_metadata = _open_regular_file_at(
+        directory_descriptor,
+        archive_name,
+        "archive",
+    )
+    try:
+        if stat.S_IMODE(archive_metadata.st_mode) != 0o600:
+            raise SnapshotError("archive mode must be exactly 0600")
+        manifest = _load_manifest_at(directory_descriptor, manifest_name)
+        if archive_name != manifest["archive"]["filename"]:
+            raise SnapshotError("archive filename does not match manifest")
+        if archive_metadata.st_size > max_archive_bytes:
+            raise SnapshotError(
+                f"archive is too large: {archive_metadata.st_size} > "
+                f"{max_archive_bytes} bytes"
+            )
+        if archive_metadata.st_size != manifest["archive"]["bytes"]:
+            raise SnapshotError("archive byte count does not match manifest")
+        with os.fdopen(archive_descriptor, "rb") as archive:
+            archive_descriptor = -1
+            if _sha256_handle(archive) != manifest["archive"]["sha256"]:
+                raise SnapshotError("archive checksum does not match manifest")
+            _verify_archive_contents(archive, manifest, None)
+        return manifest
+    finally:
+        if archive_descriptor >= 0:
+            os.close(archive_descriptor)
+
+
 def pack_snapshot(
     *,
     root: Path,
@@ -653,105 +1145,235 @@ def pack_snapshot(
     root = Path(root).resolve()
     _regular_directory(root, "snapshot root")
     output_dir = Path(output_dir).absolute()
+    try:
+        output_metadata = output_dir.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise SnapshotError(
+            f"could not inspect output directory: {output_dir}: {error}"
+        ) from error
+    else:
+        if stat.S_ISLNK(output_metadata.st_mode):
+            raise SnapshotError(f"output directory must be a real directory: {output_dir}")
     data_root = root / "data"
     cache_root = root / ".cache"
-    if output_dir in {data_root, cache_root} or any(
-        parent in {data_root, cache_root} for parent in output_dir.parents
+    try:
+        # Canonicalize only the parent. The final component is intentionally
+        # appended without resolution so a symlink inserted after the initial
+        # lstat is rejected by descriptor-anchored no-follow traversal rather
+        # than followed into an arbitrary target.
+        resolved_output_parent = output_dir.parent.resolve(strict=False)
+        resolved_output_dir = resolved_output_parent / output_dir.name
+    except (OSError, RuntimeError) as error:
+        raise SnapshotError(
+            f"could not resolve output directory: {output_dir}: {error}"
+        ) from error
+    protected_roots = (data_root, cache_root)
+    if any(
+        _path_is_at_or_below(candidate, protected_roots)
+        for candidate in (output_dir, resolved_output_dir)
     ):
         raise SnapshotError("output directory cannot be inside snapshot data")
-    if output_dir.exists():
-        _regular_directory(output_dir, "output directory")
-    else:
-        output_dir.mkdir(parents=True)
+    _ensure_durable_directory(resolved_output_dir, "output directory")
+    try:
+        # Resolve the mutable raw alias without requiring its final name to
+        # exist: canonical creation may have intentionally left a retargeted
+        # alias without that final component.
+        prepared_output_dir = output_dir.resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        raise SnapshotError(
+            f"could not resolve prepared output directory: {output_dir}: {error}"
+        ) from error
+    if prepared_output_dir != resolved_output_dir:
+        if _path_is_at_or_below(prepared_output_dir, protected_roots):
+            raise SnapshotError("output directory cannot be inside snapshot data")
+        raise SnapshotError("output directory changed while preparing snapshot")
+    prepared_output_identity = _directory_identity(
+        prepared_output_dir,
+        "prepared output directory",
+    )
 
     entries = _scan_source(root)
     dataset_sha256, file_count, content_bytes = _source_content_digest(entries)
+    insider_files = [
+        entry
+        for entry in entries
+        if not entry.is_dir
+        and entry.name.startswith(f"{PRIVATE_INSIDER_PREFIX}/")
+    ]
+    insider_file_count = len(insider_files)
+    insider_content_bytes = sum(entry.size for entry in insider_files)
     dataset_id = dataset_sha256
     archive_name, manifest_name = _manifest_names(dataset_sha256)
     archive_path = output_dir / archive_name
     manifest_path = output_dir / manifest_name
-    if archive_path.exists() or archive_path.is_symlink():
-        raise SnapshotError(f"snapshot archive already exists: {archive_path}")
-    if manifest_path.exists() or manifest_path.is_symlink():
-        raise SnapshotError(f"snapshot manifest already exists: {manifest_path}")
-
-    temporary_archive: Optional[Path] = None
-    temporary_manifest: Optional[Path] = None
+    output_descriptor = _open_verified_output_directory(
+        prepared_output_dir,
+        "output directory",
+    )
     try:
-        with tempfile.NamedTemporaryFile(
-            prefix=".data-snapshot-",
-            suffix=ARCHIVE_SUFFIX,
-            dir=output_dir,
-            delete=False,
-        ) as temporary:
-            temporary_archive = Path(temporary.name)
-        temporary_archive.unlink()
-        _write_archive(entries, temporary_archive)
-        archive_bytes = temporary_archive.stat().st_size
-        if archive_bytes > max_archive_bytes:
-            raise SnapshotError(
-                f"archive is too large: {archive_bytes} > "
-                f"{max_archive_bytes} bytes"
+        if (
+            _directory_descriptor_identity(output_descriptor, "output directory")
+            != prepared_output_identity
+        ):
+            raise SnapshotError("output directory changed while preparing snapshot")
+        with _locked_output_directory(output_descriptor):
+            _revalidate_output_directory(output_dir, output_descriptor)
+            archive_exists = _existing_regular_file_at(
+                output_descriptor,
+                archive_name,
+                "snapshot archive",
             )
-        archive_sha256 = _sha256_file(temporary_archive)
-        manifest = {
-            "archive": {
-                "bytes": archive_bytes,
-                "filename": archive_name,
-                "sha256": archive_sha256,
-            },
-            "contract_version": CONTRACT_VERSION,
-            "created_at": created_at
-            or datetime.now(timezone.utc).replace(microsecond=0).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            ),
-            "dataset": {
-                "bytes": content_bytes,
-                "file_count": file_count,
-                "sha256": dataset_sha256,
-            },
-            "dataset_id": dataset_id,
-            "source_sha": source_sha,
-        }
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            prefix=".data-snapshot-",
-            suffix=MANIFEST_SUFFIX,
-            dir=output_dir,
-            delete=False,
-        ) as temporary:
-            temporary_manifest = Path(temporary.name)
-            json.dump(manifest, temporary, sort_keys=True, separators=(",", ":"))
-            temporary.write("\n")
+            manifest_exists = _existing_regular_file_at(
+                output_descriptor,
+                manifest_name,
+                "snapshot manifest",
+            )
 
-        # Verify the materialized bytes before exposing either final asset.
-        verification_archive = output_dir / archive_name
-        verification_manifest = output_dir / manifest_name
-        os.replace(temporary_archive, verification_archive)
-        temporary_archive = None
-        try:
-            os.replace(temporary_manifest, verification_manifest)
-            temporary_manifest = None
-            verify_snapshot(
-                archive_path=verification_archive,
-                manifest_path=verification_manifest,
-                max_archive_bytes=max_archive_bytes,
-            )
-        except Exception:
-            verification_archive.unlink(missing_ok=True)
-            verification_manifest.unlink(missing_ok=True)
-            raise
+            if archive_exists and manifest_exists:
+                # Content-addressed names make a complete pair immutable:
+                # adopt it only when it is the exact requested transaction.
+                manifest = _verify_snapshot_at(
+                    directory_descriptor=output_descriptor,
+                    archive_name=archive_name,
+                    manifest_name=manifest_name,
+                    max_archive_bytes=max_archive_bytes,
+                )
+                if manifest["source_sha"] != source_sha or (
+                    created_at is not None and manifest["created_at"] != created_at
+                ):
+                    raise SnapshotError("completed snapshot pair does not match request")
+                _fsync_directory_at(output_descriptor, "output directory")
+                _revalidate_output_directory(output_dir, output_descriptor)
+            else:
+                if archive_exists:
+                    _unlink_at(output_descriptor, archive_name)
+                if manifest_exists:
+                    _unlink_at(output_descriptor, manifest_name)
+                if archive_exists or manifest_exists:
+                    # Persist the empty pair state before rebuilding it after a crash.
+                    _fsync_directory_at(output_descriptor, "output directory")
+
+                temporary_archive: Optional[str] = None
+                temporary_manifest: Optional[str] = None
+                published_archive = False
+                published_manifest = False
+                try:
+                    temporary_archive, archive_descriptor = _create_staged_file_at(
+                        output_descriptor,
+                        ARCHIVE_SUFFIX,
+                    )
+                    try:
+                        _write_archive(entries, archive_descriptor)
+                    finally:
+                        os.close(archive_descriptor)
+                    _fsync_regular_file_at(
+                        output_descriptor,
+                        temporary_archive,
+                        "staged archive",
+                    )
+                    staged_descriptor, staged_metadata = _open_regular_file_at(
+                        output_descriptor,
+                        temporary_archive,
+                        "staged archive",
+                    )
+                    try:
+                        archive_bytes = staged_metadata.st_size
+                        with os.fdopen(staged_descriptor, "rb") as staged_archive:
+                            staged_descriptor = -1
+                            archive_sha256 = _sha256_handle(staged_archive)
+                    finally:
+                        if staged_descriptor >= 0:
+                            os.close(staged_descriptor)
+                    if archive_bytes > max_archive_bytes:
+                        raise SnapshotError(
+                            f"archive is too large: {archive_bytes} > "
+                            f"{max_archive_bytes} bytes"
+                        )
+                    manifest = {
+                        "archive": {
+                            "bytes": archive_bytes,
+                            "filename": archive_name,
+                            "sha256": archive_sha256,
+                        },
+                        "contract_version": CONTRACT_VERSION,
+                        "created_at": created_at
+                        or datetime.now(timezone.utc)
+                        .replace(microsecond=0)
+                        .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "dataset": {
+                            "bytes": content_bytes,
+                            "file_count": file_count,
+                            "sha256": dataset_sha256,
+                        },
+                        "dataset_id": dataset_id,
+                        "source_sha": source_sha,
+                    }
+                    temporary_manifest, manifest_descriptor = _create_staged_file_at(
+                        output_descriptor,
+                        MANIFEST_SUFFIX,
+                    )
+                    with os.fdopen(
+                        manifest_descriptor,
+                        "w",
+                        encoding="utf-8",
+                    ) as temporary:
+                        manifest_descriptor = -1
+                        json.dump(
+                            manifest,
+                            temporary,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        temporary.write("\n")
+                    _fsync_regular_file_at(
+                        output_descriptor,
+                        temporary_manifest,
+                        "staged manifest",
+                    )
+
+                    # Each name becomes durable before publishing the next member.
+                    _replace_at(output_descriptor, temporary_archive, archive_name)
+                    temporary_archive = None
+                    published_archive = True
+                    _fsync_directory_at(output_descriptor, "output directory")
+                    _replace_at(output_descriptor, temporary_manifest, manifest_name)
+                    temporary_manifest = None
+                    published_manifest = True
+                    _fsync_directory_at(output_descriptor, "output directory")
+                    manifest = _verify_snapshot_at(
+                        directory_descriptor=output_descriptor,
+                        archive_name=archive_name,
+                        manifest_name=manifest_name,
+                        max_archive_bytes=max_archive_bytes,
+                    )
+                    _revalidate_output_directory(output_dir, output_descriptor)
+                except Exception:
+                    # Normal failures remove only names relative to the verified
+                    # descriptor. BaseException retains a recoverable partial
+                    # pair for the next call, as before.
+                    if published_archive:
+                        _unlink_at(output_descriptor, archive_name)
+                    if published_manifest:
+                        _unlink_at(output_descriptor, manifest_name)
+                    if published_archive or published_manifest:
+                        _fsync_directory_at(output_descriptor, "output directory")
+                    raise
+                finally:
+                    if temporary_archive is not None:
+                        _unlink_at(output_descriptor, temporary_archive)
+                    if temporary_manifest is not None:
+                        _unlink_at(output_descriptor, temporary_manifest)
     finally:
-        if temporary_archive is not None:
-            temporary_archive.unlink(missing_ok=True)
-        if temporary_manifest is not None:
-            temporary_manifest.unlink(missing_ok=True)
+        os.close(output_descriptor)
 
     summary = _manifest_summary(manifest)
     summary.update(
         {
             "archive_path": str(archive_path),
+            "insider_content_bytes": insider_content_bytes,
+            "insider_file_count": insider_file_count,
             "manifest_filename": manifest_name,
             "manifest_path": str(manifest_path),
         }

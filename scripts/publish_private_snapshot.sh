@@ -69,6 +69,41 @@ if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then
   exit 0
 fi
 
+public_tree_unchanged=false
+active_release_tag=''
+if [ -n "${BASE_PUBLIC_TREE_SHA256:-}" ]; then
+  if [[ ! "$BASE_PUBLIC_TREE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "::error::Restored public tree digest is invalid"
+    exit 1
+  fi
+  current_public_dir=$(mktemp -d "$RUNNER_TEMP/current-public-artifact.XXXXXX")
+  current_public_json=$(
+    python scripts/build_pages_artifact.py \
+      --source-root "$GITHUB_WORKSPACE" \
+      --output "$current_public_dir" \
+      --source-sha 0000000000000000000000000000000000000000 \
+      --dataset-id 0000000000000000000000000000000000000000000000000000000000000000 \
+      --workers 1
+  )
+  echo "$current_public_json" | jq -e . >/dev/null
+  current_public_tree_sha256=$(jq -er '.tree_sha256' <<<"$current_public_json")
+  rm -rf "$current_public_dir"
+  if [[ ! "$current_public_tree_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "::error::Current public artifact returned an invalid tree digest"
+    exit 1
+  fi
+  if [ "$current_public_tree_sha256" = "$BASE_PUBLIC_TREE_SHA256" ]; then
+    public_tree_unchanged=true
+    active_release_json=$(gh api "/repos/$DATA_REPOSITORY/releases/latest")
+    active_release_tag=$(jq -er '.tag_name' <<<"$active_release_json")
+    if [[ ! "$active_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
+       [ "$(jq -r '.draft or .prerelease' <<<"$active_release_json")" != false ]; then
+      echo "::error::The active private dataset release is invalid"
+      exit 1
+    fi
+  fi
+fi
+
 release_tag="dataset-$(date -u +%Y%m%dT%H%M%SZ)-${dataset_id:0:12}"
 archive_name=$(basename "$archive_path")
 manifest_name=$(basename "$manifest_path")
@@ -103,10 +138,26 @@ if [ "$remote_dataset_id" != "$dataset_id" ] ||
   echo "::error::Remote snapshot identity does not match the validated local snapshot"
   exit 1
 fi
-gh release edit "$release_tag" \
-  --repo "$DATA_REPOSITORY" \
-  --draft=false \
-  --latest
+if [ "$public_tree_unchanged" = true ]; then
+  gh release edit "$release_tag" \
+    --repo "$DATA_REPOSITORY" \
+    --draft=false \
+    --latest=false
+  observed_latest_tag=$(
+    gh api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name'
+  )
+  if [ "$observed_latest_tag" != "$active_release_tag" ]; then
+    echo "::error::Private-only snapshot changed the active Pages target"
+    exit 1
+  fi
+  echo "site_changed=false" >> "$GITHUB_OUTPUT"
+else
+  gh release edit "$release_tag" \
+    --repo "$DATA_REPOSITORY" \
+    --draft=false \
+    --latest
+  echo "site_changed=true" >> "$GITHUB_OUTPUT"
+fi
 if [ "$(gh release view "$release_tag" --repo "$DATA_REPOSITORY" --json isDraft --jq '.isDraft')" != false ]; then
   echo "::error::Snapshot release remained a draft after publication"
   exit 1
@@ -114,4 +165,3 @@ fi
 echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
 echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
 echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
-echo "site_changed=true" >> "$GITHUB_OUTPUT"
