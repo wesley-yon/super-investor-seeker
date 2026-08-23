@@ -2806,7 +2806,7 @@ def _amendment_resolution(
     if confidence is not None and len(candidate_accessions) == 1:
         return {
             "accession_number": amendment.accession_number,
-            "effective_accession": candidate_accessions[0],
+            "amends_accession": candidate_accessions[0],
             "confidence": confidence,
             "reason_code": "single_candidate",
             "candidates": candidate_accessions,
@@ -2814,7 +2814,7 @@ def _amendment_resolution(
     reason = "no_candidate" if not candidate_accessions else "ambiguous_candidates"
     return {
         "accession_number": amendment.accession_number,
-        "effective_accession": None,
+        "amends_accession": None,
         "confidence": "unresolved",
         "reason_code": reason,
         "candidates": candidate_accessions,
@@ -2913,7 +2913,7 @@ def reduce_issuer_state(
     ]
     resolution_by_accession = {
         amendment["accession_number"]: {
-            "effective_accession": amendment["effective_accession"],
+            "amends_accession": amendment["amends_accession"],
             "confidence": amendment["confidence"],
             "reason_code": amendment["reason_code"],
             "candidates": amendment["candidates"],
@@ -3505,6 +3505,14 @@ def discover_recent_insider_accessions(
                     stream=True,
                     deadline_monotonic=request_deadline,
                 )
+                try:
+                    final_url = pipeline.sec_response_url(response)
+                    status = pipeline.sec_response_status(response)
+                    if final_url != url or status != 200:
+                        raise ValueError("Atom response binding is invalid")
+                except BaseException:
+                    pipeline.close_sec_response(response)
+                    raise
                 body = pipeline.read_bounded_sec_response(
                     response,
                     max_bytes=MAX_RECENT_INSIDER_ATOM_BYTES,

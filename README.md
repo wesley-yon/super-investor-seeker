@@ -10,10 +10,19 @@ deployment contracts.
 
 ## Local setup
 
+Python 3.11 or newer is required. The machine-readable runtime contract is in
+`pyproject.toml`; automation and reproducible local setup install the checked-in,
+hash-locked dependency sets.
+
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+python3.11 -m venv .venv
+.venv/bin/pip install --require-hashes -r requirements.lock
 ```
+
+For linting and the complete development test environment, install
+`requirements-dev.lock` instead. The range-based `requirements*.txt` files are
+the human-maintained inputs used to refresh those lockfiles with `uv pip
+compile`; they are not automation install targets.
 
 Most unit tests use fixtures and do not require the private corpus:
 

@@ -108,7 +108,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # A queued push/schedule run should converge the live branch, not
           # spend a full pipeline pass on the event's now-stale SHA.
@@ -119,7 +119,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -128,12 +128,12 @@ jobs:
           permission-contents: read
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.lock
 
       - name: Restore latest validated private snapshot
         id: restore_snapshot
@@ -699,7 +699,7 @@ jobs:
       # before publication instead of reusing the restore credential.
       - name: Refresh private data publication credential
         id: publish-data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}

@@ -66,7 +66,7 @@ jobs:
     steps:
       - name: Checkout explicitly requested code target
         if: inputs.code_sha != ''
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.code_sha }}
           fetch-depth: 1
@@ -78,7 +78,7 @@ jobs:
 
       - name: Checkout push code target
         if: inputs.code_sha == '' && github.event_name == 'push'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -90,7 +90,7 @@ jobs:
 
       - name: Checkout live main recovery target
         if: inputs.code_sha == '' && github.event_name != 'push'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: main
           fetch-depth: 1
@@ -117,7 +117,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -240,7 +240,7 @@ jobs:
       pages: write
     steps:
       - name: Checkout exact public code
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.resolve.outputs.code_sha }}
           fetch-depth: 1
@@ -259,7 +259,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -268,12 +268,12 @@ jobs:
           permission-contents: read
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
 
       - name: Install validation dependencies
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.lock
 
       - name: Restore exact validated private snapshot
         env:
@@ -380,10 +380,10 @@ jobs:
           fi
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
       - name: Upload bounded Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: ${{ env.ARTIFACT_DIR }}
           include-hidden-files: true
@@ -407,7 +407,7 @@ jobs:
       page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout live main for stale-deploy guard
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: main
           fetch-depth: 1
@@ -417,7 +417,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -477,7 +477,7 @@ jobs:
 
       - name: Deploy exact validated artifact
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
         with:
           timeout: 600000
 
@@ -576,7 +576,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}

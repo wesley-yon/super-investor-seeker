@@ -1380,7 +1380,11 @@ class GeneratedDataContractTests(unittest.TestCase):
             'echo "migration_only=$migration_only" >> "$GITHUB_OUTPUT"',
             workflow,
         )
-        self.assertIn("actions/create-github-app-token@v3", workflow)
+        self.assertIn(
+            "actions/create-github-app-token@"
+            "bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3",
+            workflow,
+        )
         self.assertIn("python scripts/data_snapshot.py pull", workflow)
         self.assertIn("bash scripts/publish_private_snapshot.sh", workflow)
         self.assertIn("python scripts/data_snapshot.py pack", publisher)
@@ -1500,9 +1504,21 @@ class GeneratedDataContractTests(unittest.TestCase):
         self.assertIn('--dataset-id "$EXPECTED_DATASET_ID"', deployment)
         self.assertIn("Audit the public artifact allowlist", deployment)
         self.assertIn("-f build_type=workflow", deployment)
-        self.assertIn("actions/configure-pages@v6", deployment)
-        self.assertIn("actions/upload-pages-artifact@v5", deployment)
-        self.assertIn("actions/deploy-pages@v5", deployment)
+        self.assertIn(
+            "actions/configure-pages@"
+            "45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6",
+            deployment,
+        )
+        self.assertIn(
+            "actions/upload-pages-artifact@"
+            "fc324d3547104276b827a68afc52ff2a11cc49c9 # v5",
+            deployment,
+        )
+        self.assertIn(
+            "actions/deploy-pages@"
+            "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5",
+            deployment,
+        )
         self.assertIn("id-token: write", deployment)
         self.assertIn(
             '[ "$observed_code_sha" = "$EXPECTED_CODE_SHA" ]',

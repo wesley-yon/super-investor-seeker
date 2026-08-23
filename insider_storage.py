@@ -1621,13 +1621,114 @@ def _validate_approved_issuers(payload: object) -> dict[str, object]:
     return result
 
 
+_ISSUER_STATE_KEYS = {
+    "contract_version", "issuer_cik", "accessions", "owner_groups",
+    "security_classes", "amendments", "unresolved_ambiguities", "generation_digest",
+}
+_CANONICAL_AMENDMENT_KEYS = {
+    "accession_number", "amends_accession", "confidence", "reason_code", "candidates",
+}
+_LEGACY_AMENDMENT_KEYS = {
+    "accession_number", "effective_accession", "confidence", "reason_code", "candidates",
+}
+
+
+def _migrate_legacy_issuer_state(payload: object) -> object:
+    """Safely read the pre-rename v1 amendment key without accepting mixed shapes.
+
+    Issuer state remains contract version 1. New writes must validate the canonical
+    ``amends_accession`` shape; only canonical on-disk v1 state whose every
+    amendment uses the former exact ``effective_accession`` shape is migrated here.
+    The generation digest is deterministically recomputed because the field rename
+    changes its canonical serialization.
+    """
+
+    if (
+        type(payload) is not dict
+        or set(payload) != _ISSUER_STATE_KEYS
+        or type(payload.get("contract_version")) is not int
+        or payload["contract_version"] != ISSUER_STATE_CONTRACT_VERSION
+        or type(payload.get("amendments")) is not list
+    ):
+        return payload
+    amendments = payload["amendments"]
+    if not amendments:
+        return payload
+    migrated_amendments: list[dict[str, object]] = []
+    for amendment in amendments:
+        if type(amendment) is not dict or set(amendment) != _LEGACY_AMENDMENT_KEYS:
+            return payload
+        migrated_amendments.append(
+            {
+                "accession_number": amendment["accession_number"],
+                "amends_accession": amendment["effective_accession"],
+                "confidence": amendment["confidence"],
+                "reason_code": amendment["reason_code"],
+                "candidates": amendment["candidates"],
+            }
+        )
+    accessions = payload["accessions"]
+    if type(accessions) is not list or any(type(accession) is not dict for accession in accessions):
+        return payload
+    try:
+        legacy_resolutions = {
+            amendment["accession_number"]: {
+                "effective_accession": amendment["effective_accession"],
+                "confidence": amendment["confidence"],
+                "reason_code": amendment["reason_code"],
+                "candidates": amendment["candidates"],
+            }
+            for amendment in amendments
+        }
+        legacy_digest = issuer_generation_digest(
+            [
+                {
+                    "accession_number": accession.get("accession_number"),
+                    "parser_version": accession.get("parser_version"),
+                    "normalized_sha256": accession.get("normalized_sha256"),
+                    "amendment_resolution": legacy_resolutions.get(
+                        accession.get("accession_number")
+                    ),
+                }
+                for accession in accessions
+            ]
+        )
+    except (TypeError, ValueError):
+        return payload
+    if payload["generation_digest"] != legacy_digest:
+        return payload
+    resolutions = {
+        amendment["accession_number"]: {
+            "amends_accession": amendment["amends_accession"],
+            "confidence": amendment["confidence"],
+            "reason_code": amendment["reason_code"],
+            "candidates": amendment["candidates"],
+        }
+        for amendment in migrated_amendments
+    }
+    return {
+        **payload,
+        "amendments": migrated_amendments,
+        "generation_digest": issuer_generation_digest(
+            [
+                {
+                    "accession_number": accession.get("accession_number"),
+                    "parser_version": accession.get("parser_version"),
+                    "normalized_sha256": accession.get("normalized_sha256"),
+                    "amendment_resolution": resolutions.get(
+                        accession.get("accession_number")
+                    ),
+                }
+                for accession in accessions
+            ]
+        ),
+    }
+
+
 def _validate_issuer(payload: object, issuer_cik: str) -> dict[str, object]:
     result = _state_exact_keys(
         payload,
-        {
-            "contract_version", "issuer_cik", "accessions", "owner_groups",
-            "security_classes", "amendments", "unresolved_ambiguities", "generation_digest",
-        },
+        _ISSUER_STATE_KEYS,
         version=ISSUER_STATE_CONTRACT_VERSION,
     )
     if _state_cik(result["issuer_cik"], "issuer CIK") != issuer_cik:
@@ -1688,7 +1789,7 @@ def _validate_issuer(payload: object, issuer_cik: str) -> dict[str, object]:
     for entry in _state_list(result["amendments"], "amendments"):
         item = _state_exact_keys(
             entry,
-            {"accession_number", "effective_accession", "confidence", "reason_code", "candidates"},
+            _CANONICAL_AMENDMENT_KEYS,
             contract=False,
         )
         accession = _state_accession(item["accession_number"], "accession")
@@ -1710,10 +1811,10 @@ def _validate_issuer(payload: object, issuer_cik: str) -> dict[str, object]:
         reason = _state_code(
             item["reason_code"], "amendment reason", _AMENDMENT_REASON_CODES
         )
-        effective_value = item["effective_accession"]
-        effective_accession: str | None = None
+        amends_value = item["amends_accession"]
+        amends_accession: str | None = None
         if confidence == "unresolved":
-            if effective_value is not None or reason not in _AMBIGUITY_REASON_CODES:
+            if amends_value is not None or reason not in _AMBIGUITY_REASON_CODES:
                 raise _state_error("unresolved amendment")
             if (reason == "no_candidate" and candidates) or (
                 reason == "ambiguous_candidates" and len(candidates) < 2
@@ -1723,19 +1824,19 @@ def _validate_issuer(payload: object, issuer_cik: str) -> dict[str, object]:
         else:
             if reason not in {"explicit_reference", "single_candidate"}:
                 raise _state_error("resolved amendment")
-            if effective_value is None:
-                raise _state_error("effective accession")
-            effective_accession = _state_accession(
-                effective_value, "effective accession"
+            if amends_value is None:
+                raise _state_error("amends accession")
+            amends_accession = _state_accession(
+                amends_value, "amends accession"
             )
             if (
-                effective_accession not in candidates
-                or effective_accession not in allowed_accessions
+                amends_accession not in candidates
+                or amends_accession not in allowed_accessions
                 or len(candidates) != 1
             ):
-                raise _state_error("effective accession")
+                raise _state_error("amends accession")
         amendment_resolutions[accession] = {
-            "effective_accession": effective_accession,
+            "amends_accession": amends_accession,
             "confidence": confidence,
             "reason_code": reason,
             "candidates": candidates,
@@ -2116,8 +2217,16 @@ class InsiderStateStore:
                 descriptor, target_name, max_bytes=MAX_INSIDER_STATE_BYTES
             )
             parsed = _strict_json_bytes(rendered)
-            validated = _validate_state_payload(kind, identifier, parsed)
-            if canonical_insider_state_json_bytes(validated) != rendered:
+            candidate = (
+                _migrate_legacy_issuer_state(parsed)
+                if kind == "issuer"
+                else parsed
+            )
+            validated = _validate_state_payload(kind, identifier, candidate)
+            if candidate is parsed:
+                if canonical_insider_state_json_bytes(validated) != rendered:
+                    raise _state_error("canonical JSON")
+            elif canonical_insider_state_json_bytes(parsed) != rendered:
                 raise _state_error("canonical JSON")
             return validated
         except (

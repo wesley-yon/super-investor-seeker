@@ -22,11 +22,9 @@ import json
 import os
 import re
 import secrets
-import shutil
 import stat
 import sys
 import tarfile
-import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -40,6 +38,12 @@ from typing import Any, BinaryIO, Iterable, Iterator, Optional
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_VERSION = 1
 DEFAULT_MAX_ARCHIVE_BYTES = 1_932_735_283
+# Extraction ceilings are trusted local policy, never inferred from a manifest.
+# They retain headroom for the known 4.62GB / 65,000-file production snapshot.
+DEFAULT_MAX_CONTENT_BYTES = 8 * 1024 * 1024 * 1024
+DEFAULT_MAX_FILE_COUNT = 100_000
+DEFAULT_MAX_MEMBER_COUNT = 200_000
+DEFAULT_MAX_PATH_COMPONENTS = 64
 MAX_MANIFEST_BYTES = 1_000_000
 MAX_API_RESPONSE_BYTES = 10_000_000
 GITHUB_RETRY_DELAYS_SECONDS = (1, 3)
@@ -72,10 +76,34 @@ CACHE_FILES = (
     Path(".cache/sec_fund_names.json"),
 )
 PRIVATE_INSIDER_PREFIX = "data/insiders/private"
+RESTORE_TRANSACTION_NAME = ".data-snapshot-restore"
+RESTORE_PREPARE_NAME = ".data-snapshot-restore.prepare"
+RESTORE_CLEANUP_NAME = ".data-snapshot-restore.cleanup"
+RESTORE_STATE_NAME = "state.json"
+RESTORE_STATE_TEMP_NAME = ".state.json.tmp"
+RESTORE_CONTRACT_VERSION = 1
+MAX_RESTORE_STATE_BYTES = 16_384
 
 
 class SnapshotError(ValueError):
     """Raised when a snapshot fails a closed validation rule."""
+
+
+@dataclass(frozen=True)
+class SourceIdentity:
+    """The immutable scan-time identity required for a source component."""
+
+    device: int
+    inode: int
+    file_type: int
+    size: int
+    mode: int
+
+
+@dataclass(frozen=True)
+class SourceComponent:
+    name: str
+    identity: SourceIdentity
 
 
 @dataclass(frozen=True)
@@ -84,6 +112,9 @@ class SourceEntry:
     path: Path
     is_dir: bool
     size: int
+    root: Path
+    root_identity: SourceIdentity
+    components: tuple[SourceComponent, ...]
 
 
 def _regular_file(path: Path, label: str) -> os.stat_result:
@@ -111,16 +142,107 @@ def _validate_positive_limit(value: int) -> None:
         raise SnapshotError("maximum archive size must be a positive integer")
 
 
+def _validate_extraction_limits(
+    *,
+    max_content_bytes: int,
+    max_file_count: int,
+    max_member_count: int,
+    max_path_components: int,
+) -> None:
+    """Reject invalid trusted extraction policy before reading an archive."""
+
+    for value, label in (
+        (max_content_bytes, "maximum content bytes"),
+        (max_file_count, "maximum file count"),
+        (max_member_count, "maximum member count"),
+        (max_path_components, "maximum path components"),
+    ):
+        if type(value) is not int or value < 1:
+            raise SnapshotError(f"{label} must be a positive integer")
+
+
+def _preflight_manifest_extraction_limits(
+    manifest: dict[str, Any],
+    *,
+    max_content_bytes: int,
+    max_file_count: int,
+) -> None:
+    """Fail closed on manifest expansion claims before gzip/tar traversal."""
+
+    dataset = manifest["dataset"]
+    if dataset["bytes"] > max_content_bytes:
+        raise SnapshotError("manifest exceeds maximum content bytes")
+    if dataset["file_count"] > max_file_count:
+        raise SnapshotError("manifest exceeds maximum file count")
+
+
+def _source_identity(metadata: os.stat_result) -> SourceIdentity:
+    return SourceIdentity(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        file_type=stat.S_IFMT(metadata.st_mode),
+        size=metadata.st_size,
+        mode=stat.S_IMODE(metadata.st_mode),
+    )
+
+
+def _source_entry(
+    *,
+    root: Path,
+    root_identity: SourceIdentity,
+    path: Path,
+    is_dir: bool,
+    metadata: os.stat_result,
+) -> SourceEntry:
+    """Capture each no-follow component identity without retaining descriptors."""
+
+    components: list[SourceComponent] = []
+    current = root
+    relative = path.relative_to(root)
+    for index, component in enumerate(relative.parts):
+        current /= component
+        component_metadata = (
+            metadata
+            if index == len(relative.parts) - 1
+            else os.stat(current, follow_symlinks=False)
+        )
+        components.append(
+            SourceComponent(component, _source_identity(component_metadata))
+        )
+    return SourceEntry(
+        name=relative.as_posix(),
+        path=path,
+        is_dir=is_dir,
+        size=metadata.st_size if not is_dir else 0,
+        root=root,
+        root_identity=root_identity,
+        components=tuple(components),
+    )
+
+
 def _scan_source(root: Path) -> list[SourceEntry]:
     root = root.resolve()
     data_root = root / "data"
     cache_root = root / ".cache"
-    _regular_directory(data_root, "data directory")
-    _regular_directory(cache_root, "cache directory")
+    root_identity = _source_identity(_regular_directory(root, "snapshot root"))
+    data_metadata = _regular_directory(data_root, "data directory")
+    cache_metadata = _regular_directory(cache_root, "cache directory")
 
     entries = [
-        SourceEntry(name=".cache", path=cache_root, is_dir=True, size=0),
-        SourceEntry(name="data", path=data_root, is_dir=True, size=0),
+        _source_entry(
+            root=root,
+            root_identity=root_identity,
+            path=cache_root,
+            is_dir=True,
+            metadata=cache_metadata,
+        ),
+        _source_entry(
+            root=root,
+            root_identity=root_identity,
+            path=data_root,
+            is_dir=True,
+            metadata=data_metadata,
+        ),
     ]
 
     for current, directory_names, file_names in os.walk(
@@ -140,13 +262,13 @@ def _scan_source(root: Path) -> list[SourceEntry]:
                 raise SnapshotError(
                     f"data contains an unsupported entry: {path}"
                 )
-            relative = path.relative_to(root).as_posix()
             entries.append(
-                SourceEntry(
-                    name=relative,
+                _source_entry(
+                    root=root,
+                    root_identity=root_identity,
                     path=path,
                     is_dir=True,
-                    size=0,
+                    metadata=metadata,
                 )
             )
         for file_name in file_names:
@@ -158,13 +280,13 @@ def _scan_source(root: Path) -> list[SourceEntry]:
                 raise SnapshotError(
                     f"data contains an unsupported entry: {path}"
                 )
-            relative = path.relative_to(root).as_posix()
             entries.append(
-                SourceEntry(
-                    name=relative,
+                _source_entry(
+                    root=root,
+                    root_identity=root_identity,
                     path=path,
                     is_dir=False,
-                    size=metadata.st_size,
+                    metadata=metadata,
                 )
             )
 
@@ -172,11 +294,12 @@ def _scan_source(root: Path) -> list[SourceEntry]:
         path = root / relative
         metadata = _regular_file(path, "required cache file")
         entries.append(
-            SourceEntry(
-                name=relative.as_posix(),
+            _source_entry(
+                root=root,
+                root_identity=root_identity,
                 path=path,
                 is_dir=False,
-                size=metadata.st_size,
+                metadata=metadata,
             )
         )
 
@@ -185,6 +308,46 @@ def _scan_source(root: Path) -> list[SourceEntry]:
     if len(names) != len(set(names)):
         raise SnapshotError("source contains duplicate archive paths")
     return entries
+
+
+def _open_verified_source_entry(entry: SourceEntry) -> int:
+    """Open one scanned entry through checked no-follow component descriptors."""
+
+    if not _directory_fd_capabilities_available():
+        raise SnapshotError("secure source traversal is unavailable")
+    try:
+        descriptor = os.open(
+            entry.root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise SnapshotError(f"could not securely open snapshot root: {error}") from error
+    try:
+        if _source_identity(os.fstat(descriptor)) != entry.root_identity:
+            raise SnapshotError("snapshot root changed after source scan")
+        for index, component in enumerate(entry.components):
+            is_final = index == len(entry.components) - 1
+            flags = os.O_RDONLY | os.O_NOFOLLOW
+            if not is_final or entry.is_dir:
+                flags |= os.O_DIRECTORY
+            child = os.open(component.name, flags, dir_fd=descriptor)
+            try:
+                if _source_identity(os.fstat(child)) != component.identity:
+                    raise SnapshotError(
+                        f"source changed after scan: {entry.name}"
+                    )
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except SnapshotError:
+        os.close(descriptor)
+        raise
+    except OSError as error:
+        os.close(descriptor)
+        raise SnapshotError(f"source changed after scan: {entry.name}") from error
 
 
 def _digest_header(
@@ -209,6 +372,8 @@ def _source_content_digest(entries: Iterable[SourceEntry]) -> tuple[str, int, in
     file_count = 0
     content_bytes = 0
     for entry in entries:
+        descriptor = _open_verified_source_entry(entry)
+        os.close(descriptor)
         _digest_header(
             digest,
             name=entry.name,
@@ -219,7 +384,8 @@ def _source_content_digest(entries: Iterable[SourceEntry]) -> tuple[str, int, in
             continue
         file_count += 1
         content_bytes += entry.size
-        with entry.path.open("rb") as handle:
+        descriptor = _open_verified_source_entry(entry)
+        with os.fdopen(descriptor, "rb") as handle:
             remaining = entry.size
             while remaining:
                 block = handle.read(min(1024 * 1024, remaining))
@@ -296,12 +462,18 @@ def _write_archive(entries: Iterable[SourceEntry], destination: Path | int) -> N
                 format=tarfile.USTAR_FORMAT,
             ) as archive:
                 for entry in entries:
-                    info = _tar_info(entry)
-                    if entry.is_dir:
-                        archive.addfile(info)
-                    else:
-                        with entry.path.open("rb") as source:
-                            archive.addfile(info, source)
+                    descriptor = _open_verified_source_entry(entry)
+                    try:
+                        info = _tar_info(entry)
+                        if entry.is_dir:
+                            archive.addfile(info)
+                        else:
+                            with os.fdopen(descriptor, "rb") as source:
+                                descriptor = -1
+                                archive.addfile(info, source)
+                    finally:
+                        if descriptor >= 0:
+                            os.close(descriptor)
 
 
 def _fsync_regular_file(path: Path, label: str) -> None:
@@ -508,6 +680,7 @@ def _directory_fd_capabilities_available() -> bool:
         and os.mkdir in os.supports_dir_fd
         and os.stat in os.supports_dir_fd
         and os.unlink in os.supports_dir_fd
+        and os.rmdir in os.supports_dir_fd
     )
 
 
@@ -708,6 +881,91 @@ def _unlink_at(directory_descriptor: int, name: str) -> None:
         raise SnapshotError(f"could not remove snapshot member: {name}: {error}") from error
 
 
+def _create_private_directory_at(
+    parent_descriptor: int,
+    prefix: str,
+    label: str,
+) -> tuple[str, int]:
+    """Create and retain a random owner-only sibling directory capability."""
+
+    for _ in range(100):
+        name = f"{prefix}{secrets.token_hex(16)}"
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise SnapshotError(f"could not create {label}: {error}") from error
+        try:
+            descriptor = _open_directory_at(parent_descriptor, name, label)
+            os.fchmod(descriptor, 0o700)
+            _fsync_directory_at(descriptor, label)
+            _fsync_directory_at(parent_descriptor, f"{label} parent")
+            return name, descriptor
+        except BaseException:
+            try:
+                os.rmdir(name, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+            raise
+    raise SnapshotError(f"could not allocate a unique {label}")
+
+
+def _remove_tree_contents_at(directory_descriptor: int, label: str) -> None:
+    """Remove bounded staging contents using only retained directory handles."""
+
+    try:
+        entries = list(os.scandir(directory_descriptor))
+    except OSError as error:
+        raise SnapshotError(f"could not enumerate {label}: {error}") from error
+    for entry in entries:
+        try:
+            metadata = os.stat(
+                entry.name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+            if stat.S_ISDIR(metadata.st_mode):
+                child = _open_directory_at(directory_descriptor, entry.name, label)
+                try:
+                    _remove_tree_contents_at(child, label)
+                    _fsync_directory_at(child, label)
+                finally:
+                    os.close(child)
+                os.rmdir(entry.name, dir_fd=directory_descriptor)
+            elif stat.S_ISREG(metadata.st_mode):
+                os.unlink(entry.name, dir_fd=directory_descriptor)
+            else:
+                raise SnapshotError(f"{label} contains an unsupported entry: {entry.name}")
+        except SnapshotError:
+            raise
+        except OSError as error:
+            raise SnapshotError(f"could not remove {label} entry {entry.name}: {error}") from error
+    _fsync_directory_at(directory_descriptor, label)
+
+
+def _remove_tree_at(parent_descriptor: int, name: str, label: str) -> None:
+    """Remove one real directory entry relative to its retained parent fd."""
+
+    try:
+        child = _open_directory_at(parent_descriptor, name, label)
+    except SnapshotError as error:
+        try:
+            os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise error
+    try:
+        _remove_tree_contents_at(child, label)
+    finally:
+        os.close(child)
+    try:
+        os.rmdir(name, dir_fd=parent_descriptor)
+        _fsync_directory_at(parent_descriptor, f"{label} parent")
+    except OSError as error:
+        raise SnapshotError(f"could not remove {label}: {error}") from error
+
+
 def _manifest_names(dataset_sha256: str) -> tuple[str, str]:
     archive_name = f"{ARCHIVE_PREFIX}{dataset_sha256}{ARCHIVE_SUFFIX}"
     manifest_name = f"{ARCHIVE_PREFIX}{dataset_sha256}{MANIFEST_SUFFIX}"
@@ -868,20 +1126,22 @@ def _load_manifest_at(directory_descriptor: int, name: str) -> dict[str, Any]:
     return _parse_manifest(serialized, name)
 
 
-def _validate_member_name(name: str) -> None:
+def _validate_member_name(name: str, max_path_components: int) -> None:
     if not name or name.startswith("/") or "\\" in name:
         raise SnapshotError(f"unsafe archive path: {name!r}")
     parts = name.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise SnapshotError(f"unsafe archive path: {name!r}")
+    if len(parts) > max_path_components:
+        raise SnapshotError("archive member exceeds maximum path components")
     normalized = PurePosixPath(name).as_posix()
     if normalized != name:
         raise SnapshotError(f"unsafe archive path: {name!r}")
 
 
-def _validate_member_scope(member: tarfile.TarInfo) -> None:
+def _validate_member_scope(member: tarfile.TarInfo, max_path_components: int) -> None:
     name = member.name
-    _validate_member_name(name)
+    _validate_member_name(name, max_path_components)
     cache_names = {path.as_posix() for path in CACHE_FILES}
     if name == "data":
         if not member.isdir():
@@ -917,10 +1177,102 @@ def _copy_exact(
         raise SnapshotError("archive member exceeds its declared size")
 
 
+def _open_archive_member_parent_at(
+    root_descriptor: int,
+    member_name: str,
+    label: str,
+) -> tuple[int, str]:
+    """Resolve an already-validated archive parent through retained fds only."""
+
+    descriptor = os.dup(root_descriptor)
+    try:
+        parts = member_name.split("/")
+        for component in parts[:-1]:
+            child = _open_directory_at(descriptor, component, label)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor, parts[-1]
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _extract_archive_directory_at(
+    root_descriptor: int,
+    member_name: str,
+    mode: int,
+) -> None:
+    parent, name = _open_archive_member_parent_at(
+        root_descriptor,
+        member_name,
+        "archive extraction directory",
+    )
+    try:
+        os.mkdir(name, mode=mode, dir_fd=parent)
+        child = _open_directory_at(parent, name, "archive extraction directory")
+        try:
+            os.fchmod(child, mode)
+            _fsync_directory_at(child, "archive extraction directory")
+        finally:
+            os.close(child)
+        _fsync_directory_at(parent, "archive extraction parent")
+    except FileExistsError as error:
+        raise SnapshotError(f"duplicate archive directory: {member_name}") from error
+    except OSError as error:
+        raise SnapshotError(f"could not extract archive directory {member_name}: {error}") from error
+    finally:
+        os.close(parent)
+
+
+def _extract_archive_file_at(
+    root_descriptor: int,
+    member_name: str,
+    mode: int,
+    source: BinaryIO,
+    digest: "hashlib._Hash",
+    size: int,
+) -> None:
+    parent, name = _open_archive_member_parent_at(
+        root_descriptor,
+        member_name,
+        "archive extraction directory",
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            mode,
+            dir_fd=parent,
+        )
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = -1
+            _copy_exact(source, output, digest, size)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(name, mode, dir_fd=parent, follow_symlinks=False)
+        os.utime(name, (0, 0), dir_fd=parent, follow_symlinks=False)
+        _fsync_regular_file_at(parent, name, "extracted archive file")
+        _fsync_directory_at(parent, "archive extraction parent")
+    except FileExistsError as error:
+        raise SnapshotError(f"duplicate archive file: {member_name}") from error
+    except OSError as error:
+        raise SnapshotError(f"could not extract archive file {member_name}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent)
+
+
 def _verify_archive_contents(
     archive_source: Path | BinaryIO,
     manifest: dict[str, Any],
-    extract_root: Optional[Path],
+    extract_root: Optional[int],
+    *,
+    max_content_bytes: int,
+    max_file_count: int,
+    max_member_count: int,
+    max_path_components: int,
 ) -> None:
     dataset = manifest["dataset"]
     digest = hashlib.sha256()
@@ -929,6 +1281,7 @@ def _verify_archive_contents(
     previous_name: Optional[str] = None
     directories: set[str] = set()
     file_count = 0
+    member_count = 0
     content_bytes = 0
 
     try:
@@ -939,7 +1292,10 @@ def _verify_archive_contents(
             archive_context = tarfile.open(fileobj=archive_source, mode="r:gz")
         with archive_context as archive:
             for member in archive:
-                _validate_member_scope(member)
+                member_count += 1
+                if member_count > max_member_count:
+                    raise SnapshotError("archive exceeds maximum member count")
+                _validate_member_scope(member, max_path_components)
                 if member.name in seen_names:
                     raise SnapshotError(
                         f"duplicate archive member: {member.name}"
@@ -986,13 +1342,19 @@ def _verify_archive_contents(
                         size=0,
                     )
                     if extract_root is not None:
-                        destination = extract_root.joinpath(*member.name.split("/"))
-                        destination.mkdir()
-                        destination.chmod(expected_mode)
+                        _extract_archive_directory_at(
+                            extract_root,
+                            member.name,
+                            expected_mode,
+                        )
                     continue
 
                 file_count += 1
                 content_bytes += member.size
+                if file_count > max_file_count:
+                    raise SnapshotError("archive exceeds maximum file count")
+                if content_bytes > max_content_bytes:
+                    raise SnapshotError("archive exceeds maximum content bytes")
                 if file_count > dataset["file_count"]:
                     raise SnapshotError("archive contains too many files")
                 if content_bytes > dataset["bytes"]:
@@ -1012,11 +1374,15 @@ def _verify_archive_contents(
                     with source:
                         _copy_exact(source, None, digest, member.size)
                 else:
-                    destination = extract_root.joinpath(*member.name.split("/"))
-                    with source, destination.open("xb") as output:
-                        _copy_exact(source, output, digest, member.size)
-                    destination.chmod(expected_mode)
-                    os.utime(destination, (0, 0))
+                    with source:
+                        _extract_archive_file_at(
+                            extract_root,
+                            member.name,
+                            expected_mode,
+                            source,
+                            digest,
+                            member.size,
+                        )
     except SnapshotError:
         raise
     except (tarfile.TarError, EOFError, OSError) as error:
@@ -1042,21 +1408,64 @@ def _verify_archive_contents(
         raise SnapshotError("archive content digest does not match manifest")
 
 
+def _fsync_extracted_tree(root_descriptor: int) -> None:
+    """Persist extracted child directories before their root can be renamed."""
+
+    try:
+        entries = list(os.scandir(root_descriptor))
+    except OSError as error:
+        raise SnapshotError(f"could not enumerate extracted archive directory: {error}") from error
+    for entry in entries:
+        metadata = os.stat(
+            entry.name,
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+        if stat.S_ISDIR(metadata.st_mode):
+            child = _open_directory_at(
+                root_descriptor,
+                entry.name,
+                "extracted archive directory",
+            )
+            try:
+                _fsync_extracted_tree(child)
+            finally:
+                os.close(child)
+        elif not stat.S_ISREG(metadata.st_mode):
+            raise SnapshotError(f"extracted archive contains unsupported entry: {entry.name}")
+    _fsync_directory_at(root_descriptor, "extracted archive directory")
+
+
 def verify_snapshot(
     *,
     archive_path: Path,
     manifest_path: Path,
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+    max_content_bytes: int = DEFAULT_MAX_CONTENT_BYTES,
+    max_file_count: int = DEFAULT_MAX_FILE_COUNT,
+    max_member_count: int = DEFAULT_MAX_MEMBER_COUNT,
+    max_path_components: int = DEFAULT_MAX_PATH_COMPONENTS,
     extract_root: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Verify a snapshot and optionally extract it to a new destination."""
     _validate_positive_limit(max_archive_bytes)
+    _validate_extraction_limits(
+        max_content_bytes=max_content_bytes,
+        max_file_count=max_file_count,
+        max_member_count=max_member_count,
+        max_path_components=max_path_components,
+    )
     archive_path = Path(archive_path)
     manifest_path = Path(manifest_path)
     archive_metadata = _regular_file(archive_path, "archive")
     if stat.S_IMODE(archive_metadata.st_mode) != 0o600:
         raise SnapshotError("archive mode must be exactly 0600")
     manifest = _load_manifest(manifest_path)
+    _preflight_manifest_extraction_limits(
+        manifest,
+        max_content_bytes=max_content_bytes,
+        max_file_count=max_file_count,
+    )
     if archive_path.name != manifest["archive"]["filename"]:
         raise SnapshotError("archive filename does not match manifest")
     if archive_metadata.st_size > max_archive_bytes:
@@ -1069,34 +1478,99 @@ def verify_snapshot(
     if _sha256_file(archive_path) != manifest["archive"]["sha256"]:
         raise SnapshotError("archive checksum does not match manifest")
 
-    extraction_staging: Optional[Path] = None
+    extraction_staging_name: Optional[str] = None
+    extraction_staging_descriptor = -1
+    destination_parent_descriptor = -1
     destination: Optional[Path] = None
     if extract_root is not None:
+        if not _directory_fd_capabilities_available():
+            raise SnapshotError("secure directory-descriptor extraction is unavailable")
         destination = Path(extract_root).absolute()
         if destination.exists() or destination.is_symlink():
             raise SnapshotError(
                 f"extraction destination already exists: {destination}"
             )
-        _regular_directory(destination.parent, "extraction destination parent")
-        extraction_staging = Path(
-            tempfile.mkdtemp(
-                prefix=f".{destination.name}.snapshot-",
-                dir=destination.parent,
-            )
+        parent_identity = _directory_identity(
+            destination.parent,
+            "extraction destination parent",
         )
+        destination_parent_descriptor = _open_verified_output_directory(
+            destination.parent,
+            "extraction destination parent",
+        )
+        if (
+            _directory_descriptor_identity(
+                destination_parent_descriptor,
+                "extraction destination parent",
+            )
+            != parent_identity
+        ):
+            os.close(destination_parent_descriptor)
+            raise SnapshotError("extraction destination parent changed while opening it")
+        try:
+            (
+                extraction_staging_name,
+                extraction_staging_descriptor,
+            ) = _create_private_directory_at(
+                destination_parent_descriptor,
+                f".{destination.name}.snapshot-",
+                "extraction staging directory",
+            )
+        except BaseException:
+            os.close(destination_parent_descriptor)
+            raise
 
     try:
         _verify_archive_contents(
             archive_path,
             manifest,
-            extraction_staging,
+            extraction_staging_descriptor if extraction_staging_name is not None else None,
+            max_content_bytes=max_content_bytes,
+            max_file_count=max_file_count,
+            max_member_count=max_member_count,
+            max_path_components=max_path_components,
         )
-        if extraction_staging is not None and destination is not None:
-            os.replace(extraction_staging, destination)
-            extraction_staging = None
+        if extraction_staging_name is not None and destination is not None:
+            _fsync_extracted_tree(extraction_staging_descriptor)
+            os.close(extraction_staging_descriptor)
+            extraction_staging_descriptor = -1
+            _revalidate_output_directory(
+                destination.parent,
+                destination_parent_descriptor,
+            )
+            try:
+                os.replace(
+                    extraction_staging_name,
+                    destination.name,
+                    src_dir_fd=destination_parent_descriptor,
+                    dst_dir_fd=destination_parent_descriptor,
+                )
+            except (NotImplementedError, TypeError) as error:
+                raise SnapshotError(
+                    "secure directory-descriptor extraction is unavailable"
+                ) from error
+            except OSError as error:
+                raise SnapshotError(f"could not publish extraction: {error}") from error
+            _fsync_directory_at(
+                destination_parent_descriptor,
+                "extraction destination parent",
+            )
+            _revalidate_output_directory(
+                destination.parent,
+                destination_parent_descriptor,
+            )
+            extraction_staging_name = None
     finally:
-        if extraction_staging is not None:
-            shutil.rmtree(extraction_staging, ignore_errors=True)
+        if extraction_staging_descriptor >= 0:
+            os.close(extraction_staging_descriptor)
+        if extraction_staging_name is not None and destination_parent_descriptor >= 0:
+            _remove_tree_at(
+                destination_parent_descriptor,
+                extraction_staging_name,
+                "extraction staging directory",
+            )
+        if destination_parent_descriptor >= 0:
+            os.close(destination_parent_descriptor)
 
     summary = _manifest_summary(manifest)
     summary["verified"] = True
@@ -1111,9 +1585,19 @@ def _verify_snapshot_at(
     archive_name: str,
     manifest_name: str,
     max_archive_bytes: int,
+    max_content_bytes: int = DEFAULT_MAX_CONTENT_BYTES,
+    max_file_count: int = DEFAULT_MAX_FILE_COUNT,
+    max_member_count: int = DEFAULT_MAX_MEMBER_COUNT,
+    max_path_components: int = DEFAULT_MAX_PATH_COMPONENTS,
 ) -> dict[str, Any]:
     """Verify a pair using only names resolved from the verified directory fd."""
 
+    _validate_extraction_limits(
+        max_content_bytes=max_content_bytes,
+        max_file_count=max_file_count,
+        max_member_count=max_member_count,
+        max_path_components=max_path_components,
+    )
     archive_descriptor, archive_metadata = _open_regular_file_at(
         directory_descriptor,
         archive_name,
@@ -1123,6 +1607,11 @@ def _verify_snapshot_at(
         if stat.S_IMODE(archive_metadata.st_mode) != 0o600:
             raise SnapshotError("archive mode must be exactly 0600")
         manifest = _load_manifest_at(directory_descriptor, manifest_name)
+        _preflight_manifest_extraction_limits(
+            manifest,
+            max_content_bytes=max_content_bytes,
+            max_file_count=max_file_count,
+        )
         if archive_name != manifest["archive"]["filename"]:
             raise SnapshotError("archive filename does not match manifest")
         if archive_metadata.st_size > max_archive_bytes:
@@ -1136,7 +1625,15 @@ def _verify_snapshot_at(
             archive_descriptor = -1
             if _sha256_handle(archive) != manifest["archive"]["sha256"]:
                 raise SnapshotError("archive checksum does not match manifest")
-            _verify_archive_contents(archive, manifest, None)
+            _verify_archive_contents(
+                archive,
+                manifest,
+                None,
+                max_content_bytes=max_content_bytes,
+                max_file_count=max_file_count,
+                max_member_count=max_member_count,
+                max_path_components=max_path_components,
+            )
         return manifest
     finally:
         if archive_descriptor >= 0:
@@ -1640,79 +2137,483 @@ def _download_asset(
     )
 
 
-def _validate_restore_targets(root: Path) -> None:
-    data_target = root / "data"
-    if data_target.exists() or data_target.is_symlink():
-        _regular_directory(data_target, "existing data target")
-    cache_root = root / ".cache"
-    if cache_root.exists() or cache_root.is_symlink():
-        _regular_directory(cache_root, "existing cache target")
-    for relative in CACHE_FILES:
-        target = root / relative
-        if target.exists() or target.is_symlink():
-            _regular_file(target, "existing cache target")
+def _download_asset_at(
+    *,
+    asset: dict[str, Any],
+    directory_descriptor: int,
+    name: str,
+    token: str,
+    max_bytes: int,
+) -> None:
+    """Download one release asset through a retained staging directory fd."""
+
+    if "/" in name or name in {"", ".", ".."}:
+        raise SnapshotError("release asset name is unsafe")
+    total = 0
+    for attempt in range(len(GITHUB_RETRY_DELAYS_SECONDS) + 1):
+        descriptor = -1
+        total = 0
+        try:
+            request = _authorized_request(asset["url"], token, "application/octet-stream")
+            with _URL_OPENER.open(request, timeout=120) as response:
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None and int(content_length) > max_bytes:
+                    raise SnapshotError("download exceeds maximum allowed size")
+                descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_descriptor)
+                with os.fdopen(descriptor, "wb") as output:
+                    descriptor = -1
+                    while True:
+                        block = response.read(1024 * 1024)
+                        if not block:
+                            break
+                        total += len(block)
+                        if total > max_bytes:
+                            raise SnapshotError("download exceeds maximum allowed size")
+                        output.write(block)
+                    output.flush()
+                    os.fsync(output.fileno())
+            if total != asset["size"]:
+                raise SnapshotError("downloaded byte count does not match release asset")
+            _fsync_directory_at(directory_descriptor, "pull staging directory")
+            return
+        except SnapshotError:
+            _unlink_at(directory_descriptor, name)
+            raise
+        except urllib.error.HTTPError as error:
+            _unlink_at(directory_descriptor, name)
+            if error.code in GITHUB_RETRY_STATUS_CODES and attempt < len(GITHUB_RETRY_DELAYS_SECONDS):
+                time.sleep(GITHUB_RETRY_DELAYS_SECONDS[attempt])
+                continue
+            raise SnapshotError(f"release asset download failed: {error}") from error
+        except GITHUB_RETRY_EXCEPTIONS as error:
+            _unlink_at(directory_descriptor, name)
+            if attempt < len(GITHUB_RETRY_DELAYS_SECONDS):
+                time.sleep(GITHUB_RETRY_DELAYS_SECONDS[attempt])
+                continue
+            raise SnapshotError(f"release asset download failed: {error}") from error
+        except (OSError, ValueError) as error:
+            _unlink_at(directory_descriptor, name)
+            raise SnapshotError(f"release asset download failed: {error}") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def _restore_transaction_state(
+    *,
+    data_existed: bool,
+    cache_root_existed: bool,
+    cache_files_existed: list[str],
+    phase: str,
+) -> dict[str, Any]:
+    """Return the canonical, durable restore journal payload."""
+
+    return {
+        "cache_files_existed": sorted(cache_files_existed),
+        "cache_root_existed": cache_root_existed,
+        "contract_version": RESTORE_CONTRACT_VERSION,
+        "data_existed": data_existed,
+        "phase": phase,
+    }
+
+
+def _at_metadata(directory_descriptor: int, name: str) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise SnapshotError(f"could not inspect restore entry {name}: {error}") from error
+
+
+def _at_directory(directory_descriptor: int, name: str, label: str) -> bool:
+    metadata = _at_metadata(directory_descriptor, name)
+    if metadata is None:
+        return False
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SnapshotError(f"{label} must be a real directory: {name}")
+    return True
+
+
+def _at_regular_file(directory_descriptor: int, name: str, label: str) -> bool:
+    metadata = _at_metadata(directory_descriptor, name)
+    if metadata is None:
+        return False
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SnapshotError(f"{label} must be a regular file: {name}")
+    return True
+
+
+def _replace_restore_at(
+    source_descriptor: int,
+    source_name: str,
+    target_descriptor: int,
+    target_name: str,
+    label: str,
+) -> None:
+    try:
+        os.replace(
+            source_name,
+            target_name,
+            src_dir_fd=source_descriptor,
+            dst_dir_fd=target_descriptor,
+        )
+    except (NotImplementedError, TypeError) as error:
+        raise SnapshotError("secure directory-descriptor restore is unavailable") from error
+    except OSError as error:
+        raise SnapshotError(f"could not move {label}: {error}") from error
+    _fsync_directory_at(source_descriptor, f"{label} source directory")
+    if target_descriptor != source_descriptor:
+        _fsync_directory_at(target_descriptor, f"{label} target directory")
+
+
+def _restore_cache_names() -> tuple[str, ...]:
+    return tuple(relative.name for relative in CACHE_FILES)
+
+
+def _write_restore_state_at(transaction_descriptor: int, state: dict[str, Any]) -> None:
+    temporary = RESTORE_STATE_TEMP_NAME
+    if _at_regular_file(transaction_descriptor, temporary, "temporary restore journal"):
+        _unlink_at(transaction_descriptor, temporary)
+        _fsync_directory_at(transaction_descriptor, "restore transaction directory")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=transaction_descriptor,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump(state, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_restore_at(
+            transaction_descriptor,
+            temporary,
+            transaction_descriptor,
+            RESTORE_STATE_NAME,
+            "restore journal",
+        )
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _load_restore_state_at(transaction_descriptor: int) -> dict[str, Any]:
+    descriptor, metadata = _open_regular_file_at(
+        transaction_descriptor,
+        RESTORE_STATE_NAME,
+        "restore journal",
+    )
+    try:
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise SnapshotError("restore journal must have mode 0600")
+        if metadata.st_size < 1 or metadata.st_size > MAX_RESTORE_STATE_BYTES:
+            raise SnapshotError("restore journal size is invalid")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            descriptor = -1
+            parsed = json.loads(handle.read(MAX_RESTORE_STATE_BYTES + 1))
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
+        raise SnapshotError(f"restore journal is invalid: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    state = _require_exact_keys(
+        parsed,
+        {"cache_files_existed", "cache_root_existed", "contract_version", "data_existed", "phase"},
+        "restore journal",
+    )
+    if state["contract_version"] != RESTORE_CONTRACT_VERSION or type(state["data_existed"]) is not bool or type(state["cache_root_existed"]) is not bool or state["phase"] not in {"prepared", "committed"}:
+        raise SnapshotError("restore journal contract is invalid")
+    cache_files = state["cache_files_existed"]
+    allowed = {relative.as_posix() for relative in CACHE_FILES}
+    if not isinstance(cache_files, list) or any(not isinstance(value, str) for value in cache_files) or cache_files != sorted(cache_files) or len(cache_files) != len(set(cache_files)) or not set(cache_files).issubset(allowed):
+        raise SnapshotError("restore journal cache file inventory is invalid")
+    if cache_files and not state["cache_root_existed"]:
+        raise SnapshotError("restore journal cache root inventory is invalid")
+    return state
+
+
+def _remove_restore_directory_at(root_descriptor: int, name: str, label: str) -> None:
+    metadata = _at_metadata(root_descriptor, name)
+    if metadata is None:
+        return
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SnapshotError(f"{label} must be a real directory: {name}")
+    _remove_tree_at(root_descriptor, name, label)
+
+
+def _finish_restore_transaction_at(root_descriptor: int, transaction_name: str) -> None:
+    _remove_restore_directory_at(root_descriptor, RESTORE_CLEANUP_NAME, "stale restore cleanup")
+    _replace_restore_at(root_descriptor, transaction_name, root_descriptor, RESTORE_CLEANUP_NAME, "restore transaction")
+    _remove_restore_directory_at(root_descriptor, RESTORE_CLEANUP_NAME, "restore cleanup")
+
+
+def _validate_restore_targets_at(root_descriptor: int) -> None:
+    _at_directory(root_descriptor, "data", "existing data target")
+    cache_exists = _at_directory(root_descriptor, ".cache", "existing cache target")
+    if cache_exists:
+        cache_descriptor = _open_directory_at(root_descriptor, ".cache", "existing cache target")
+        try:
+            for name in _restore_cache_names():
+                _at_regular_file(cache_descriptor, name, "existing cache target")
+        finally:
+            os.close(cache_descriptor)
+
+
+def _open_payload_capability(payload: Path) -> int:
+    descriptor = _open_verified_output_directory(payload, "extracted payload")
+    try:
+        if not _at_directory(descriptor, "data", "extracted data directory") or not _at_directory(descriptor, ".cache", "extracted cache directory"):
+            raise SnapshotError("extracted payload is incomplete")
+        cache_descriptor = _open_directory_at(descriptor, ".cache", "extracted cache directory")
+        try:
+            for name in _restore_cache_names():
+                if not _at_regular_file(cache_descriptor, name, "extracted cache file"):
+                    raise SnapshotError(f"extracted cache file is missing: {name}")
+        finally:
+            os.close(cache_descriptor)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _create_restore_transaction_at(root_descriptor: int, state: dict[str, Any]) -> tuple[str, int]:
+    if _at_metadata(root_descriptor, RESTORE_TRANSACTION_NAME) is not None:
+        raise SnapshotError("an unrecovered restore transaction already exists")
+    _remove_restore_directory_at(root_descriptor, RESTORE_PREPARE_NAME, "stale restore preparation")
+    try:
+        os.mkdir(RESTORE_PREPARE_NAME, mode=0o700, dir_fd=root_descriptor)
+        prepare = _open_directory_at(root_descriptor, RESTORE_PREPARE_NAME, "restore preparation")
+        try:
+            os.fchmod(prepare, 0o700)
+            os.mkdir("backup", mode=0o700, dir_fd=prepare)
+            backup = _open_directory_at(prepare, "backup", "restore backup directory")
+            try:
+                os.fchmod(backup, 0o700)
+                os.mkdir(".cache", mode=0o700, dir_fd=backup)
+                backup_cache = _open_directory_at(backup, ".cache", "restore cache backup directory")
+                try:
+                    os.fchmod(backup_cache, 0o700)
+                    _fsync_directory_at(backup_cache, "restore cache backup directory")
+                finally:
+                    os.close(backup_cache)
+                _fsync_directory_at(backup, "restore backup directory")
+            finally:
+                os.close(backup)
+            _write_restore_state_at(prepare, state)
+            _fsync_directory_at(prepare, "restore preparation directory")
+        finally:
+            os.close(prepare)
+        _replace_restore_at(root_descriptor, RESTORE_PREPARE_NAME, root_descriptor, RESTORE_TRANSACTION_NAME, "restore preparation")
+        return RESTORE_TRANSACTION_NAME, _open_directory_at(root_descriptor, RESTORE_TRANSACTION_NAME, "restore transaction")
+    except BaseException:
+        _remove_restore_directory_at(root_descriptor, RESTORE_PREPARE_NAME, "restore preparation")
+        raise
+
+
+def _remove_restore_data_at(root_descriptor: int) -> None:
+    if _at_directory(root_descriptor, "data", "restore data target"):
+        _remove_tree_at(root_descriptor, "data", "restore data target")
+
+
+def _remove_restore_cache_file_at(cache_descriptor: int, name: str) -> None:
+    if _at_regular_file(cache_descriptor, name, "restore cache target"):
+        _unlink_at(cache_descriptor, name)
+        _fsync_directory_at(cache_descriptor, "restore cache directory")
+
+
+def _rollback_prepared_restore_at(root_descriptor: int, transaction_descriptor: int, state: dict[str, Any]) -> None:
+    backup = _open_directory_at(transaction_descriptor, "backup", "restore backup directory")
+    try:
+        backup_cache = _open_directory_at(backup, ".cache", "restore cache backup directory")
+        try:
+            if state["data_existed"]:
+                if _at_directory(backup, "data", "restore data backup"):
+                    _remove_restore_data_at(root_descriptor)
+                    _replace_restore_at(backup, "data", root_descriptor, "data", "restore data backup")
+                elif not _at_directory(root_descriptor, "data", "existing restore data target"):
+                    raise SnapshotError("restore data backup and target are both missing")
+            else:
+                if _at_metadata(backup, "data") is not None:
+                    raise SnapshotError("unexpected restore data backup exists")
+                _remove_restore_data_at(root_descriptor)
+            existing = set(state["cache_files_existed"])
+            cache_exists = _at_directory(root_descriptor, ".cache", "restore cache root")
+            if (existing or state["cache_root_existed"]) and not cache_exists:
+                os.mkdir(".cache", mode=0o700, dir_fd=root_descriptor)
+                cache_exists = True
+            cache = _open_directory_at(root_descriptor, ".cache", "restore cache root") if cache_exists else -1
+            try:
+                for relative, name in zip(CACHE_FILES, _restore_cache_names()):
+                    if relative.as_posix() in existing:
+                        if _at_regular_file(backup_cache, name, "restore cache backup"):
+                            _remove_restore_cache_file_at(cache, name)
+                            _replace_restore_at(backup_cache, name, cache, name, "restore cache backup")
+                        elif not _at_regular_file(cache, name, "existing restore cache target"):
+                            raise SnapshotError(f"restore cache backup and target are both missing: {relative}")
+                    else:
+                        if _at_metadata(backup_cache, name) is not None:
+                            raise SnapshotError(f"unexpected restore cache backup exists: {relative}")
+                        if cache >= 0:
+                            _remove_restore_cache_file_at(cache, name)
+                if cache >= 0 and not state["cache_root_existed"]:
+                    try:
+                        os.rmdir(".cache", dir_fd=root_descriptor)
+                    except OSError:
+                        pass
+            finally:
+                if cache >= 0:
+                    os.close(cache)
+        finally:
+            os.close(backup_cache)
+    finally:
+        os.close(backup)
+
+
+def _recover_interrupted_restore_locked(
+    root_descriptor: int,
+    named_root: Path | None = None,
+) -> None:
+    if named_root is not None:
+        _revalidate_output_directory(named_root, root_descriptor)
+    _remove_restore_directory_at(root_descriptor, RESTORE_CLEANUP_NAME, "stale restore cleanup")
+    _remove_restore_directory_at(root_descriptor, RESTORE_PREPARE_NAME, "stale restore preparation")
+    if not _at_directory(root_descriptor, RESTORE_TRANSACTION_NAME, "restore transaction"):
+        return
+    transaction = _open_directory_at(root_descriptor, RESTORE_TRANSACTION_NAME, "restore transaction")
+    try:
+        if stat.S_IMODE(os.fstat(transaction).st_mode) != 0o700:
+            raise SnapshotError("restore transaction must have mode 0700")
+        state = _load_restore_state_at(transaction)
+        if state["phase"] == "prepared":
+            _rollback_prepared_restore_at(root_descriptor, transaction, state)
+        else:
+            _validate_restore_targets_at(root_descriptor)
+    finally:
+        os.close(transaction)
+    _finish_restore_transaction_at(root_descriptor, RESTORE_TRANSACTION_NAME)
+
+
+def _replace_payload_locked(
+    root_descriptor: int,
+    payload_descriptor: int,
+    named_root: Path | None = None,
+) -> None:
+    if named_root is not None:
+        _revalidate_output_directory(named_root, root_descriptor)
+    _recover_interrupted_restore_locked(root_descriptor)
+    _validate_restore_targets_at(root_descriptor)
+    data_existed = _at_directory(root_descriptor, "data", "existing data target")
+    cache_existed = _at_directory(root_descriptor, ".cache", "existing cache target")
+    cache = _open_directory_at(root_descriptor, ".cache", "existing cache target") if cache_existed else -1
+    try:
+        existing_cache = [
+            relative.as_posix()
+            for relative, name in zip(CACHE_FILES, _restore_cache_names())
+            if cache >= 0 and _at_regular_file(cache, name, "existing cache target")
+        ]
+    finally:
+        if cache >= 0:
+            os.close(cache)
+    state = _restore_transaction_state(data_existed=data_existed, cache_root_existed=cache_existed, cache_files_existed=existing_cache, phase="prepared")
+    transaction_name: str | None = None
+    transaction = -1
+    try:
+        transaction_name, transaction = _create_restore_transaction_at(root_descriptor, state)
+        backup = _open_directory_at(transaction, "backup", "restore backup directory")
+        try:
+            backup_cache = _open_directory_at(backup, ".cache", "restore cache backup directory")
+            try:
+                if data_existed:
+                    _replace_restore_at(root_descriptor, "data", backup, "data", "existing data")
+                cache = _open_directory_at(root_descriptor, ".cache", "existing cache target") if cache_existed else -1
+                try:
+                    for relative, name in zip(CACHE_FILES, _restore_cache_names()):
+                        if relative.as_posix() in existing_cache:
+                            _replace_restore_at(cache, name, backup_cache, name, f"existing cache file {relative}")
+                finally:
+                    if cache >= 0:
+                        os.close(cache)
+                _replace_restore_at(payload_descriptor, "data", root_descriptor, "data", "new data")
+                if not _at_directory(root_descriptor, ".cache", "restored cache directory"):
+                    os.mkdir(".cache", mode=0o700, dir_fd=root_descriptor)
+                    # Persist the new root entry before a journal can commit it.
+                    _fsync_directory_at(root_descriptor, "restore root")
+                cache = _open_directory_at(root_descriptor, ".cache", "restored cache directory")
+                payload_cache = _open_directory_at(payload_descriptor, ".cache", "extracted cache directory")
+                try:
+                    for relative, name in zip(CACHE_FILES, _restore_cache_names()):
+                        _replace_restore_at(payload_cache, name, cache, name, f"new cache file {relative}")
+                        _fsync_regular_file_at(cache, name, "restored cache file")
+                    _fsync_directory_at(cache, "restored cache directory")
+                finally:
+                    os.close(payload_cache)
+                    os.close(cache)
+            finally:
+                os.close(backup_cache)
+        finally:
+            os.close(backup)
+        _validate_restore_targets_at(root_descriptor)
+        committed = dict(state)
+        committed["phase"] = "committed"
+        if named_root is not None:
+            _revalidate_output_directory(named_root, root_descriptor)
+        _write_restore_state_at(transaction, committed)
+        os.close(transaction)
+        transaction = -1
+        _finish_restore_transaction_at(root_descriptor, transaction_name)
+        if named_root is not None:
+            _revalidate_output_directory(named_root, root_descriptor)
+    except BaseException as error:
+        if transaction >= 0:
+            os.close(transaction)
+        try:
+            _recover_interrupted_restore_locked(root_descriptor)
+        except BaseException as recovery_error:
+            if hasattr(error, "add_note"):
+                error.add_note(f"restore recovery also failed: {recovery_error}")
+        if isinstance(error, Exception):
+            raise SnapshotError(f"snapshot restore failed: {error}") from error
+        raise
+
+
+def _recover_interrupted_restore(root: Path) -> None:
+    root = Path(root)
+    expected_identity = _directory_identity(root, "restore root")
+    descriptor = _open_verified_output_directory(root, "restore root")
+    try:
+        if _directory_descriptor_identity(descriptor, "restore root") != expected_identity:
+            raise SnapshotError("restore root changed while opening it")
+        with _locked_output_directory(descriptor):
+            _recover_interrupted_restore_locked(descriptor, root)
+            _revalidate_output_directory(root, descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _replace_payload(root: Path, payload: Path) -> None:
     """Transactionally replace data and only the allowlisted cache files."""
-    _validate_restore_targets(root)
-    _regular_directory(payload / "data", "extracted data directory")
-    _regular_directory(payload / ".cache", "extracted cache directory")
-    for relative in CACHE_FILES:
-        _regular_file(payload / relative, "extracted cache file")
 
-    backup = payload.parent / "restore-backup"
-    backup.mkdir()
-    moved_old: list[tuple[Path, Path]] = []
-    installed: list[Path] = []
-    cache_root = root / ".cache"
-    cache_root_created = False
+    root = Path(root)
+    expected_identity = _directory_identity(root, "restore root")
+    descriptor = _open_verified_output_directory(root, "restore root")
+    payload_descriptor = -1
     try:
-        data_target = root / "data"
-        if data_target.exists():
-            old_data = backup / "data"
-            os.replace(data_target, old_data)
-            moved_old.append((old_data, data_target))
-        for relative in CACHE_FILES:
-            target = root / relative
-            if target.exists():
-                old_target = backup / relative
-                old_target.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(target, old_target)
-                moved_old.append((old_target, target))
-
-        os.replace(payload / "data", data_target)
-        installed.append(data_target)
-        if not cache_root.exists():
-            cache_root.mkdir()
-            cache_root_created = True
-        for relative in CACHE_FILES:
-            target = root / relative
-            os.replace(payload / relative, target)
-            installed.append(target)
-    except Exception as error:
-        rollback_errors = []
-        for installed_path in reversed(installed):
-            try:
-                if installed_path.is_dir() and not installed_path.is_symlink():
-                    shutil.rmtree(installed_path)
-                else:
-                    installed_path.unlink(missing_ok=True)
-            except OSError as rollback_error:
-                rollback_errors.append(str(rollback_error))
-        for backup_path, target in reversed(moved_old):
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(backup_path, target)
-            except OSError as rollback_error:
-                rollback_errors.append(str(rollback_error))
-        if cache_root_created:
-            try:
-                cache_root.rmdir()
-            except OSError:
-                pass
-        details = f"; rollback errors: {rollback_errors}" if rollback_errors else ""
-        raise SnapshotError(f"snapshot restore failed: {error}{details}") from error
+        if _directory_descriptor_identity(descriptor, "restore root") != expected_identity:
+            raise SnapshotError("restore root changed while opening it")
+        with _locked_output_directory(descriptor):
+            payload_descriptor = _open_payload_capability(Path(payload))
+            _replace_payload_locked(descriptor, payload_descriptor, root)
+            _revalidate_output_directory(root, descriptor)
+    finally:
+        if payload_descriptor >= 0:
+            os.close(payload_descriptor)
+        os.close(descriptor)
 
 
 def pull_snapshot(
@@ -1722,91 +2623,114 @@ def pull_snapshot(
     replace: bool,
     release_tag: Optional[str] = None,
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+    max_content_bytes: int = DEFAULT_MAX_CONTENT_BYTES,
+    max_file_count: int = DEFAULT_MAX_FILE_COUNT,
+    max_member_count: int = DEFAULT_MAX_MEMBER_COUNT,
+    max_path_components: int = DEFAULT_MAX_PATH_COMPONENTS,
     token: Optional[str] = None,
 ) -> dict[str, Any]:
     """Download, verify, and transactionally restore a private release."""
     _validate_positive_limit(max_archive_bytes)
+    _validate_extraction_limits(
+        max_content_bytes=max_content_bytes,
+        max_file_count=max_file_count,
+        max_member_count=max_member_count,
+        max_path_components=max_path_components,
+    )
     if not replace:
         raise SnapshotError("pull requires --replace to modify local data")
     if not REPOSITORY_RE.fullmatch(repository):
         raise SnapshotError("repository must use OWNER/REPO format")
-    root = Path(root).resolve()
-    _regular_directory(root, "restore root")
-    resolved_token = token if token is not None else os.environ.get(TOKEN_ENV)
-    if not resolved_token:
-        raise SnapshotError(f"{TOKEN_ENV} is not set")
-
-    release = _resolve_release(
-        repository=repository,
-        release_tag=release_tag,
-        token=resolved_token,
+    root = Path(root).absolute()
+    root_identity = _directory_identity(root, "restore root")
+    staging_parent_descriptor = _open_verified_output_directory(
+        root.parent,
+        "pull staging parent",
     )
-    assets = release["assets"]
-    manifest_asset = _find_asset(assets, suffix=MANIFEST_SUFFIX)
-    with tempfile.TemporaryDirectory(
-        prefix=".data-snapshot-pull-",
-        dir=root.parent,
-    ) as temporary_directory:
-        temporary_root = Path(temporary_directory)
-        manifest_path = temporary_root / manifest_asset["name"]
-        _download_asset(
-            asset=manifest_asset,
-            destination=manifest_path,
-            token=resolved_token,
-            max_bytes=MAX_MANIFEST_BYTES,
+    root_descriptor = -1
+    staging_descriptor = -1
+    staging_name: str | None = None
+    try:
+        root_descriptor = _open_directory_at(
+            staging_parent_descriptor,
+            root.name,
+            "restore root",
         )
-        manifest = _load_manifest(manifest_path)
-        archive_asset = _find_asset(
-            assets,
-            name=manifest["archive"]["filename"],
+        if _directory_descriptor_identity(root_descriptor, "restore root") != root_identity:
+            raise SnapshotError("restore root changed while opening it")
+    except BaseException:
+        os.close(staging_parent_descriptor)
+        raise
+    try:
+        resolved_token = token if token is not None else os.environ.get(TOKEN_ENV)
+        if not resolved_token:
+            raise SnapshotError(f"{TOKEN_ENV} is not set")
+        release = _resolve_release(repository=repository, release_tag=release_tag, token=resolved_token)
+        assets = release["assets"]
+        manifest_asset = _find_asset(assets, suffix=MANIFEST_SUFFIX)
+        staging_name, staging_descriptor = _create_private_directory_at(
+            staging_parent_descriptor,
+            ".data-snapshot-pull-",
+            "pull staging directory",
         )
-        asset_names = [
-            asset.get("name") if isinstance(asset, dict) else None
-            for asset in assets
-        ]
-        required_asset_names = {
-            manifest_asset["name"],
-            archive_asset["name"],
-        }
+        _download_asset_at(asset=manifest_asset, directory_descriptor=staging_descriptor, name=manifest_asset["name"], token=resolved_token, max_bytes=MAX_MANIFEST_BYTES)
+        manifest = _load_manifest_at(staging_descriptor, manifest_asset["name"])
+        archive_asset = _find_asset(assets, name=manifest["archive"]["filename"])
+        asset_names = [asset.get("name") if isinstance(asset, dict) else None for asset in assets]
+        required_asset_names = {manifest_asset["name"], archive_asset["name"]}
         allowed_asset_names = required_asset_names | {"pages-deployment.json"}
-        if (
-            len(asset_names) != len(set(asset_names))
-            or not required_asset_names.issubset(set(asset_names))
-            or not set(asset_names).issubset(allowed_asset_names)
-        ):
-            raise SnapshotError(
-                "release assets must be the snapshot archive and manifest, "
-                "with only an optional pages-deployment.json marker"
-            )
+        if len(asset_names) != len(set(asset_names)) or not required_asset_names.issubset(set(asset_names)) or not set(asset_names).issubset(allowed_asset_names):
+            raise SnapshotError("release assets must be the snapshot archive and manifest, with only an optional pages-deployment.json marker")
         if archive_asset["size"] != manifest["archive"]["bytes"]:
-            raise SnapshotError(
-                "release archive asset size does not match manifest"
-            )
-        archive_path = temporary_root / archive_asset["name"]
-        _download_asset(
-            asset=archive_asset,
-            destination=archive_path,
-            token=resolved_token,
-            max_bytes=max_archive_bytes,
-        )
-        payload = temporary_root / "payload"
-        summary = verify_snapshot(
-            archive_path=archive_path,
-            manifest_path=manifest_path,
+            raise SnapshotError("release archive asset size does not match manifest")
+        _download_asset_at(asset=archive_asset, directory_descriptor=staging_descriptor, name=archive_asset["name"], token=resolved_token, max_bytes=max_archive_bytes)
+        _verify_snapshot_at(
+            directory_descriptor=staging_descriptor,
+            archive_name=archive_asset["name"],
+            manifest_name=manifest_asset["name"],
             max_archive_bytes=max_archive_bytes,
-            extract_root=payload,
+            max_content_bytes=max_content_bytes,
+            max_file_count=max_file_count,
+            max_member_count=max_member_count,
+            max_path_components=max_path_components,
         )
-        _replace_payload(root, payload)
-
-    summary.pop("extract_root", None)
-    summary.update(
-        {
-            "release_tag": release["tag_name"],
-            "repository": repository,
-            "restored_root": str(root),
-        }
-    )
-    return summary
+        os.mkdir("payload", mode=0o700, dir_fd=staging_descriptor)
+        payload_descriptor = _open_directory_at(staging_descriptor, "payload", "pull payload")
+        try:
+            archive_descriptor, _ = _open_regular_file_at(staging_descriptor, archive_asset["name"], "archive")
+            try:
+                with os.fdopen(archive_descriptor, "rb") as archive:
+                    archive_descriptor = -1
+                    _verify_archive_contents(
+                        archive,
+                        manifest,
+                        payload_descriptor,
+                        max_content_bytes=max_content_bytes,
+                        max_file_count=max_file_count,
+                        max_member_count=max_member_count,
+                        max_path_components=max_path_components,
+                    )
+            finally:
+                if archive_descriptor >= 0:
+                    os.close(archive_descriptor)
+            _fsync_extracted_tree(payload_descriptor)
+            with _locked_output_directory(root_descriptor):
+                _replace_payload_locked(root_descriptor, payload_descriptor, root)
+                _revalidate_output_directory(root, root_descriptor)
+        finally:
+            os.close(payload_descriptor)
+        summary = _manifest_summary(manifest)
+        summary.pop("extract_root", None)
+        summary.update({"release_tag": release["tag_name"], "repository": repository, "restored_root": str(root)})
+        return summary
+    finally:
+        if staging_descriptor >= 0:
+            os.close(staging_descriptor)
+        if staging_name is not None:
+            _remove_tree_at(staging_parent_descriptor, staging_name, "pull staging directory")
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        os.close(staging_parent_descriptor)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1832,6 +2756,10 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_ARCHIVE_BYTES,
     )
+    verify.add_argument("--max-content-bytes", type=int, default=DEFAULT_MAX_CONTENT_BYTES)
+    verify.add_argument("--max-file-count", type=int, default=DEFAULT_MAX_FILE_COUNT)
+    verify.add_argument("--max-member-count", type=int, default=DEFAULT_MAX_MEMBER_COUNT)
+    verify.add_argument("--max-path-components", type=int, default=DEFAULT_MAX_PATH_COMPONENTS)
 
     pull = commands.add_parser(
         "pull",
@@ -1846,6 +2774,10 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_ARCHIVE_BYTES,
     )
+    pull.add_argument("--max-content-bytes", type=int, default=DEFAULT_MAX_CONTENT_BYTES)
+    pull.add_argument("--max-file-count", type=int, default=DEFAULT_MAX_FILE_COUNT)
+    pull.add_argument("--max-member-count", type=int, default=DEFAULT_MAX_MEMBER_COUNT)
+    pull.add_argument("--max-path-components", type=int, default=DEFAULT_MAX_PATH_COMPONENTS)
     return parser
 
 
@@ -1864,6 +2796,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 archive_path=args.archive,
                 manifest_path=args.manifest,
                 max_archive_bytes=args.max_archive_bytes,
+                max_content_bytes=args.max_content_bytes,
+                max_file_count=args.max_file_count,
+                max_member_count=args.max_member_count,
+                max_path_components=args.max_path_components,
                 extract_root=args.extract_root,
             )
         else:
@@ -1873,6 +2809,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 release_tag=args.release_tag,
                 replace=args.replace,
                 max_archive_bytes=args.max_archive_bytes,
+                max_content_bytes=args.max_content_bytes,
+                max_file_count=args.max_file_count,
+                max_member_count=args.max_member_count,
+                max_path_components=args.max_path_components,
             )
     except (SnapshotError, OSError) as error:
         print(

@@ -1,0 +1,15 @@
+[project]
+name = "super-investor-seeker"
+version = "0.0.0"
+description = "SEC 13F and Section 16 ingestion and static publishing pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "lxml>=6.1.0,<7",
+  "requests>=2.31.0,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff==0.16.3",
+]

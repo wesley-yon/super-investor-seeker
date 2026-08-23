@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from typing import Any
 from unittest.mock import patch
 
+import insider_pipeline
 from insider_contract import InsiderContractError, canonical_insider_json_bytes
 from insider_pipeline import (
     InsiderStateStore as PipelineInsiderStateStore,
@@ -89,7 +90,7 @@ def issuer_generation_digest(
 ) -> str:
     resolution_by_accession = {
         amendment["accession_number"]: {
-            "effective_accession": amendment["effective_accession"],
+            "amends_accession": amendment["amends_accession"],
             "confidence": amendment["confidence"],
             "reason_code": amendment["reason_code"],
             "candidates": amendment["candidates"],
@@ -3346,7 +3347,7 @@ class InsiderPrivateStateTests(unittest.TestCase):
             store_backfill_state_for_test(
                 InsiderStateStore(Path(tmpdir)), duplicate_headers
             )
-        amendment = {"accession_number": ACCESSION, "effective_accession": "0000000001-26-000002", "confidence": "high", "reason_code": "single_candidate", "candidates": ["0000000001-26-000003"]}
+        amendment = {"accession_number": ACCESSION, "amends_accession": "0000000001-26-000002", "confidence": "high", "reason_code": "single_candidate", "candidates": ["0000000001-26-000003"]}
         invalid_issuer = with_valid_issuer_generation_digest(
             {**issuer, "amendments": [amendment]}
         )
@@ -3727,7 +3728,7 @@ class InsiderPrivateStateTests(unittest.TestCase):
             "amendments": [
                 {
                     "accession_number": ACCESSION,
-                    "effective_accession": accession_two,
+                    "amends_accession": accession_two,
                     "confidence": "high",
                     "reason_code": "single_candidate",
                     "candidates": [accession_two],
@@ -3745,7 +3746,7 @@ class InsiderPrivateStateTests(unittest.TestCase):
 
         unresolved_amendment = {
             "accession_number": ACCESSION,
-            "effective_accession": None,
+            "amends_accession": None,
             "confidence": "unresolved",
             "reason_code": "ambiguous_candidates",
             "candidates": [accession_two, accession_three],
@@ -3792,7 +3793,7 @@ class InsiderPrivateStateTests(unittest.TestCase):
                 "amendments": [
                     {
                         "accession_number": ACCESSION,
-                        "effective_accession": ACCESSION,
+                        "amends_accession": ACCESSION,
                         "confidence": "high",
                         "reason_code": "single_candidate",
                         "candidates": [ACCESSION],
@@ -3816,7 +3817,7 @@ class InsiderPrivateStateTests(unittest.TestCase):
                 "amendments": [
                     {
                         "accession_number": ACCESSION,
-                        "effective_accession": None,
+                        "amends_accession": None,
                         "confidence": "unresolved",
                         "reason_code": "single_candidate",
                         "candidates": [accession_two],
@@ -3846,6 +3847,127 @@ class InsiderPrivateStateTests(unittest.TestCase):
                         "0000000001",
                         with_valid_issuer_generation_digest(payload),
                     )
+
+    def test_legacy_issuer_effective_accession_state_resumes_reparse_and_rewrites_canonical(self) -> None:
+        accession_two = "0000000001-26-000002"
+        accessions = [
+            {
+                "accession_number": ACCESSION,
+                "parser_version": "1.0.0",
+                "normalized_sha256": "0" * 64,
+            },
+            {
+                "accession_number": accession_two,
+                "parser_version": "1.0.0",
+                "normalized_sha256": "1" * 64,
+            },
+        ]
+        legacy_amendment = {
+            "accession_number": ACCESSION,
+            "effective_accession": accession_two,
+            "confidence": "high",
+            "reason_code": "single_candidate",
+            "candidates": [accession_two],
+        }
+        legacy_material = [
+            {
+                **accession,
+                "amendment_resolution": (
+                    {
+                        "effective_accession": accession_two,
+                        "confidence": "high",
+                        "reason_code": "single_candidate",
+                        "candidates": [accession_two],
+                    }
+                    if accession["accession_number"] == ACCESSION
+                    else None
+                ),
+            }
+            for accession in accessions
+        ]
+        legacy = {
+            "contract_version": 1,
+            "issuer_cik": "0000000001",
+            "accessions": accessions,
+            "owner_groups": [],
+            "security_classes": [],
+            "amendments": [legacy_amendment],
+            "unresolved_ambiguities": [],
+            "generation_digest": hashlib.sha256(
+                b"section16-issuer-generation-v1\0"
+                + canonical_insider_state_json_bytes(legacy_material)
+            ).hexdigest(),
+        }
+        canonical = with_valid_issuer_generation_digest(
+            {
+                **legacy,
+                "amendments": [
+                    {
+                        **legacy_amendment,
+                        "amends_accession": accession_two,
+                    }
+                ],
+            }
+        )
+        canonical_amendments = canonical["amendments"]
+        assert isinstance(canonical_amendments, list)
+        canonical_amendments[0].pop("effective_accession")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state = InsiderStateStore(root)
+            state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": ["0000000001"]},
+            )
+            issuer_path = root / "data/insiders/private/state/issuers/0000000001.json"
+            issuer_path.parent.mkdir(mode=0o700)
+            issuer_path.write_bytes(canonical_insider_state_json_bytes(legacy))
+            issuer_path.chmod(0o600)
+
+            self.assertEqual(canonical, state.read("issuers/0000000001"))
+            self.assertEqual(
+                (
+                    {"accession_number": ACCESSION, "issuer_cik": "0000000001"},
+                    {"accession_number": accession_two, "issuer_cik": "0000000001"},
+                ),
+                insider_pipeline._reparse_issuer_accessions(state, "0000000001"),
+            )
+
+            rewritten = {
+                **canonical,
+                "owner_groups": [
+                    {
+                        "owner_group_key": section16_owner_group_key(["0000000002"]),
+                        "owner_ciks": ["0000000002"],
+                    }
+                ],
+            }
+            state.write_issuer_if_approved(
+                "0000000001",
+                rewritten,
+                expected_sha256=hashlib.sha256(
+                    canonical_insider_state_json_bytes(canonical)
+                ).hexdigest(),
+            )
+            self.assertEqual(
+                canonical_insider_state_json_bytes(rewritten),
+                issuer_path.read_bytes(),
+            )
+            ambiguous = {
+                **legacy,
+                "amendments": [
+                    {**legacy_amendment, "amends_accession": accession_two}
+                ],
+            }
+            issuer_path.write_bytes(canonical_insider_state_json_bytes(ambiguous))
+            issuer_path.chmod(0o600)
+            with self.assertRaisesRegex(InsiderStorageError, "schema keys"):
+                state.read("issuers/0000000001")
+            tampered_legacy = {**legacy, "generation_digest": "f" * 64}
+            issuer_path.write_bytes(canonical_insider_state_json_bytes(tampered_legacy))
+            issuer_path.chmod(0o600)
+            with self.assertRaisesRegex(InsiderStorageError, "schema keys"):
+                state.read("issuers/0000000001")
 
     def test_stale_cas_is_rejected_even_when_payload_is_identical(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

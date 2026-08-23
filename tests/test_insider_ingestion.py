@@ -1145,6 +1145,56 @@ class InsiderIncrementalDiscoveryTests(unittest.TestCase):
             build_recent_insider_feed_url("4/A", start=40, page_size=40),
         )
 
+    def test_rejects_unbound_or_non_success_atom_response_before_reading_body(self) -> None:
+        class UnreadableAtomResponse(_AtomResponse):
+            def __init__(self, *, url: str, status_code: int = 200) -> None:
+                super().__init__(b"", url=url, status_code=status_code)
+                self.body_read = False
+
+            def iter_content(self, chunk_size: int = 8192):
+                del chunk_size
+                self.body_read = True
+                raise AssertionError("unbound Atom response body was consumed")
+
+        cases = (
+            (
+                "wrong SEC path",
+                "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&owner=include&start=0&count=40&output=atom",
+                200,
+            ),
+            (
+                "wrong SEC query",
+                "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&owner=include&start=1&count=40&output=atom",
+                200,
+            ),
+            (
+                "non-SEC authority",
+                "https://evil.example/cgi-bin/browse-edgar?action=getcurrent&type=4&owner=include&start=0&count=40&output=atom",
+                200,
+            ),
+            ("non-success status", build_recent_insider_feed_url("3", start=0, page_size=40), 503),
+        )
+        for label, response_url, status_code in cases:
+            with self.subTest(label=label):
+                response = UnreadableAtomResponse(
+                    url=response_url,
+                    status_code=status_code,
+                )
+                with self.assertRaisesRegex(InsiderDiscoveryError, "Atom response") as raised:
+                    discover_recent_insider_accessions(
+                        approved_issuer_ciks=("0000000001",),
+                        lookback_seconds=86_400,
+                        max_pages=1,
+                        page_size=40,
+                        max_accessions=10,
+                        deadline_seconds=60,
+                        now=datetime(2026, 1, 17, tzinfo=timezone.utc),
+                        http=_AtomHTTP(lambda _url: response),
+                    )
+                self.assertNotIn("evil.example", str(raised.exception))
+                self.assertFalse(response.body_read)
+                self.assertTrue(response.closed)
+
     def test_discovery_uses_supplied_absolute_deadline_without_restarting_it(self) -> None:
         http = self.fixture_http()
         result = discover_recent_insider_accessions(
@@ -2774,7 +2824,7 @@ class InsiderAccessionProcessorTests(unittest.TestCase):
         self.assertEqual(
             [{
                 "accession_number": amendment_accession,
-                "effective_accession": None,
+                "amends_accession": None,
                 "confidence": "unresolved",
                 "reason_code": "no_candidate",
                 "candidates": [],
@@ -2789,7 +2839,7 @@ class InsiderAccessionProcessorTests(unittest.TestCase):
         self.assertEqual(
             [{
                 "accession_number": amendment_accession,
-                "effective_accession": ACCESSION,
+                "amends_accession": ACCESSION,
                 "confidence": "high",
                 "reason_code": "single_candidate",
                 "candidates": [ACCESSION],
@@ -4448,7 +4498,7 @@ class InsiderNormalizedIssuerRecordTests(unittest.TestCase):
             assert isinstance(amendments[0], dict)
             self.assertEqual(
                 ACCESSION,
-                amendments[0]["effective_accession"],
+                amendments[0]["amends_accession"],
             )
 
 
@@ -4913,7 +4963,7 @@ class InsiderAmendmentResolutionTests(
         self.assertEqual(
             {
                 "accession_number": self.amendment_accession,
-                "effective_accession": self.original_accession,
+                "amends_accession": self.original_accession,
                 "confidence": "high",
                 "reason_code": "single_candidate",
                 "candidates": [self.original_accession],
@@ -4943,7 +4993,7 @@ class InsiderAmendmentResolutionTests(
         self.assertEqual(
             {
                 "accession_number": self.amendment_accession,
-                "effective_accession": None,
+                "amends_accession": None,
                 "confidence": "unresolved",
                 "reason_code": "no_candidate",
                 "candidates": [],
@@ -4973,7 +5023,7 @@ class InsiderAmendmentResolutionTests(
         _, amendment = self.amendment_entry(other, self.amendment(), matching)
 
         self.assertEqual("medium", amendment["confidence"])
-        self.assertEqual(self.original_accession, amendment["effective_accession"])
+        self.assertEqual(self.original_accession, amendment["amends_accession"])
         self.assertEqual([self.original_accession], amendment["candidates"])
 
     def test_transaction_coordinate_signature_breaks_remaining_period_tie_only_on_exact_match(
@@ -4998,7 +5048,7 @@ class InsiderAmendmentResolutionTests(
         _, amendment = self.amendment_entry(other, matching, self.amendment())
 
         self.assertEqual("low", amendment["confidence"])
-        self.assertEqual(self.original_accession, amendment["effective_accession"])
+        self.assertEqual(self.original_accession, amendment["amends_accession"])
         self.assertEqual([self.original_accession], amendment["candidates"])
 
     def test_empty_transaction_signature_is_not_tiebreak_evidence(self) -> None:
@@ -5032,7 +5082,7 @@ class InsiderAmendmentResolutionTests(
         self.assertEqual(
             {
                 "accession_number": self.amendment_accession,
-                "effective_accession": None,
+                "amends_accession": None,
                 "confidence": "unresolved",
                 "reason_code": "ambiguous_candidates",
                 "candidates": candidates,
@@ -5128,7 +5178,7 @@ class InsiderAmendmentResolutionTests(
         self.assertEqual([], unresolved["candidates"])
         self.assertEqual(1, first.amendments_unresolved)
         self.assertEqual("high", resolved["confidence"])
-        self.assertEqual(self.original_accession, resolved["effective_accession"])
+        self.assertEqual(self.original_accession, resolved["amends_accession"])
         self.assertEqual(1, second.amendments_resolved)
         self.assertIs(original_amendment_record, amendment_record)
 

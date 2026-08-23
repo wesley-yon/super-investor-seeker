@@ -834,7 +834,10 @@ gh_mutate_once() {
                 self.assertIn("scripts/pages_deploy_needed.sh", checkout)
 
     def test_every_private_data_job_uses_the_scoped_github_app(self):
-        expected_action = "uses: actions/create-github-app-token@v3"
+        expected_action = (
+            "uses: actions/create-github-app-token@"
+            "bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3"
+        )
         expected_repository = "repositories: super-investor-seeker-data"
         for path, minimum in (
             (".github/workflows/update-data.yml", 1),
@@ -1545,7 +1548,10 @@ gh_mutate_once() {
             build.index("run: python validate_data.py"),
             build.index("python scripts/build_pages_artifact.py"),
         )
-        self.assertIn("pip install -r requirements.txt", build)
+        self.assertIn(
+            "pip install --require-hashes -r requirements.lock",
+            build,
+        )
         self.assertIn("- name: Audit the public artifact allowlist", build)
         self.assertIn("include-hidden-files: true", build)
         for public_file in (

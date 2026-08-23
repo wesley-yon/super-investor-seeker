@@ -251,9 +251,9 @@ payloads remain on-demand.
 
 ### Tech Stack
 
-- Single `index.html` file with inline CSS and JavaScript — no frontend compilation, npm, or framework
-- **Chart.js** from CDN for stacked bar charts
-- **SVG sparklines** rendered inline
+- Single `index.html` file with inline CSS and JavaScript — no frontend compilation or framework
+- Native HTML/SVG/CSS charts and sparklines; no runtime chart package or CDN script
+- npm is test-only: the pinned Playwright harness never enters the Pages artifact
 - Data loaded via `fetch()` from `data/*.json` files
 - Client-side search against the index.json
 
@@ -295,9 +295,9 @@ The design is implemented in `index.html`. Any future rework must preserve:
 - 4-quarter sparklines and 4-quarter charts.
 
 Design rules to preserve:
-- Dark theme: `#06080d` background, `#0d1017` surface, `#111620` cards, `#1c2333` borders
-- Accent: `#4e8cff`, Green: `#34d399`, Red: `#f87171`, Gold: `#fbbf24`
-- Fonts: JetBrains Mono (data), Source Sans 3 (text) — both from Google Fonts CDN
+- Canonical light theme: `#f4f0e8` page background, `#f7f3eb` surface, `#fcfaf5` cards, and `#d6cfc3` taupe borders
+- Accent: `#006b4f`, Green: `#007342`, Red: `#97281f`, Gold: `#744620`; use the corresponding light semantic fills rather than a dark-theme palette
+- Fonts: Newsreader/Georgia for editorial headings and Source Sans 3 for text/data — both loaded from Google Fonts in `index.html`
 - Color-coded QoQ badges: gold NEW, green ↑X%, red ↓X%, gray —
 - SVG sparklines: green bars = shares increased, red = decreased
 
@@ -364,8 +364,10 @@ complete corpus up front.
 
 ### `test.yml` and schedule keepalive
 
-- CI compiles entry points, rejects generated private paths in the current tree
-  and Git history, runs the loader test, and executes the complete Python suite.
+- CI uses Python 3.11 and Node 22, installs only hash-locked Python and
+  package-lock-pinned browser-test dependencies, compiles entry points, rejects
+  generated private paths in the current tree and Git history, runs the loader
+  and Playwright suites, and executes the complete Python suite.
 - Publishing workflows repeat the regression gates against their actual code
   and restored data rather than depending on a parallel CI result.
 - A tiny, off-main heartbeat branch provides repository activity so GitHub does

@@ -38,8 +38,10 @@ import math
 import os
 import queue
 import re
+import secrets
 import shutil
 import signal
+import stat
 import statistics
 import sys
 import tempfile
@@ -4324,11 +4326,159 @@ def resolve_ticker_from_name(
 
 def _fsync_directory(path: Path) -> None:
     """Persist directory-entry changes used by atomic file transactions."""
-    fd = os.open(path, os.O_RDONLY)
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _atomic_json_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _atomic_json_temporary_identity(metadata: os.stat_result) -> tuple[int, int, bool]:
+    """Bind a temporary name to the regular file opened exclusively by its fd."""
+    return metadata.st_dev, metadata.st_ino, stat.S_ISREG(metadata.st_mode)
+
+
+def _atomic_json_temporary_matches(
+    temporary: str,
+    parent_fd: int,
+    expected_identity: tuple[int, int, bool],
+) -> bool:
+    """Compare the fd-owned temp identity with its fd-relative lstat entry."""
+    try:
+        metadata = os.stat(
+            temporary,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return False
+    return _atomic_json_temporary_identity(metadata) == expected_identity
+
+
+def _atomic_json_safety_error() -> FundDataError:
+    return FundDataError("atomic JSON write could not safely access its parent directory")
+
+
+_ATOMIC_JSON_DIRECTORY_FD_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "replace")
+    and all(
+        function in os.supports_dir_fd
+        for function in (os.open, os.mkdir, os.stat, os.unlink, os.rename)
+    )
+)
+
+
+def _atomic_json_directory_flags() -> int:
+    if not _ATOMIC_JSON_DIRECTORY_FD_SUPPORTED:
+        raise _atomic_json_safety_error()
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _atomic_json_open_prepared_parent(
+    raw_path: Path,
+) -> tuple[int, Path, Path, str, tuple[int, int]]:
+    """Anchor a canonical parent and create only missing descendants by fd."""
+    raw_parent = raw_path.parent
+    filename = raw_path.name
+    if not filename or filename in {".", ".."}:
+        raise _atomic_json_safety_error()
+    flags = _atomic_json_directory_flags()
+    try:
+        canonical_parent = raw_parent.resolve(strict=False)
+    except OSError as exc:
+        raise _atomic_json_safety_error() from exc
+
+    missing: list[str] = []
+    deepest_existing = canonical_parent
+    while True:
+        try:
+            metadata = os.stat(deepest_existing, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            component = deepest_existing.name
+            if not component:
+                raise _atomic_json_safety_error() from exc
+            missing.append(component)
+            deepest_existing = deepest_existing.parent
+            continue
+        except OSError as exc:
+            raise _atomic_json_safety_error() from exc
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise _atomic_json_safety_error()
+        deepest_identity = _atomic_json_identity(metadata)
+        break
+
+    try:
+        parent_fd = os.open(deepest_existing, flags)
+    except OSError as exc:
+        raise _atomic_json_safety_error() from exc
+    try:
+        if _atomic_json_identity(os.fstat(parent_fd)) != deepest_identity:
+            raise _atomic_json_safety_error()
+        for component in reversed(missing):
+            created = False
+            try:
+                os.mkdir(component, 0o777, dir_fd=parent_fd)
+                created = True
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise _atomic_json_safety_error() from exc
+            child_fd = -1
+            try:
+                try:
+                    child_fd = os.open(component, flags, dir_fd=parent_fd)
+                    child_metadata = os.fstat(child_fd)
+                except OSError as exc:
+                    raise _atomic_json_safety_error() from exc
+                if not stat.S_ISDIR(child_metadata.st_mode):
+                    raise _atomic_json_safety_error()
+                if created:
+                    try:
+                        os.fchmod(child_fd, 0o777)
+                        os.fsync(child_fd)
+                        os.fsync(parent_fd)
+                    except (AttributeError, OSError) as exc:
+                        raise _atomic_json_safety_error() from exc
+            except BaseException:
+                if child_fd >= 0:
+                    os.close(child_fd)
+                raise
+            os.close(parent_fd)
+            parent_fd = child_fd
+        parent_identity = _atomic_json_identity(os.fstat(parent_fd))
+        return parent_fd, raw_parent, canonical_parent, filename, parent_identity
+    except BaseException:
+        os.close(parent_fd)
+        raise
+
+
+def _atomic_json_revalidate_raw_parent(
+    raw_parent: Path,
+    canonical_parent: Path,
+    expected_identity: tuple[int, int],
+    parent_fd: int,
+) -> None:
+    """Reject a raw-path retarget even though the descriptor remains safe."""
+    try:
+        if raw_parent.resolve(strict=True) != canonical_parent:
+            raise _atomic_json_safety_error()
+        metadata = os.stat(raw_parent)
+    except FundDataError:
+        raise
+    except OSError as exc:
+        raise _atomic_json_safety_error() from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or _atomic_json_identity(metadata) != expected_identity
+        or _atomic_json_identity(os.fstat(parent_fd)) != expected_identity
+    ):
+        raise _atomic_json_safety_error()
 
 
 def _atomic_write_json(
@@ -4339,38 +4489,105 @@ def _atomic_write_json(
     sort_keys: bool = False,
     fsync_parent: bool = True,
 ) -> None:
-    """Write JSON atomically: render to a sibling temp file, fsync, then
-    os.replace() into place. A SIGTERM or power loss mid-write leaves either
-    the old file or the new file — never a half-flushed one that
-    json.load() would reject."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Sibling temp file to guarantee same filesystem (os.replace is atomic
-    # only within a filesystem).
-    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    """Durably publish JSON through a verified, descriptor-anchored parent."""
+    parent_fd, raw_parent, canonical_parent, filename, parent_identity = (
+        _atomic_json_open_prepared_parent(Path(path))
+    )
+    temporary = f".{filename}.{secrets.token_hex(16)}.tmp"
+    temporary_fd = -1
+    temporary_identity: tuple[int, int, bool] | None = None
+    locked = False
     try:
-        with open(tmp, "w") as f:
+        try:
+            fcntl.flock(parent_fd, fcntl.LOCK_EX)
+            locked = True
+        except OSError as exc:
+            raise _atomic_json_safety_error() from exc
+        _atomic_json_revalidate_raw_parent(
+            raw_parent,
+            canonical_parent,
+            parent_identity,
+            parent_fd,
+        )
+        try:
+            existing = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            mode = 0o644
+        except OSError as exc:
+            raise _atomic_json_safety_error() from exc
+        else:
+            if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode):
+                raise ValueError(f"atomic JSON target must be a regular file: {path}")
+            mode = stat.S_IMODE(existing.st_mode)
+
+        temporary_fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            mode,
+            dir_fd=parent_fd,
+        )
+        os.fchmod(temporary_fd, mode)
+        temporary_identity = _atomic_json_temporary_identity(
+            os.fstat(temporary_fd)
+        )
+        if not temporary_identity[2]:
+            raise _atomic_json_safety_error()
+        with os.fdopen(temporary_fd, "w", encoding="utf-8") as handle:
+            temporary_fd = -1
             json.dump(
                 payload,
-                f,
+                handle,
                 indent=indent,
                 sort_keys=sort_keys,
                 separators=(",", ":") if indent is None else None,
             )
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _atomic_json_revalidate_raw_parent(
+            raw_parent,
+            canonical_parent,
+            parent_identity,
+            parent_fd,
+        )
+        if not _atomic_json_temporary_matches(
+            temporary,
+            parent_fd,
+            temporary_identity,
+        ):
+            raise _atomic_json_safety_error()
+        os.replace(
+            temporary,
+            filename,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
         if fsync_parent:
-            _fsync_directory(path.parent)
+            os.fsync(parent_fd)
+        _atomic_json_revalidate_raw_parent(
+            raw_parent,
+            canonical_parent,
+            parent_identity,
+            parent_fd,
+        )
     except BaseException:
-        removed = False
-        try:
-            tmp.unlink()
-            removed = True
-        except FileNotFoundError:
-            pass
-        if removed:
-            _fsync_directory(path.parent)
+        if temporary_fd >= 0:
+            os.close(temporary_fd)
+        if temporary_identity is not None and _atomic_json_temporary_matches(
+            temporary,
+            parent_fd,
+            temporary_identity,
+        ):
+            os.unlink(temporary, dir_fd=parent_fd)
+            os.fsync(parent_fd)
         raise
+    finally:
+        if locked:
+            try:
+                fcntl.flock(parent_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(parent_fd)
+        else:
+            os.close(parent_fd)
 
 
 def _remove_derived_output(path: Path) -> None:
