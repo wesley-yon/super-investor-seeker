@@ -1558,10 +1558,48 @@ gh_mutate_once() {
             "data/funds-index.json",
             "data/index.json",
             "data/security_labels.json",
-            "data/funds/*.json.gz",
-            "data/stocks/*.json.gz",
+            "data/insiders/public/manifest.json",
         ):
             self.assertIn(public_file, build)
+        self.assertNotIn("data/funds/*.json.gz", build)
+        self.assertNotIn("data/stocks/*.json.gz", build)
+        self.assertNotIn("data/insiders/public/securities/*.json.gz", build)
+        self.assertNotIn("data/insiders/public/filings/*.json.gz", build)
+        self.assertIn(
+            "^data/funds/[0-9]{1,10}\\.json\\.gz$",
+            build,
+        )
+        self.assertIn(
+            "^data/stocks/[A-Z0-9][A-Z0-9._-]{0,159}\\.json\\.gz$",
+            build,
+        )
+        self.assertIn(
+            "^data/insiders/public/securities/[A-Z0-9][A-Z0-9._-]{0,159}\\.json\\.gz$",
+            build,
+        )
+        self.assertIn(
+            "^data/insiders/public/filings/[0-9]{10}-[0-9]{2}-[0-9]{6}\\.json\\.gz$",
+            build,
+        )
+        self.assertIn(
+            'done < <(find "$ARTIFACT_DIR" -mindepth 1 -print0)',
+            build,
+        )
+        self.assertIn('if [ -L "$path" ]; then', build)
+        self.assertIn('elif [ -d "$path" ]; then', build)
+        self.assertIn('elif [ -f "$path" ]; then', build)
+        for public_directory in (
+            "data",
+            "data/funds",
+            "data/stocks",
+            "data/insiders",
+            "data/insiders/public",
+            "data/insiders/public/securities",
+            "data/insiders/public/filings",
+        ):
+            self.assertIn(public_directory, build)
+        self.assertIn("Unsupported public Pages entry type", build)
+        self.assertIn("Required public Pages entry is missing", build)
         for private_file in (
             "cusip_registry.json",
             "pipeline_state.json",
@@ -1679,14 +1717,36 @@ gh_mutate_once() {
         self.assertIn("needs: [resolve, build, deploy]", cleanup)
         self.assertIn("if: ${{ always() }}", cleanup)
         self.assertIn("actions: write", cleanup)
-        self.assertIn("artifacts_json=$(", cleanup)
-        self.assertIn("gh api --paginate --slurp", cleanup)
-        self.assertNotIn("mapfile -t pages_artifact_ids < <(", cleanup)
-        self.assertIn(
-            'select(.name == "github-pages" and .expired == false)', cleanup
+        self.assertIn("Checkout trusted GitHub retry helper for cleanup", cleanup)
+        self.assertIn("repository: ${{ job.workflow_repository }}", cleanup)
+        self.assertIn("ref: ${{ job.workflow_sha }}", cleanup)
+        self.assertIn("sparse-checkout: scripts/github_cli_retry.py", cleanup)
+        self.assertIn("persist-credentials: false", cleanup)
+        self.assertIn("RUN_ID: ${{ github.run_id }}", cleanup)
+        self.assertIn('if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]', cleanup)
+        run_artifacts_endpoint = (
+            '"/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/'
+            'artifacts?name=github-pages&per_page=100"'
         )
-        self.assertIn("actions/artifacts/$artifact_id", cleanup)
-        self.assertIn("--method DELETE", cleanup)
+        self.assertIn(run_artifacts_endpoint, cleanup)
+        self.assertIn(
+            'gh_read_retry api --paginate --slurp "$RUN_ARTIFACTS_ENDPOINT"',
+            cleanup,
+        )
+        self.assertNotIn(
+            '"/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"',
+            cleanup,
+        )
+        self.assertIn("(.workflow_run.id == $run_id)", cleanup)
+        self.assertIn('(.name == "github-pages")', cleanup)
+        self.assertIn('(.expired | type) == "boolean"', cleanup)
+        self.assertIn("gh_delete_once()", cleanup)
+        self.assertEqual(1, cleanup.count("gh_delete_once api --method DELETE"))
+        self.assertNotIn("\n            gh api --method DELETE", cleanup)
+        self.assertIn("|| delete_status=$?", cleanup)
+        self.assertIn("Deletion outcome is uncertain; reconciling by readback", cleanup)
+        self.assertIn("for attempt in 0 1 2; do", cleanup)
+        self.assertIn("readonly -a READBACK_DELAYS_SECONDS=(1 3)", cleanup)
         self.assertIn(
             "Public Pages artifacts remain downloadable after cleanup",
             cleanup,
