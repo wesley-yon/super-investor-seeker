@@ -225,6 +225,12 @@ _PUBLIC_COMPANY_TITLE_PATTERNS = (
     (re.compile(r"\bofficer\b", re.IGNORECASE), "Officer"),
 )
 _ACCESSION_RE = re.compile(r"[0-9]{10}-[0-9]{2}-[0-9]{6}")
+_SEC_ARCHIVE_URL_PREFIX_RE = re.compile(r"https://www\.sec\.gov(?::443)?/")
+_SEC_ARCHIVE_PATH_RE = re.compile(
+    r"/Archives/edgar/data/(0|[1-9][0-9]*)/([0-9]{18})/"
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}"
+    r"(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,255})*"
+)
 _SECURITY_STEM_RE = re.compile(r"[A-Z0-9][A-Z0-9._-]{0,159}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ISO_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -341,8 +347,18 @@ def _safe_public_symbol(
     nullable: bool = False,
 ) -> str | None:
     text = _safe_atom(value, label, nullable=nullable, maximum=64)
-    if text is not None and _PUBLIC_SYMBOL_RE.fullmatch(text) is None:
-        raise _fail(label)
+    if text is not None:
+        if (
+            _PUBLIC_CONTACT_TEXT_RE.search(text) is not None
+            or _PUBLIC_URI_SCHEME_RE.search(text) is not None
+            or _PUBLIC_BARE_DOMAIN_RE.search(text) is not None
+            or _PUBLIC_IP_ADDRESS_RE.search(text) is not None
+            or _PUBLIC_ADDRESS_TEXT_RE.search(text) is not None
+            or _PUBLIC_CIK_TOKEN_RE.search(text) is not None
+            or _PUBLIC_PRIVATE_CORRELATOR_RE.search(text) is not None
+            or _PUBLIC_SYMBOL_RE.fullmatch(text) is None
+        ):
+            raise _fail(label)
     return text
 
 
@@ -414,14 +430,15 @@ def _safe_sec_url(value: object, label: str) -> str:
     except ValueError as error:
         raise _fail(label) from error
     if (
-        parsed.scheme != "https"
+        _SEC_ARCHIVE_URL_PREFIX_RE.match(url) is None
+        or parsed.scheme != "https"
         or parsed.hostname != "www.sec.gov"
         or parsed.username is not None
         or parsed.password is not None
         or port not in (None, 443)
         or parsed.query
         or parsed.fragment
-        or not parsed.path.startswith("/Archives/edgar/data/")
+        or _SEC_ARCHIVE_PATH_RE.fullmatch(parsed.path) is None
     ):
         raise _fail(label)
     return url
@@ -435,12 +452,18 @@ def _safe_bound_sec_url(
     accession: str,
 ) -> str:
     url = _safe_sec_url(value, label)
-    if type(issuer_cik) is not str or re.fullmatch(r"[0-9]{10}", issuer_cik) is None:
+    if (
+        type(issuer_cik) is not str
+        or re.fullmatch(r"[0-9]{10}", issuer_cik) is None
+        or type(accession) is not str
+        or _ACCESSION_RE.fullmatch(accession) is None
+    ):
         raise _fail(label)
-    expected_prefix = (
-        f"/Archives/edgar/data/{int(issuer_cik)}/{accession.replace('-', '')}/"
-    )
-    if not urlsplit(url).path.startswith(expected_prefix):
+    path_match = _SEC_ARCHIVE_PATH_RE.fullmatch(urlsplit(url).path)
+    assert path_match is not None
+    if path_match.group(1) != str(int(issuer_cik)) or path_match.group(
+        2
+    ) != accession.replace("-", ""):
         raise _fail(label)
     return url
 

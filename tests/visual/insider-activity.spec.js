@@ -43,6 +43,32 @@ const fixturePath = path.join(
   "13f-insider-activity-prd/fixtures/apge-insider-activity.example.json"
 );
 const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+const liveSecurityPath = path.join(
+  root,
+  "tests/fixtures/phase5-live-security.json"
+);
+const liveFilingPath = path.join(
+  root,
+  "tests/fixtures/phase5-live-filing.json"
+);
+const liveSecurity = JSON.parse(fs.readFileSync(liveSecurityPath, "utf8"));
+const liveFiling = JSON.parse(fs.readFileSync(liveFilingPath, "utf8"));
+const liveAccession = liveFiling.accessionNumber;
+const complexLiveSecurityPath = path.join(
+  root,
+  "tests/fixtures/phase5-live-complex-security.json"
+);
+const complexLiveFilingPath = path.join(
+  root,
+  "tests/fixtures/phase5-live-complex-filing.json"
+);
+const complexLiveSecurity = JSON.parse(
+  fs.readFileSync(complexLiveSecurityPath, "utf8")
+);
+const complexLiveFiling = JSON.parse(
+  fs.readFileSync(complexLiveFilingPath, "utf8")
+);
+const complexLiveAccession = complexLiveFiling.accessionNumber;
 
 async function installDeterministicRoutes(page) {
   await page.route("**/*", async (route) => {
@@ -56,7 +82,15 @@ async function installDeterministicRoutes(page) {
       "/data/funds/1.json": fund,
       "/data/security_labels.json": securityLabels,
       "/data/stocks/03770N101.json": stock,
+      "/data/insiders/public/securities/03770N101.json": liveSecurity,
     };
+    if (url.pathname === `/data/insiders/public/filings/${liveAccession}.json`) {
+      await route.fulfill({
+        body: fs.readFileSync(liveFilingPath),
+        contentType: "application/json",
+      });
+      return;
+    }
     if (bodies[url.pathname]) {
       await route.fulfill({ json: bodies[url.pathname] });
       return;
@@ -69,6 +103,36 @@ async function installDeterministicRoutes(page) {
     }
     await route.continue();
   });
+}
+
+async function delayFirstLiveSecurityResponse(page) {
+  let releaseFirst;
+  let markStarted;
+  let markFinished;
+  let requestCount = 0;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const finished = new Promise(resolve => { markFinished = resolve; });
+  await page.route(
+    "**/data/insiders/public/securities/03770N101.json",
+    async (route) => {
+      requestCount += 1;
+      const first = requestCount === 1;
+      if (first) {
+        markStarted();
+        await new Promise(resolve => { releaseFirst = resolve; });
+      }
+      await route.fulfill({
+        body: fs.readFileSync(liveSecurityPath),
+        contentType: "application/json",
+      });
+      if (first) markFinished();
+    }
+  );
+  return {
+    started,
+    finished,
+    release: () => releaseFirst(),
+  };
 }
 
 test.beforeEach(async ({ page }) => {
@@ -231,15 +295,413 @@ test("security views use ordinary button keyboard navigation", async ({ page }) 
   await expect(reporting).toHaveAttribute("aria-current", "page");
 });
 
-test("preview remains default-off and preserves holders", async ({ page }) => {
+test("production insider route loads the validated live payload only", async ({
+  page,
+}) => {
+  const requested = [];
+  page.on("request", request => requested.push(new URL(request.url()).pathname));
   await page.goto("/#stock/03770N101/insiders");
-  await expect(
-    page.locator(".fund-panel-title").filter({ hasText: "Current Holders" })
-  ).toBeVisible();
+
+  await expect(page.getByRole("heading", { name: "Synthetic Test Issuer" }))
+    .toBeVisible();
+  await expect(page.getByRole("button", { name: "Insider Activity" }))
+    .toHaveAttribute("aria-current", "page");
+  await expect(page.getByText("$1.27K").first()).toBeVisible();
   await expect(page.getByText("Fixture preview — not real filing data."))
     .toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Insider Activity" }))
+  expect(requested.some(value => value.endsWith(
+    "/apge-insider-activity.example.json"
+  ))).toBe(false);
+  expect(requested.some(value => value.endsWith(
+    "/data/insiders/public/securities/03770N101.json"
+  ))).toBe(true);
+});
+
+test("methodology dialog distinguishes validated live data from fixture preview", async ({
+  page,
+}) => {
+  await page.goto("/#stock/03770N101/insiders");
+  await expect(page.getByRole("heading", { name: "Synthetic Test Issuer" }))
+    .toBeVisible();
+  await page.getByRole("button", { name: "Learn more" }).click();
+
+  let dialog = page.getByRole("dialog", {
+    name: "Insider Activity Methodology",
+  });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(".drawer-meta"))
+    .toHaveText("Validated public filing data");
+  await expect(dialog).toContainText("Forms 3, 4, and 5");
+  await expect(dialog).toContainText("transaction-only");
+  await expect(dialog).toContainText(
+    "name as filed and company relationship/title"
+  );
+  await expect(dialog).not.toContainText("Phase 1 fixture preview");
+  await expect(dialog).not.toContainText("illustrative");
+  await expect(dialog).not.toContainText("APGE");
+  await dialog.getByRole("button", { name: "Close methodology" }).click();
+
+  await page.goto("/?insiderPreview=fixture#stock/03770N101/insiders");
+  await expect(page.getByText("Fixture preview — not real filing data."))
+    .toBeVisible();
+  await page.getByRole("button", { name: "Learn more" }).click();
+  dialog = page.getByRole("dialog", {
+    name: "Insider Activity Methodology",
+  });
+  await expect(dialog.locator(".drawer-meta"))
+    .toHaveText("Phase 1 fixture preview");
+  await expect(dialog).toContainText("Fixture limitation");
+  await expect(dialog).toContainText("illustrative");
+  await expect(dialog).toContainText("APGE filing evidence");
+});
+
+test("live view formats validated rows and uses an honest transaction-only timeline", async ({
+  page,
+}) => {
+  await page.goto("/#stock/03770N101/insiders");
+
+  await expect(page.getByRole("button", { name: "1Y" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "P/S Only" }))
+    .toHaveAttribute("aria-pressed", "true");
+  const latest = page.locator(".insider-kpi.latest");
+  await expect(latest).toContainText("Purchased 123.45 shares");
+  await expect(latest).toContainText("$1.27K");
+  const net = page.locator(".insider-kpi").filter({
+    hasText: "Net P/S Activity",
+  });
+  await expect(net).toContainText("Net reported buying");
+  const row = page.locator("#insiderTransactionTable tbody tr.insider-row").first();
+  await expect(row).toContainText("$10.25");
+  await expect(row).toContainText("$1.27K");
+  await expect(row).toContainText("14.08%");
+  await expect(page.getByRole("heading", {
+    name: "Insider Transaction Timeline",
+  })).toBeVisible();
+  await expect(page.getByText(
+    "Daily share-price history is not integrated; markers use only prices reported in each SEC transaction."
+  )).toBeVisible();
+  await expect(page.locator("#insiderPriceChart .chart-price-line")).toHaveCount(0);
+  await expect(page.locator(".chart-legend")).not.toContainText("Price");
+});
+
+test("live transaction table uses bounded URL-backed client pagination", async ({
+  page,
+}) => {
+  await page.goto(
+    "/?range=all&transactionScope=all#stock/03770N101/insiders"
+  );
+  await expect(page.getByRole("heading", { name: "Synthetic Test Issuer" }))
+    .toBeVisible();
+  await expect(page.locator("#insiderTransactionTable tbody tr.insider-row"))
+    .toHaveCount(1);
+  await page.evaluate(() => {
+    const item = currentInsiderFixture.transactions.items[0];
+    currentInsiderFixture.transactions.items = Array.from(
+      { length: 205 },
+      (_, index) => ({
+        ...item,
+        shares: String(index + 1),
+        postTransactionShares: String(1_000 + index),
+      })
+    );
+    currentInsiderFixture.transactions.total = 205;
+    currentInsiderFixture.transactions.totalApproximate = 205;
+    currentInsiderFixture.staticPagination.itemCount = 205;
+    renderCurrentInsiderView();
+  });
+
+  const rows = page.locator("#insiderTransactionTable tbody tr.insider-row");
+  const pagination = page.getByRole("navigation", {
+    name: "Insider transaction pages",
+  });
+  await expect(rows).toHaveCount(100);
+  await expect(pagination).toContainText("1–100 of 205");
+  await pagination.getByRole("button", { name: "Next page" }).click();
+  await expect(page).toHaveURL(/page=2/);
+  await expect(rows).toHaveCount(100);
+  await expect(pagination).toContainText("101–200 of 205");
+  await pagination.getByRole("button", { name: "Next page" }).click();
+  await expect(page).toHaveURL(/page=3/);
+  await expect(rows).toHaveCount(5);
+  await expect(pagination).toContainText("201–205 of 205");
+  await pagination.getByRole("button", { name: "Previous page" }).click();
+  await expect(page).toHaveURL(/page=2/);
+  await page.getByRole("button", { name: "Officers & Directors" }).click();
+  await expect(page).not.toHaveURL(/page=/);
+});
+
+test("out-of-range insider page is replaced with its canonical effective page", async ({
+  page,
+}) => {
+  await page.goto(
+    "/?range=all&transactionScope=all#stock/03770N101/insiders"
+  );
+  await expect(page.getByRole("heading", { name: "Synthetic Test Issuer" }))
+    .toBeVisible();
+  await page.evaluate(() => {
+    const expandTransactions = payload => {
+      const item = payload.transactions.items[0];
+      payload.transactions.items = Array.from(
+        { length: 205 },
+        (_, index) => ({
+          ...item,
+          shares: String(index + 1),
+          postTransactionShares: String(1_000 + index),
+        })
+      );
+      payload.transactions.total = 205;
+      payload.transactions.totalApproximate = 205;
+      payload.staticPagination.itemCount = 205;
+    };
+    const stableLivePayload = structuredClone(currentLiveInsiderPayload);
+    expandTransactions(stableLivePayload);
+    globalThis.__phase5CanonicalPagePayload = stableLivePayload;
+    loadLiveInsiderSecurityPayload = async () => structuredClone(
+      globalThis.__phase5CanonicalPagePayload
+    );
+    expandTransactions(currentInsiderFixture);
+    history.replaceState(
+      {},
+      "",
+      "/?range=all&transactionScope=all&page=5000#stock/03770N101/insiders"
+    );
+    renderCurrentInsiderView();
+  });
+
+  const rows = page.locator("#insiderTransactionTable tbody tr.insider-row");
+  const pagination = page.getByRole("navigation", {
+    name: "Insider transaction pages",
+  });
+  await expect(page).toHaveURL(/page=3/);
+  await expect(page).not.toHaveURL(/page=5000/);
+  await expect(rows).toHaveCount(5);
+  await expect(pagination).toContainText("201–205 of 205");
+
+  await pagination.getByRole("button", { name: "Previous page" }).click();
+  await expect(page).toHaveURL(/page=2/);
+  await expect(rows).toHaveCount(100);
+  await expect(pagination).toContainText("101–200 of 205");
+  await page.goBack();
+  await expect(page).toHaveURL(/page=3/);
+  await expect(rows).toHaveCount(5);
+  await expect(pagination).toContainText("201–205 of 205");
+  await page.goForward();
+  await expect(page).toHaveURL(/page=2/);
+  await expect(rows).toHaveCount(100);
+  await expect(pagination).toContainText("101–200 of 205");
+});
+
+test("bounded live contract scale keeps timeline and table DOM finite", async ({
+  page,
+}) => {
+  await page.goto(
+    "/?range=all&transactionScope=all#stock/03770N101/insiders"
+  );
+  await expect(page.getByRole("heading", { name: "Synthetic Test Issuer" }))
+    .toBeVisible();
+  const renderMilliseconds = await page.evaluate(() => {
+    const item = currentInsiderFixture.transactions.items[0];
+    currentInsiderFixture.transactions.items = Array.from(
+      { length: 5_000 },
+      (_, index) => ({
+        ...item,
+        shares: String(index + 1),
+        postTransactionShares: String(10_000 + index),
+      })
+    );
+    currentInsiderFixture.transactions.total = 5_000;
+    currentInsiderFixture.transactions.totalApproximate = 5_000;
+    currentInsiderFixture.staticPagination.itemCount = 5_000;
+    const started = performance.now();
+    renderCurrentInsiderView();
+    return performance.now() - started;
+  });
+
+  expect(renderMilliseconds).toBeLessThan(3_000);
+  await expect(page.locator("#insiderTransactionTable tbody tr.insider-row"))
+    .toHaveCount(100);
+  await expect(page.getByRole("navigation", {
+    name: "Insider transaction pages",
+  })).toContainText("1–100 of 5000");
+  const timeline = page.locator("#insiderPriceChart");
+  await expect(timeline).toHaveAttribute("role", "img");
+  await expect(timeline).toHaveAttribute("data-event-count", "5000");
+  await expect(timeline.locator(".chart-event-series")).toHaveCount(1);
+  await expect(timeline.locator(".chart-event-series"))
+    .toHaveAttribute("data-event-count", "5000");
+  await expect(timeline.locator("[tabindex], [role=button]")).toHaveCount(0);
+  expect(await timeline.locator(".chart-axis").count()).toBeLessThanOrEqual(7);
+  expect(await timeline.locator("*").count()).toBeLessThan(40);
+});
+
+test("live 404 renders an explicit empty state without fixture fallback", async ({
+  page,
+}) => {
+  const requested = [];
+  page.on("request", request => requested.push(new URL(request.url()).pathname));
+  await page.route(
+    "**/data/insiders/public/securities/03770N101.json",
+    route => route.fulfill({ status: 404, body: "not found" })
+  );
+  await page.goto("/#stock/03770N101/reporting-insiders");
+
+  const empty = page.getByRole("status");
+  await expect(empty).toContainText("No published insider activity");
+  await expect(empty).toContainText(
+    "No validated public Forms 3, 4, or 5 payload is available for this security."
+  );
+  await expect(page.getByRole("button", { name: "Reporting Insiders" }))
+    .toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByText("Fixture preview — not real filing data."))
     .toHaveCount(0);
+  expect(requested.some(value => value.endsWith(
+    "/apge-insider-activity.example.json"
+  ))).toBe(false);
+});
+
+test("malformed live payload fails generically without exposing contract details", async ({
+  page,
+}) => {
+  const malformed = structuredClone(liveSecurity);
+  malformed.payloadType = "private_insider_corpus";
+  await page.route(
+    "**/data/insiders/public/securities/03770N101.json",
+    route => route.fulfill({ json: malformed })
+  );
+  await page.goto("/#stock/03770N101/insiders");
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Insider activity couldn’t load");
+  await expect(alert).toContainText(
+    "Validated public insider activity is temporarily unavailable."
+  );
+  await expect(alert.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("private_insider_corpus");
+  await expect(page.locator("body")).not.toContainText(
+    "Published insider activity contract is invalid"
+  );
+  await expect(page.getByText("Fixture preview — not real filing data."))
+    .toHaveCount(0);
+});
+
+test("live filing drawer loads only digest-bound public filing detail", async ({
+  page,
+}) => {
+  const requested = [];
+  page.on("request", request => requested.push(new URL(request.url()).pathname));
+  await page.goto("/#stock/03770N101/insiders");
+
+  const detailButton = page.locator(
+    "#insiderTransactionTable .filing-detail-button"
+  ).first();
+  await detailButton.focus();
+  await expect(detailButton).toBeFocused();
+  await page.keyboard.press("Enter");
+  const drawer = page.getByRole("dialog", { name: /Form 4 Filing Detail/ });
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toContainText("SYNTHETIC OWNER ALPHA");
+  await expect(drawer).toContainText("Director");
+  await expect(drawer).toContainText("Purchase");
+  await expect(drawer).toContainText("123.45");
+  await expect(drawer).toContainText("$10.25");
+  await expect(drawer).toContainText("$1.27K");
+  await expect(drawer).toContainText(
+    "Filing narratives, addresses, owner CIKs, signatures, and raw source are intentionally omitted."
+  );
+  await expect(drawer.getByText("Footnotes & Remarks")).toHaveCount(0);
+  await expect(drawer.getByText("Data Lineage")).toHaveCount(0);
+  await expect(drawer.locator("a.drawer-source")).toHaveCount(2);
+  await expect(drawer.locator("a.drawer-source").first()).toHaveAttribute(
+    "rel",
+    "noopener noreferrer"
+  );
+  await expect(page).toHaveURL(new RegExp(`filing=${liveAccession}`));
+  expect(requested.some(value => value.endsWith(
+    `/data/insiders/public/filings/${liveAccession}.json`
+  ))).toBe(true);
+  await expect(drawer.getByRole("button", { name: "Close filing detail" }))
+    .toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveCount(0);
+  await expect(detailButton).toBeFocused();
+  await expect(page).not.toHaveURL(/filing=/);
+});
+
+test("complex live filing preserves joint, null, indirect, and derivative semantics", async ({
+  page,
+}) => {
+  await page.route(
+    "**/data/insiders/public/securities/03770N101.json",
+    route => route.fulfill({ json: complexLiveSecurity })
+  );
+  await page.route(
+    `**/data/insiders/public/filings/${complexLiveAccession}.json`,
+    route => route.fulfill({
+      body: fs.readFileSync(complexLiveFilingPath),
+      contentType: "application/json",
+    })
+  );
+  await page.goto(
+    "/?range=all&transactionScope=all#stock/03770N101/insiders"
+  );
+
+  const rows = page.locator("#insiderTransactionTable tbody tr.insider-row");
+  await expect(rows).toHaveCount(2);
+  const weightedRow = rows.filter({ hasText: "$5.03K" });
+  await expect(weightedRow).toContainText(
+    "SYNTHETIC OWNER BETA / SYNTHETIC TEST ENTITY"
+  );
+  await expect(weightedRow.locator("td").nth(4)).toContainText("$20.125");
+  await expect(weightedRow.locator("td").nth(4)).toHaveAttribute(
+    "title",
+    "Reported weighted-average price"
+  );
+  await expect(weightedRow.locator("td").nth(6)).toHaveAttribute(
+    "title",
+    "Indirect ownership"
+  );
+
+  const missingRow = rows.filter({ hasText: "5.00000001" });
+  await expect(missingRow.locator("td").nth(4)).toHaveText("—");
+  await expect(missingRow.locator("td").nth(5)).toHaveText("—");
+
+  await weightedRow.locator(".filing-detail-button").click();
+  const drawer = page.getByRole("dialog", { name: /Form 4 Filing Detail/ });
+  await expect(drawer).toContainText("SYNTHETIC OWNER BETA");
+  await expect(drawer).toContainText("SYNTHETIC TEST ENTITY");
+  await expect(drawer).toContainText("Exercise / Conversion");
+  await expect(drawer).toContainText("weighted average");
+  await expect(drawer).toContainText("Indirect");
+  await expect(drawer).toContainText("Derivative holding");
+  await expect(drawer).toContainText("Underlying 03770N101 · 42.125 shares");
+  await expect(drawer).toContainText("Exercise price $4.25");
+  await expect(drawer).not.toContainText("0000000002");
+  await expect(drawer).not.toContainText("ownerGroupKey");
+  await expect(drawer).not.toContainText("PRIVATE STREET");
+});
+
+test("live reporting-insiders view groups only privacy-safe published names", async ({
+  page,
+}) => {
+  await page.goto("/#stock/03770N101/reporting-insiders");
+
+  await expect(page.getByRole("button", { name: "Reporting Insiders" }))
+    .toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Reporting Insiders" }))
+    .toBeVisible();
+  await expect(page.getByText("SYNTHETIC OWNER ALPHA", { exact: true }))
+    .toBeVisible();
+  await expect(page.locator("#reportingInsidersTable")).toContainText("Director");
+  await expect(page.locator("#reportingInsidersTable")).toContainText("$1.27K");
+  await expect(page.getByText(
+    "Owners are grouped only by identical published names in this security view; no private or cross-filing owner identifier is exposed."
+  )).toBeVisible();
+  await expect(page.getByText("Fixture preview — not real filing data."))
+    .toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("Fixture unavailable");
+  await expect(page.locator("body")).not.toContainText("0000000002");
 });
 
 test("native logo and JSON-derived fund cards activate with Enter and Space", async ({
@@ -346,6 +808,12 @@ test("deployed hosts ignore fixture opt-in without requesting fixture data", asy
       await route.fulfill({ status: 404, body: "not found" });
       return;
     }
+    if (
+      url.pathname === "/data/insiders/public/securities/03770N101.json"
+    ) {
+      await route.fulfill({ status: 404, body: "not found" });
+      return;
+    }
     if (jsonBodies[url.pathname]) {
       await route.fulfill({ json: jsonBodies[url.pathname] });
       return;
@@ -373,8 +841,10 @@ test("deployed hosts ignore fixture opt-in without requesting fixture data", asy
     `${deployedOrigin}/?insiderPreview=fixture#stock/03770N101/insiders`
   );
   await expect(
-    page.locator(".fund-panel-title").filter({ hasText: "Current Holders" })
+    page.getByRole("heading", { name: "No published insider activity" })
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Insider Activity" }))
+    .toHaveAttribute("aria-current", "page");
   await expect(page.getByText("Fixture preview — not real filing data."))
     .toHaveCount(0);
   expect(fixtureRequests).toBe(0);
@@ -786,6 +1256,25 @@ test("malicious stock IDs cannot execute through Phase 1 controls", async ({
   });
 });
 
+test("live holder page cross-links to a published 90-day insider view", async ({ page }) => {
+  await page.goto("/#stock/03770N101");
+
+  const crossLink = page.getByRole("region", {
+    name: "Insider Activity preview link",
+  });
+  await expect(crossLink).toContainText("Published Forms 3, 4, and 5");
+  await expect(crossLink).toContainText("90-day view");
+  await expect(crossLink).not.toContainText("Illustrative fixture preview");
+  await crossLink.getByRole("button", { name: "View insider activity →" }).click();
+  await expect(page).toHaveURL(
+    /\?range=90d#stock\/03770N101\/insiders$/
+  );
+  await expect(page.getByRole("heading", { name: "Synthetic Test Issuer" }))
+    .toBeVisible();
+  await expect(page.getByRole("button", { name: "90D" }))
+    .toHaveAttribute("aria-pressed", "true");
+});
+
 test("holders insider cross-link retains its valid routed action", async ({ page }) => {
   await page.goto("/?insiderPreview=fixture#stock/03770N101");
   await page.getByRole("button", { name: "View insider activity →" }).click();
@@ -940,10 +1429,11 @@ test("JSON-derived stock and fund identifiers cannot execute in navigation contr
 
 test("reporting-insiders is a routed fixture subview", async ({ page }) => {
   await page.goto(
-    "/?insiderPreview=fixture#stock/03770N101/insiders"
+    "/?insiderPreview=fixture&page=3#stock/03770N101/insiders"
   );
   await page.getByRole("button", { name: "Reporting Insiders" }).click();
   await expect(page).toHaveURL(/#stock\/03770N101\/reporting-insiders$/);
+  await expect(page).not.toHaveURL(/page=/);
   await expect(page.getByRole("button", { name: "Reporting Insiders" }))
     .toHaveAttribute("aria-current", "page");
   await expect(page.locator("#reportingInsidersTable")).toBeVisible();
@@ -962,17 +1452,18 @@ test("reporting-insiders is a routed fixture subview", async ({ page }) => {
 test("leaving the insider view clears filters but Back restores them", async ({ page }) => {
   await page.goto(
     "/?insiderPreview=fixture&ownerScope=officers-directors&plan=10b5-1"
-      + "&search=Jane#stock/03770N101/insiders"
+      + "&search=Jane&page=3#stock/03770N101/insiders"
   );
   await page.getByRole("button", { name: "Institutional Holders" }).click();
   await expect(page).toHaveURL(/\?insiderPreview=fixture#stock\/03770N101$/);
-  await expect(page).not.toHaveURL(/ownerScope=|plan=|search=/);
+  await expect(page).not.toHaveURL(/ownerScope=|plan=|search=|page=/);
 
   await page.goBack();
   await expect(page).toHaveURL(/#stock\/03770N101\/insiders$/);
   await expect(page).toHaveURL(/ownerScope=officers-directors/);
   await expect(page).toHaveURL(/plan=10b5-1/);
   await expect(page).toHaveURL(/search=Jane/);
+  await expect(page).toHaveURL(/page=3/);
 });
 
 test("All Transactions renders a neutral marker for other codes", async ({ page }) => {
@@ -1028,6 +1519,48 @@ test("other-only filtered results keep net P/S at zero", async ({ page }) => {
   await expect(net).toContainText("Balanced");
 });
 
+test("stale live response cannot overwrite reporting-insiders", async ({ page }) => {
+  const delayed = await delayFirstLiveSecurityResponse(page);
+  await page.goto("/#stock/03770N101/insiders");
+  await delayed.started;
+
+  await page.getByRole("button", { name: "Reporting Insiders" }).click();
+  await expect(page).toHaveURL(/#stock\/03770N101\/reporting-insiders$/);
+  await expect(page.locator("#reportingInsidersTable")).toBeVisible();
+
+  delayed.release();
+  await delayed.finished;
+  await page.evaluate(() => new Promise(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve))
+  ));
+
+  await expect(page).toHaveURL(/#stock\/03770N101\/reporting-insiders$/);
+  await expect(page.getByRole("button", { name: "Reporting Insiders" }))
+    .toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#reportingInsidersTable")).toBeVisible();
+  await expect(page.locator("#insiderTransactionTable")).toHaveCount(0);
+});
+
+test("stale live response cannot overwrite institutional holders", async ({ page }) => {
+  const delayed = await delayFirstLiveSecurityResponse(page);
+  await page.goto("/#stock/03770N101/insiders");
+  await delayed.started;
+
+  await page.getByRole("button", { name: "Institutional Holders" }).click();
+  await expect(page).toHaveURL(/#stock\/03770N101$/);
+  await expect(page.locator("#stockTable")).toBeVisible();
+
+  delayed.release();
+  await delayed.finished;
+  await page.evaluate(() => new Promise(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve))
+  ));
+
+  await expect(page).toHaveURL(/#stock\/03770N101$/);
+  await expect(page.locator("#stockTable")).toBeVisible();
+  await expect(page.locator("#insiderTransactionTable")).toHaveCount(0);
+});
+
 test("loading and fetch-error states preserve the stock shell", async ({ page }) => {
   let releaseFixture;
   await page.route("**/apge-insider-activity.example.json", async (route) => {
@@ -1055,13 +1588,50 @@ test("loading and fetch-error states preserve the stock shell", async ({ page })
   await expect(errorPage.getByText("Apogee Therapeutics")).toBeVisible();
 });
 
-for (const viewport of [
+const insiderViewports = [
   { width: 1621, height: 970 },
   { width: 1440, height: 900 },
   { width: 1024, height: 768 },
   { width: 768, height: 1024 },
   { width: 390, height: 844 },
-]) {
+];
+
+for (const viewport of insiderViewports) {
+  test(`live responsive layout ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.goto("/#stock/03770N101/insiders");
+    await expect(page.getByRole("heading", { name: "Synthetic Test Issuer" }))
+      .toBeVisible();
+    await expect(page.locator("#insiderTransactionTable")).toBeVisible();
+    await expect(page.getByRole("heading", {
+      name: "Insider Transaction Timeline",
+    })).toBeVisible();
+    await expect(page.getByText("Fixture preview — not real filing data."))
+      .toHaveCount(0);
+    const layout = await page.locator(".insider-layout").evaluate(element => {
+      const style = getComputedStyle(element);
+      const main = element.querySelector(".insider-main").getBoundingClientRect();
+      const rail = element.querySelector(".insider-summary-rail").getBoundingClientRect();
+      return {
+        columns: style.gridTemplateColumns.split(" ").length,
+        mainWidth: main.width,
+        railWidth: rail.width,
+        overflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    expect(layout.overflow).toBeLessThanOrEqual(1);
+    if (viewport.width >= 1280) {
+      expect(layout.columns).toBe(2);
+      expect(layout.railWidth).toBeGreaterThanOrEqual(315);
+      expect(layout.railWidth).toBeLessThanOrEqual(345);
+      expect(layout.mainWidth).toBeGreaterThan(750);
+    } else {
+      expect(layout.columns).toBe(1);
+    }
+  });
+}
+
+for (const viewport of insiderViewports) {
   test(`deterministic responsive screenshot ${viewport.width}x${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await page.goto(

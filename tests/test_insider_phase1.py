@@ -67,7 +67,9 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
 
     def test_fixture_path_requires_exact_canonical_apge_security_identity(self) -> None:
         preview_start = self.html.index("function insiderPreviewEnabled(")
-        preview_end = self.html.index("// ---------- URL routing ----------", preview_start)
+        preview_end = self.html.index(
+            "// ---------- URL routing ----------", preview_start
+        )
         fixture_constant_start = self.html.index("const INSIDER_FIXTURE_PATH =")
         fixture_constant_end = self.html.index("\n", fixture_constant_start) + 1
         helper_start = self.html.index("function insiderFixturePathForStock(")
@@ -140,7 +142,50 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
             json.loads(completed.stdout),
         )
 
-    def test_stock_subroutes_are_flag_gated_and_preserve_identity(self) -> None:
+    def test_live_insider_security_paths_are_canonical_and_bounded(self) -> None:
+        start = self.html.index("const safeTicker =")
+        end = self.html.index("function holdingHistoryKey(", start)
+        completed = subprocess.run(
+            [
+                "node",
+                "-e",
+                self.html[start:end]
+                + """
+                const available = typeof insiderSecurityPathForStock === "function";
+                const cases = available ? {
+                  equity: insiderSecurityPathForStock("03770n101"),
+                  derivative: insiderSecurityPathForStock("29273v100|call"),
+                  dotTicker: insiderSecurityPathForStock("BRK.B"),
+                  traversal: insiderSecurityPathForStock("../03770N101"),
+                  unknownInstrument: insiderSecurityPathForStock("03770N101|SWAP"),
+                  overlong: insiderSecurityPathForStock("A".repeat(161)),
+                } : {};
+                console.log(JSON.stringify({ available, cases }));
+                """,
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            {
+                "available": True,
+                "cases": {
+                    "equity": ("data/insiders/public/securities/03770N101.json"),
+                    "derivative": (
+                        "data/insiders/public/securities/29273V100__CALL.json"
+                    ),
+                    "dotTicker": "data/insiders/public/securities/BRK.B.json",
+                    "traversal": None,
+                    "unknownInstrument": None,
+                    "overlong": None,
+                },
+            },
+            json.loads(completed.stdout),
+        )
+
+    def test_stock_subroutes_are_live_without_enabling_fixture_preview(self) -> None:
         start = self.html.index("function parseAppRoute(")
         end = self.html.index("function wireUrlRouting(", start)
         completed = subprocess.run(
@@ -157,11 +202,11 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
                   reporting: parseAppRoute(
                     "#stock/03770N101/reporting-insiders", true
                   ),
-                  gated: parseAppRoute(
+                  liveWithoutFixture: parseAppRoute(
                     "#stock/03770N101/insiders", false
                   ),
-                  encoded: parseAppRoute("#stock/ABC%7CNOTE/insiders", true),
-                  invalid: parseAppRoute("#stock/03770N101/not-a-view", true),
+                  encoded: parseAppRoute("#stock/ABC%7CNOTE/insiders", false),
+                  invalid: parseAppRoute("#stock/03770N101/not-a-view", false),
                 }));
                 """,
             ],
@@ -187,10 +232,10 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
                     "id": "03770N101",
                     "view": "reporting-insiders",
                 },
-                "gated": {
+                "liveWithoutFixture": {
                     "kind": "stock",
                     "id": "03770N101",
-                    "view": "holders",
+                    "view": "insiders",
                 },
                 "encoded": {
                     "kind": "stock",
@@ -199,6 +244,52 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
                 },
                 "invalid": None,
             },
+            json.loads(completed.stdout),
+        )
+
+    def test_stock_url_writer_preserves_live_insider_subroutes(self) -> None:
+        preview_start = self.html.index("function insiderPreviewEnabled(")
+        preview_end = self.html.index(
+            "// ---------- URL routing ----------", preview_start
+        )
+        routing_start = self.html.index("const INSIDER_VIEW_QUERY_KEYS =")
+        routing_end = self.html.index(
+            "// ---------- curated browse lookups ----------", routing_start
+        )
+        completed = subprocess.run(
+            [
+                "node",
+                "-e",
+                self.html[preview_start:preview_end]
+                + self.html[routing_start:routing_end]
+                + """
+                const writes = [];
+                global.location = {
+                  hostname: "13f.wesleyyon.com",
+                  pathname: "/",
+                  search: "",
+                  hash: "",
+                };
+                global.history = {
+                  pushState: (_state, _title, url) => writes.push(url),
+                };
+                setUrl("stock", "03770N101", "insiders");
+                setUrl("stock", "ABC|NOTE", "reporting-insiders");
+                setUrl("stock", "03770N101", "holders");
+                console.log(JSON.stringify(writes));
+                """,
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            [
+                "/#stock/03770N101/insiders",
+                "/#stock/ABC%7CNOTE/reporting-insiders",
+                "/#stock/03770N101",
+            ],
             json.loads(completed.stdout),
         )
 
@@ -221,6 +312,7 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
                 + self.html[start:end]
                 + self.html[helper_start:helper_end]
                 + """
+                let currentInsiderPayloadMode = "fixture";
                 const fixture = JSON.parse(require("fs").readFileSync(
                   "13f-insider-activity-prd/fixtures/"
                     + "apge-insider-activity.example.json",
@@ -307,8 +399,8 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
             'class="insider-summary-rail"',
             'id="insiderDrawer"',
             'role="dialog"',
-            'function openInsiderFiling(',
-            'function closeInsiderDrawer(',
+            "function openInsiderFiling(",
+            "function closeInsiderDrawer(",
         )
         for contract in required_contracts:
             with self.subTest(contract=contract):
@@ -337,6 +429,7 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
                 + self.html[helper_start:helper_end]
                 + self.html[filter_start:filter_end]
                 + """
+                let currentInsiderPayloadMode = "fixture";
                 global.location = {
                   search: "?plan=10b5-1&transactionScope=ps"
                 };
@@ -415,7 +508,7 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
             'data-action="load-stock" data-stock-id="${esc(lookupId)}"',
             'data-action="load-fund" data-fund-cik="${esc(f.cik)}"',
             'data-action="load-fund" data-fund-cik="${esc(h.cik)}"',
-            'CIK ${esc(f.cik)}',
+            "CIK ${esc(f.cik)}",
         ):
             with self.subTest(delegated_contract=delegated_contract):
                 self.assertIn(delegated_contract, self.html)
@@ -440,9 +533,7 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
         ):
             with self.subTest(stale_path=stale_path):
                 self.assertNotIn(stale_path, plan)
-        self.assertNotIn(
-            "Decide whether Phase 1 is local/test-only", plan
-        )
+        self.assertNotIn("Decide whether Phase 1 is local/test-only", plan)
         self.assertNotIn(
             "Confirm whether the first UI shows a complete fixture subview", plan
         )
@@ -453,9 +544,7 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/test.yml").read_text()
         artifact_builder = (ROOT / "scripts/build_pages_artifact.py").read_text()
 
-        self.assertEqual(
-            "1.58.2", package["devDependencies"]["@playwright/test"]
-        )
+        self.assertEqual("1.58.2", package["devDependencies"]["@playwright/test"])
         self.assertEqual(
             "1.58.2",
             lock["packages"]["node_modules/@playwright/test"]["version"],

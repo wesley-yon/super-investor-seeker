@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import hashlib
 import itertools
 import json
 import os
@@ -509,6 +510,166 @@ class InsiderPublicationTests(unittest.TestCase):
                 as_of=AS_OF,
                 latest_successful_sync_at=SYNC_AT,
             )
+
+    def test_public_symbols_reject_private_or_correlating_values(self) -> None:
+        unsafe_values = (
+            "file:///private/source",
+            "https://intranet.example",
+            "intranet.example",
+            "0000000002",
+            "a" * 64,
+        )
+        for unsafe_value in unsafe_values:
+            with self.subTest(surface="filing issuer", value=unsafe_value):
+                case = ORACLE["filings"]["form4_simple_purchase"]
+                fixture = (FIXTURE_ROOT / case["filename"]).read_bytes()
+                raw_xml = fixture.replace(b"TST1", unsafe_value.encode("ascii"))
+                self.assertNotEqual(fixture, raw_xml)
+                filing = parse_ownership_xml(
+                    raw_xml,
+                    accession_number=case["accession_number"],
+                    filing_date=case["filing_date"],
+                    accepted_at=case["accepted_at"],
+                    source_index_url=case["source_index_url"],
+                    source_document_url=case["source_document_url"],
+                )
+                with self.assertRaisesRegex(InsiderPublicationError, "issuer symbol"):
+                    build_insider_publication(
+                        [filing],
+                        issuer_state=issuer_state([filing]),
+                        security_mappings=security_mapping(filing),
+                        as_of=AS_OF,
+                        latest_successful_sync_at=SYNC_AT,
+                    )
+
+            with self.subTest(surface="security ticker", value=unsafe_value):
+                filing = parse_case("form4_simple_purchase")
+                mappings = security_mapping(filing)
+                mapping = next(iter(mappings.values()))
+                mapping["ticker"] = unsafe_value
+                with self.assertRaisesRegex(InsiderPublicationError, "ticker"):
+                    build_insider_publication(
+                        [filing],
+                        issuer_state=issuer_state([filing]),
+                        security_mappings=mappings,
+                        as_of=AS_OF,
+                        latest_successful_sync_at=SYNC_AT,
+                    )
+
+    def test_sec_url_binding_rejects_encoded_or_noncanonical_paths(self) -> None:
+        filing = parse_case("form4_simple_purchase")
+        accession = filing["accession_number"]
+        issuer = filing["issuer"]
+        source = filing["source"]
+        assert isinstance(accession, str)
+        assert isinstance(issuer, dict)
+        assert isinstance(source, dict)
+        issuer_cik = issuer["cik"]
+        exact = source["document_url"]
+        assert isinstance(issuer_cik, str)
+        assert isinstance(exact, str)
+        prefix, filename = exact.rsplit("/", 1)
+        unsafe_urls = {
+            "uppercase scheme": exact.replace("https://", "HTTPS://"),
+            "uppercase host": exact.replace("www.sec.gov", "WWW.SEC.GOV"),
+            "mixed-case scheme and host": exact.replace(
+                "https://www.sec.gov", "Https://WwW.SeC.Gov"
+            ),
+            "encoded dot traversal": f"{prefix}/%2e%2e/%2e%2e/2/x.xml",
+            "encoded slash": f"{prefix}/%2F..%2F..%2F2%2Fx.xml",
+            "encoded backslash": f"{prefix}/%5C..%5C2%5Cx.xml",
+            "encoded filename": f"{prefix}/%66{filename[1:]}",
+            "literal dot segment": f"{prefix}/./{filename}",
+            "double slash": f"{prefix}//{filename}",
+        }
+        self.assertEqual(
+            exact,
+            publication_module._safe_bound_sec_url(
+                exact,
+                "source document URL",
+                issuer_cik=issuer_cik,
+                accession=accession,
+            ),
+        )
+        for label, unsafe_url in unsafe_urls.items():
+            with (
+                self.subTest(label=label),
+                self.assertRaisesRegex(
+                    InsiderPublicationError,
+                    "source document URL",
+                ),
+            ):
+                publication_module._safe_bound_sec_url(
+                    unsafe_url,
+                    "source document URL",
+                    issuer_cik=issuer_cik,
+                    accession=accession,
+                )
+
+        state = issuer_state([filing])
+        mapping = security_mapping(filing)
+        publication = build_insider_publication(
+            [filing],
+            issuer_state=state,
+            security_mappings=mapping,
+            as_of=AS_OF,
+            latest_successful_sync_at=SYNC_AT,
+        )
+        malicious = copy.deepcopy(publication)
+        detail = malicious.filing_payloads[accession]
+        detail_source = detail["source"]
+        assert isinstance(detail_source, dict)
+        malicious_url = unsafe_urls["encoded dot traversal"]
+        detail_source["documentUrl"] = malicious_url
+        for collection in ("transactions", "holdings"):
+            rows = detail[collection]
+            assert isinstance(rows, list)
+            for row in rows:
+                assert isinstance(row, dict)
+                if row.get("secDocumentUrl") is not None:
+                    row["secDocumentUrl"] = malicious_url
+        encoded_detail = canonical_public_json_bytes(detail)
+
+        def replace_security_source_url(value: object) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key == "secDocumentUrl" and item == exact:
+                        value[key] = malicious_url
+                    else:
+                        replace_security_source_url(item)
+            elif isinstance(value, list):
+                for item in value:
+                    replace_security_source_url(item)
+
+        for stem, page in malicious.security_payloads.items():
+            replace_security_source_url(page)
+            filing_refs = page["filingRefs"]
+            assert isinstance(filing_refs, list)
+            for filing_ref in filing_refs:
+                assert isinstance(filing_ref, dict)
+                if filing_ref.get("accessionNumber") == accession:
+                    filing_ref["bytes"] = len(encoded_detail)
+                    filing_ref["sha256"] = hashlib.sha256(encoded_detail).hexdigest()
+            encoded_page = canonical_public_json_bytes(page)
+            manifest_entries = malicious.manifest["securityPayloads"]
+            assert isinstance(manifest_entries, list)
+            manifest_entry = next(
+                entry
+                for entry in manifest_entries
+                if isinstance(entry, dict)
+                and entry.get("path") == f"securities/{stem}.json"
+            )
+            manifest_entry["bytes"] = len(encoded_page)
+            manifest_entry["sha256"] = hashlib.sha256(encoded_page).hexdigest()
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            self.assertRaisesRegex(
+                InsiderPublicationError,
+                "SEC source",
+            ),
+        ):
+            write_insider_publication(malicious, repository_root=Path(tmpdir))
 
     def test_private_owner_group_key_cannot_be_smuggled_through_public_name(
         self,
