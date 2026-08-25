@@ -62,6 +62,32 @@ immediately after the exact live deployment and private rollback marker are
 verified, and scheduled recovery removes any artifact left by an interrupted
 finalization.
 
+## Insider activity website
+
+The `#stock/<stock-id>/insiders` and
+`#stock/<stock-id>/reporting-insiders` views load only bounded, validated,
+same-origin public payloads under `data/insiders/public/`. The browser accepts
+the exact site contract 5 / insider public contract 1 shape, rejects unknown
+fields and inconsistent filing references, and caps a security response at
+5 MB and a filing detail at 1 MB. A missing security payload produces an
+explicit empty state. Network, size, decoding, or contract failures produce a
+generic error and never fall back to illustrative data.
+
+The local-only `?insiderPreview=fixture` flag remains available for the bundled
+illustrative APGE preview and deterministic screenshots; deployed hosts ignore
+it. Production filing detail is fetched only from the current validated
+security payload's canonical same-origin reference and must match its declared
+byte count and SHA-256 digest. The drawer renders only the already published,
+privacy-screened owner, transaction, holding, and SEC-source fields.
+
+Client filters and sorting operate on the complete bounded security payload.
+The transaction table renders at most 100 rows per URL-backed page while the
+summary and transaction timeline continue to use the full filtered set. No
+daily market-price, split, or currency provider is approved. Production
+therefore renders an explicit transaction-only timeline using prices reported
+in each SEC transaction when present; it draws no daily price line, fabricates
+no missing price, and makes no browser-to-provider call.
+
 ## Automation
 
 Scheduled workflows obtain a short-lived token from the repository-scoped
@@ -95,9 +121,9 @@ XML. It then rebuilds every issuer named in the private, reviewed
 and admits no more than 15,000 normalized filings or 250 MB of canonical
 normalized input across the complete run. It combines the complete policy corpus
 in memory and replaces the public insider tree once through the journaled writer.
-Ingestion approval alone does not authorize public publication, the materializer
-performs no network fetch, backfill, or reparse, and the production browser
-remains fixture-backed until the separately reviewed Phase 5 UI integration.
+Ingestion approval alone does not authorize public publication, and the
+materializer performs no network fetch, backfill, or reparse. The live browser
+adapter remains read-only and cannot activate ingestion or materialization.
 
 Automation stores the App client ID in the repository variable
 `DATA_ARCHIVE_APP_CLIENT_ID` and its private key in the repository secret

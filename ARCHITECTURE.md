@@ -55,10 +55,36 @@ live Pages deployment remain unchanged.
 7. Finalization retains the active snapshot plus one fallback and immediately
    removes the temporary public Pages bulk artifact.
 8. The browser loads public indexes and individual compressed fund or stock
-   payloads on demand. Insider JSON is likewise public and scrapeable when a
-   validated generation is present, although the production insider UI remains
-   fixture-backed until Phase 5. The private source archive is never exposed as
+   payloads on demand. When a validated insider generation is present, the
+   insider routes load its bounded per-security payload and digest-bound filing
+   details from the same origin. The private source archive is never exposed as
    a persistent bulk download.
+
+### Live Insider Browser Boundary
+
+The `insiders` and `reporting-insiders` stock subroutes are static-site views;
+they do not introduce an API server. `site-data-loader.js` transparently maps
+the exact admitted public insider `.json` paths to their packaged `.json.gz`
+files. `index.html` then applies a closed contract-1 validator before rendering.
+A 404 is a public-data empty state. Any other fetch, byte-limit, UTF-8, shape,
+identity, or reconciliation failure is a generic error and cannot fall through
+to the local illustrative fixture.
+
+A filing drawer request must originate from exactly one filing reference in the
+currently validated security payload. The accession, relative same-origin path,
+declared bytes, and SHA-256 digest must all match before the detail is rendered.
+Only the privacy-screened name-as-filed and company relationship/title already
+admitted by `insider_publication.py` can reach owner display surfaces; there is
+no browser owner catalog, private identifier, or cross-filing identity lookup.
+
+Static security payloads contain the complete bounded canonical row set. Browser
+filters and sorting do not redefine financial values, and the table exposes at
+most 100 rows per URL-backed client page while cards, rail, and timeline use the
+entire filtered set. Because no daily price/split/currency provider contract is
+approved, the live chart is transaction-only and uses only a transaction's
+reported price when present. It performs no browser-to-provider calls and draws
+no daily price line. Public materialization remains a separate manual, default-off
+operation; loading these public files cannot trigger it.
 
 ## Data Pipeline (`pipeline.py`)
 
@@ -371,9 +397,10 @@ detail data therefore load on demand; ordinary visitors do not download the
 complete corpus up front.
 
 The loader also recognizes only the exact same-origin insider security and
-filing path grammar. The production `index.html` does not yet request those
-payloads: replacing the fixture adapter and activating the visible live insider
-views remains Phase 5.
+filing path grammar. Phase 5 uses those paths for the live `insiders` and
+`reporting-insiders` subviews, then applies the closed browser contract before
+rendering. The illustrative fixture adapter remains loopback-only, explicit,
+and default-off; live fetch or validation failures cannot fall through to it.
 
 ---
 
