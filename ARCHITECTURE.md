@@ -27,8 +27,8 @@ Any future UI rework must preserve the rules in the Design section below.
            │ exact validated, bounded Pages artifact
            v
 ┌──────────────────────┐
-│ GitHub Pages         │  public indexes plus individually compressed
-│ static HTML/JS/CSS   │  fund and stock payloads loaded on demand
+│ GitHub Pages         │  public indexes plus individually compressed fund,
+│ static HTML/JS/CSS   │  stock, and optional validated insider payloads
 └──────────────────────┘
 ```
 
@@ -45,14 +45,20 @@ live Pages deployment remain unchanged.
    separate weekly pass fully refreshes the CUSIP/OpenFIGI registry.
 3. The pipeline discovers all 13F filers, fetches new filings, rebuilds derived
    data, and runs complete corpus validation plus regression tests.
-4. Changed data is published as a new private, content-addressed snapshot.
-5. Pages restores that exact snapshot, rebuilds a bounded public artifact, and
+4. Bounded Section 16 maintenance may update private normalized records and
+   checkpoints. A separate manual, default-off gate may then rebuild the entire
+   reviewed public-insider policy corpus; merge, push, and scheduled events
+   cannot select that materialization gate.
+5. Changed data is published as a new private, content-addressed snapshot.
+6. Pages restores that exact snapshot, rebuilds a bounded public artifact, and
    refuses stale code or dataset inputs before deployment.
-6. Finalization retains the active snapshot plus one fallback and immediately
+7. Finalization retains the active snapshot plus one fallback and immediately
    removes the temporary public Pages bulk artifact.
-7. The browser loads public indexes and individual compressed fund or stock
-   payloads on demand. Those public payloads can be enumerated or scraped; the
-   private source archive is not exposed as a persistent bulk download.
+8. The browser loads public indexes and individual compressed fund or stock
+   payloads on demand. Insider JSON is likewise public and scrapeable when a
+   validated generation is present, although the production insider UI remains
+   fixture-backed until Phase 5. The private source archive is never exposed as
+   a persistent bulk download.
 
 ## Data Pipeline (`pipeline.py`)
 
@@ -118,11 +124,56 @@ data/                     # Private snapshot input; ignored by Git
     037833100.json        # AAPL equity, keyed by canonical security identity
     29273V100__CALL.json  # Option family kept separate from its underlying
     ...                   # one file per public security identity
+  insiders/
+    private/              # Raw/normalized ownership records and durable state
+      accessions/...      # Immutable source plus parser-versioned derivations
+      state/
+        publication-policy-v1.json  # Reviewed public issuer/class allowlist
+    public/               # Generated only by the private-to-public boundary
+      manifest.json
+      securities/*.json
+      filings/*.json
 ```
 
-Only the three browser indexes and individually gzip-compressed files from
-`data/funds/` and `data/stocks/` enter the Pages artifact. Pipeline state,
-health reports, registries, and operational caches remain private.
+Only the three browser indexes, individually gzip-compressed files from
+`data/funds/` and `data/stocks/`, and the optional validated insider manifest
+plus compressed `securities/` and `filings/` projections enter the Pages
+artifact. Pipeline state, insider private records, health reports, registries,
+and operational caches remain private.
+
+### Section 16 Publication Policy and Materialization
+
+`approved-issuers-v1` authorizes bounded private ingestion; it does not by
+itself authorize an issuer for the public website. The separate private
+`publication-policy-v1` state is a reviewed, versioned allowlist of public
+issuer CIKs and exact security-class mappings. Its issuer set may be a strict
+subset of ingestion-approved issuers. Every materialization rebuilds all policy
+issuers—not merely the issuer touched by the immediately preceding maintenance
+run—so one atomic replacement is always a complete policy corpus.
+
+`scripts/publish_insider_activity.py` is an offline production adapter around
+the Phase 4 projection library. It accepts only a fixed repository root and a
+bounded `incremental`, `backfill`, or `reparse` maintenance identity. Before any
+public write it requires an exact completed checkpoint. Because the v1
+incremental state stores issuer scope only in queued accessions, the adapter
+rejects an empty incremental completion as unbound even though ingestion may
+retain it as a valid no-op. The adapter opens every referenced
+canonical normalized record by the exact SHA-256 recorded in issuer state
+without invoking the filing-index or ownership-XML parsers, re-derives and
+exactly reconciles issuer state, verifies complete policy mappings, applies
+explicit canonical UTC freshness timestamps, and enforces aggregate ceilings of
+15,000 normalized filings and 250 MB of canonical normalized input before
+building every policy issuer in memory. It then invokes the journaled
+`write_insider_publication` boundary once. Any missing, stale, unapproved,
+ambiguous, incomplete, noncanonical, or unmapped input fails before the public
+tree is replaced.
+
+The hosted entry point is deliberately manual and default-off. A
+`workflow_dispatch` must select a bounded insider maintenance mode and separately
+set `publish_insider_publication=true` with exact timestamps. The materializer
+runs after private checkpoint validation and before generated-data validation,
+full tests, snapshot publication, and Pages selection. It performs no SEC or
+OpenFIGI calls and cannot silently broaden or initiate a backfill or reparse.
 
 ### Fund JSON Format (`data/funds/{cik}.json`)
 
@@ -319,6 +370,11 @@ in the browser, with a compatibility fallback for local development. Search and
 detail data therefore load on demand; ordinary visitors do not download the
 complete corpus up front.
 
+The loader also recognizes only the exact same-origin insider security and
+filing path grammar. The production `index.html` does not yet request those
+payloads: replacing the fixture adapter and activating the visible live insider
+views remains Phase 5.
+
 ---
 
 ## GitHub Actions Workflows
@@ -334,6 +390,13 @@ complete corpus up front.
   validated snapshot.
 - Runs the quarterly pipeline, recent-filing replay, registry rebuild, complete
   corpus validator, and regression tests.
+- Supports bounded, separately authorized insider maintenance. Scheduled
+  ingestion is repository-variable gated; public insider materialization is
+  manual-only, default-off, timestamp-bound, and requires a completed matching
+  checkpoint plus the private reviewed publication policy.
+- Runs the offline public-insider materializer, when explicitly selected, after
+  private checkpoint validation and before all public validation and tests.
+  Merge, push, and scheduled runs cannot select this step.
 - Mints a fresh write-scoped token only immediately before publication.
 - If the content digest is unchanged, reuses the active release. Otherwise it
   publishes a draft release, round-trips its manifest and archive, then marks it
@@ -390,8 +453,9 @@ Required repository configuration:
 - Publishing source: GitHub Actions, not a branch directory.
 - Static entry points: `.nojekyll`, `CNAME`, `index.html`, and
   `site-data-loader.js`.
-- Public data allowlist: the three browser indexes plus individual compressed
-  fund and stock payloads.
+- Public data allowlist: the three browser indexes, individual compressed fund
+  and stock payloads, and—when present—the validated insider manifest plus its
+  exact compressed security and filing topology.
 - Custom domain: `https://13f.wesleyyon.com/`, fronted by Cloudflare.
 - Direct scripted reads may receive a Cloudflare challenge. Individual payloads
   are nevertheless public and should be treated as scrapeable.

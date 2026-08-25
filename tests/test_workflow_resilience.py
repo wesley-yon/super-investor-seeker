@@ -602,6 +602,106 @@ gh_mutate_once() {
                 self.assertIn(f"default: {default}", field_block)
                 self.assertIn(f"type: {input_type}", field_block)
 
+    def test_public_insider_materialization_is_manual_explicit_and_default_off(self):
+        workflow = read(".github/workflows/update-data.yml")
+        dispatch = workflow.split("  workflow_dispatch:", 1)[1].split(
+            "\nconcurrency:", 1
+        )[0]
+
+        publish = dispatch.split("      publish_insider_publication:", 1)[1].split(
+            "\n      insider_publication_as_of:", 1
+        )[0]
+        self.assertIn("required: false", publish)
+        self.assertIn("default: false", publish)
+        self.assertIn("type: boolean", publish)
+        for field, default in (
+            ("insider_publication_as_of", "''"),
+            ("insider_publication_latest_successful_sync_at", "'none'"),
+        ):
+            with self.subTest(field=field):
+                field_block = dispatch.split(f"      {field}:", 1)[1]
+                self.assertIn("required: false", field_block)
+                self.assertIn(f"default: {default}", field_block)
+                self.assertIn("type: string", field_block)
+
+        resolver = workflow.split(
+            "- name: Resolve bounded insider maintenance plan", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn(
+            "REQUESTED_PUBLISH: ${{ inputs.publish_insider_publication || 'false' }}",
+            resolver,
+        )
+        self.assertIn(
+            "REQUESTED_PUBLICATION_AS_OF: ${{ inputs.insider_publication_as_of || '' }}",
+            resolver,
+        )
+        self.assertIn(
+            "REQUESTED_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT: ${{ inputs.insider_publication_latest_successful_sync_at || 'none' }}",
+            resolver,
+        )
+        self.assertIn("publish=false", resolver)
+        dispatch_branch = resolver.split(
+            'elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then', 1
+        )[1].split("\n          fi", 1)[0]
+        self.assertIn('publish="$REQUESTED_PUBLISH"', dispatch_branch)
+        schedule_branch = resolver.split('if [ "$EVENT_NAME" = "schedule" ]; then', 1)[
+            1
+        ].split('elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then', 1)[0]
+        self.assertNotIn("REQUESTED_PUBLISH", schedule_branch)
+        self.assertIn(
+            'if [ "$publish" = "true" ] && [ "$mode" = "off" ]; then', resolver
+        )
+        self.assertIn(
+            "Public insider publication requires a maintenance mode", resolver
+        )
+        for output in (
+            "publish",
+            "publication_as_of",
+            "publication_latest_successful_sync_at",
+        ):
+            self.assertIn(f'echo "{output}=', resolver)
+
+        materialize = workflow.split(
+            "- name: Materialize approved public insider publication", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn(
+            "if: ${{ steps.insider_plan.outputs.publish == 'true' }}",
+            materialize,
+        )
+        self.assertIn("timeout-minutes: 15", materialize)
+        for environment_name in (
+            "INSIDER_MODE",
+            "INSIDER_ISSUER_CIK",
+            "INSIDER_QUARTER",
+            "INSIDER_MAX_ACCESSIONS",
+            "INSIDER_PUBLICATION_AS_OF",
+            "INSIDER_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT",
+        ):
+            self.assertIn(f"{environment_name}:", materialize)
+        self.assertIn("python scripts/publish_insider_activity.py", materialize)
+        self.assertIn('--maintenance-mode "$INSIDER_MODE"', materialize)
+        self.assertIn('--maintenance-issuer-cik "$INSIDER_ISSUER_CIK"', materialize)
+        self.assertIn(
+            '--maintenance-max-accessions "$INSIDER_MAX_ACCESSIONS"', materialize
+        )
+        self.assertIn('--as-of "$INSIDER_PUBLICATION_AS_OF"', materialize)
+        self.assertIn(
+            '--latest-successful-sync-at "$INSIDER_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT"',
+            materialize,
+        )
+        self.assertIn('--maintenance-quarter "$INSIDER_QUARTER"', materialize)
+        self.assertNotIn("SEC_USER_AGENT", materialize)
+        self.assertNotIn("OPENFIGI_API_KEY", materialize)
+
+        self.assertLess(
+            workflow.index("- name: Validate private insider checkpoint state"),
+            workflow.index("- name: Materialize approved public insider publication"),
+        )
+        self.assertLess(
+            workflow.index("- name: Materialize approved public insider publication"),
+            workflow.index("- name: Validate generated data"),
+        )
+
     def test_insider_plan_is_bounded_and_scheduled_execution_is_opt_in(self):
         workflow = read(".github/workflows/update-data.yml")
         resolver = workflow.split(
@@ -717,6 +817,7 @@ gh_mutate_once() {
             "- name: Resolve validated insider resume state",
             "- name: Run bounded insider maintenance",
             "- name: Validate private insider checkpoint state",
+            "- name: Materialize approved public insider publication",
             "- name: Validate generated data",
             "- name: Run full Python regression suite",
             "- name: Publish validated private snapshot",

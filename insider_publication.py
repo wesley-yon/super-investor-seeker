@@ -137,6 +137,10 @@ _PUBLIC_ADDRESS_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _PUBLIC_CIK_TOKEN_RE = re.compile(r"(?<![0-9])[0-9]{10}(?![0-9])")
+_PUBLIC_PRIVATE_CORRELATOR_RE = re.compile(
+    r"(?<![A-F0-9])[A-F0-9]{64}(?![A-F0-9])",
+    re.IGNORECASE,
+)
 _PUBLIC_LOCAL_PATH_RE = re.compile(
     r"(?:^[\\/]|^[A-Za-z]:[\\/]|^file://|(?:^|[\\/])\.\.(?:[\\/]|$)|"
     r"(?:^|[\s;])/(?:Users|etc|home|private|tmp|var)(?:/|$))",
@@ -324,6 +328,7 @@ def _safe_public_name(value: object, label: str, *, maximum: int) -> str:
         or _PUBLIC_IP_ADDRESS_RE.search(text) is not None
         or _PUBLIC_ADDRESS_TEXT_RE.search(text) is not None
         or _PUBLIC_CIK_TOKEN_RE.search(text) is not None
+        or _PUBLIC_PRIVATE_CORRELATOR_RE.search(text) is not None
     ):
         raise _fail(label)
     return text

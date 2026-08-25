@@ -31,7 +31,7 @@ from insider_publication import (
     validate_insider_public_tree,
     write_insider_publication,
 )
-from security_identity import stock_file_stem
+from security_identity import section16_owner_group_key, stock_file_stem
 from tests.test_insider_metrics import transaction_row
 
 
@@ -491,6 +491,34 @@ class InsiderPublicationTests(unittest.TestCase):
         raw_xml = fixture.replace(
             b"SYNTHETIC OWNER ALPHA",
             b"SYNTHETIC OWNER 0000000002",
+        )
+        filing = parse_ownership_xml(
+            raw_xml,
+            accession_number=case["accession_number"],
+            filing_date=case["filing_date"],
+            accepted_at=case["accepted_at"],
+            source_index_url=case["source_index_url"],
+            source_document_url=case["source_document_url"],
+        )
+
+        with self.assertRaisesRegex(InsiderPublicationError, "owner name"):
+            build_insider_publication(
+                [filing],
+                issuer_state=issuer_state([filing]),
+                security_mappings=security_mapping(filing),
+                as_of=AS_OF,
+                latest_successful_sync_at=SYNC_AT,
+            )
+
+    def test_private_owner_group_key_cannot_be_smuggled_through_public_name(
+        self,
+    ) -> None:
+        case = ORACLE["filings"]["form4_simple_purchase"]
+        fixture = (FIXTURE_ROOT / case["filename"]).read_bytes()
+        private_owner_group_key = section16_owner_group_key(["0000000002"])
+        raw_xml = fixture.replace(
+            b"SYNTHETIC OWNER ALPHA",
+            private_owner_group_key.encode("ascii"),
         )
         filing = parse_ownership_xml(
             raw_xml,

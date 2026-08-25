@@ -78,6 +78,7 @@ INCREMENTAL_STATE_CONTRACT_VERSION = 1
 BACKFILL_STATE_CONTRACT_VERSION = 1
 REPARSE_STATE_CONTRACT_VERSION = 1
 APPROVED_ISSUERS_STATE_CONTRACT_VERSION = 1
+PUBLICATION_POLICY_STATE_CONTRACT_VERSION = 1
 ISSUER_STATE_CONTRACT_VERSION = 1
 QUARANTINE_STATE_CONTRACT_VERSION = 1
 TELEMETRY_STATE_CONTRACT_VERSION = 1
@@ -86,6 +87,7 @@ _STATE_CONTRACT_VERSIONS = {
     "backfill": BACKFILL_STATE_CONTRACT_VERSION,
     "reparse": REPARSE_STATE_CONTRACT_VERSION,
     "approved": APPROVED_ISSUERS_STATE_CONTRACT_VERSION,
+    "publication_policy": PUBLICATION_POLICY_STATE_CONTRACT_VERSION,
     "issuer": ISSUER_STATE_CONTRACT_VERSION,
     "accession_quarantine": QUARANTINE_STATE_CONTRACT_VERSION,
     "quarter_quarantine": QUARANTINE_STATE_CONTRACT_VERSION,
@@ -936,40 +938,90 @@ class InsiderStorage:
                 "raw ownership XML must be stored before normalization"
             ) from error
 
-    def read_normalized(self, accession_number: str, parser_version: str) -> dict[str, object]:
+    def _read_normalized_artifact_locked(
+        self,
+        descriptor: int,
+        accession: str,
+        version: str,
+    ) -> tuple[dict[str, object], bytes]:
+        normalized_descriptor, _ = _open_child_directory(
+            descriptor, "normalized", create=False, restricted=True
+        )
+        try:
+            rendered = _read_regular_file(
+                normalized_descriptor,
+                f"{version}.json",
+                max_bytes=MAX_NORMALIZED_JSON_BYTES,
+            )
+        finally:
+            os.close(normalized_descriptor)
+        try:
+            parsed = _strict_json_bytes(rendered)
+            if (
+                not isinstance(parsed, dict)
+                or canonical_insider_json_bytes(parsed) != rendered
+                or parsed.get("accession_number") != accession
+                or parsed.get("parser_version") != version
+            ):
+                raise ValueError
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise InsiderStorageError("stored normalized filing is invalid") from error
+        return parsed, rendered
+
+    def read_normalized_by_sha256(
+        self,
+        accession_number: str,
+        parser_version: str,
+        expected_sha256: str,
+    ) -> dict[str, object]:
+        """Read one canonical normalized artifact bound to its durable state digest."""
+
         accession = _validate_accession(accession_number)
         version = _validate_parser_version(parser_version)
+        if (
+            type(expected_sha256) is not str
+            or _SHA256_RE.fullmatch(expected_sha256) is None
+        ):
+            raise InsiderStorageError("expected normalized SHA-256 is invalid")
         try:
             with self._open_accession_directory(
                 accession, create=False, lock=True
             ) as (descriptor, _):
-                normalized_descriptor, _ = _open_child_directory(
-                    descriptor, "normalized", create=False, restricted=True
+                parsed, rendered = self._read_normalized_artifact_locked(
+                    descriptor,
+                    accession,
+                    version,
                 )
-                try:
-                    rendered = _read_regular_file(
-                        normalized_descriptor,
-                        f"{version}.json",
-                        max_bytes=MAX_NORMALIZED_JSON_BYTES,
+                if hashlib.sha256(rendered).hexdigest() != expected_sha256:
+                    raise InsiderStorageError(
+                        "stored normalized filing does not match the expected SHA-256"
                     )
-                finally:
-                    os.close(normalized_descriptor)
-                try:
-                    parsed = _strict_json_bytes(rendered)
-                    if (
-                        not isinstance(parsed, dict)
-                        or canonical_insider_json_bytes(parsed) != rendered
-                        or parsed.get("accession_number") != accession
-                        or parsed.get("parser_version") != version
-                    ):
-                        raise ValueError
-                except (
-                    UnicodeDecodeError,
-                    json.JSONDecodeError,
-                    TypeError,
-                    ValueError,
-                ) as error:
-                    raise InsiderStorageError("stored normalized filing is invalid") from error
+                return parsed
+        except FileNotFoundError as error:
+            raise InsiderStorageError(
+                "normalized filing must be stored before reading"
+            ) from error
+
+    def read_normalized(
+        self, accession_number: str, parser_version: str
+    ) -> dict[str, object]:
+        accession = _validate_accession(accession_number)
+        version = _validate_parser_version(parser_version)
+        try:
+            with self._open_accession_directory(accession, create=False, lock=True) as (
+                descriptor,
+                _,
+            ):
+                parsed, _ = self._read_normalized_artifact_locked(
+                    descriptor,
+                    accession,
+                    version,
+                )
                 try:
                     self._validate_normalized_source_bindings_locked(
                         descriptor, accession, parsed
@@ -980,7 +1032,9 @@ class InsiderStorage:
                     ) from error
                 return parsed
         except FileNotFoundError as error:
-            raise InsiderStorageError("normalized filing must be stored before reading") from error
+            raise InsiderStorageError(
+                "normalized filing must be stored before reading"
+            ) from error
 
 
 def _state_error(message: str) -> InsiderStorageError:
@@ -1621,6 +1675,106 @@ def _validate_approved_issuers(payload: object) -> dict[str, object]:
     return result
 
 
+def _state_publication_policy_text(
+    value: object,
+    label: str,
+    *,
+    maximum: int,
+    nullable: bool = False,
+) -> str | None:
+    if value is None and nullable:
+        return None
+    text = _state_string(value, label)
+    if len(text) > maximum:
+        raise _state_error(label)
+    return text
+
+
+def _validate_publication_policy(payload: object) -> dict[str, object]:
+    result = _state_exact_keys(
+        payload,
+        {"contract_version", "issuers"},
+        version=PUBLICATION_POLICY_STATE_CONTRACT_VERSION,
+    )
+    issuer_rows = _state_list(result["issuers"], "publication policy issuers")
+    if not issuer_rows:
+        raise _state_error("publication policy issuers")
+    issuer_ciks: list[str] = []
+    for entry in issuer_rows:
+        item = _state_exact_keys(
+            entry,
+            {"issuer_cik", "security_mappings"},
+            contract=False,
+        )
+        issuer_cik = _state_cik(item["issuer_cik"], "publication policy issuer CIK")
+        mappings = item["security_mappings"]
+        if (
+            type(mappings) is not dict
+            or not mappings
+            or len(mappings) > MAX_INSIDER_STATE_COLLECTION
+        ):
+            raise _state_error("publication policy security mappings")
+        for class_key, metadata in mappings.items():
+            _state_string(
+                class_key,
+                "publication policy security class key",
+                pattern=_SHA256_RE,
+            )
+            mapping = _state_exact_keys(
+                metadata,
+                {
+                    "stockId",
+                    "fileStem",
+                    "ticker",
+                    "companyName",
+                    "securityType",
+                    "securityTypeLabel",
+                    "cusip",
+                    "primary",
+                },
+                contract=False,
+            )
+            _state_publication_policy_text(
+                mapping["stockId"], "publication policy stock ID", maximum=128
+            )
+            _state_publication_policy_text(
+                mapping["fileStem"], "publication policy file stem", maximum=160
+            )
+            _state_publication_policy_text(
+                mapping["ticker"],
+                "publication policy ticker",
+                maximum=64,
+                nullable=True,
+            )
+            _state_publication_policy_text(
+                mapping["companyName"],
+                "publication policy company name",
+                maximum=256,
+            )
+            _state_publication_policy_text(
+                mapping["securityType"],
+                "publication policy security type",
+                maximum=160,
+            )
+            _state_publication_policy_text(
+                mapping["securityTypeLabel"],
+                "publication policy security type label",
+                maximum=160,
+            )
+            _state_publication_policy_text(
+                mapping["cusip"],
+                "publication policy CUSIP",
+                maximum=32,
+                nullable=True,
+            )
+            if type(mapping["primary"]) is not bool:
+                raise _state_error("publication policy primary flag")
+        issuer_ciks.append(issuer_cik)
+    if issuer_ciks != sorted(set(issuer_ciks)):
+        raise _state_error("publication policy issuer CIKs")
+    return result
+
+
 _ISSUER_STATE_KEYS = {
     "contract_version", "issuer_cik", "accessions", "owner_groups",
     "security_classes", "amendments", "unresolved_ambiguities", "generation_digest",
@@ -2085,6 +2239,11 @@ def _state_key_details(key: object) -> tuple[tuple[str, ...], str, str | None]:
         "incremental-v1": ("incremental", "incremental-v1.json", None),
         "reparse-v1": ("reparse", "reparse-v1.json", None),
         "approved-issuers-v1": ("approved", "approved-issuers-v1.json", None),
+        "publication-policy-v1": (
+            "publication_policy",
+            "publication-policy-v1.json",
+            None,
+        ),
         "telemetry-v1": ("telemetry", "telemetry-v1.json", None),
     }
     if key in exact:
@@ -2119,6 +2278,8 @@ def _validate_state_payload(kind: str, identifier: str | None, payload: object) 
         return _validate_reparse(payload)
     if kind == "approved":
         return _validate_approved_issuers(payload)
+    if kind == "publication_policy":
+        return _validate_publication_policy(payload)
     if kind == "backfill":
         assert identifier is not None
         return _validate_backfill(payload, identifier)
@@ -2942,6 +3103,7 @@ __all__ = [
     "MAX_INSIDER_STATE_STRING_CHARS",
     "MAX_TELEMETRY_ACCESSION_EXAMPLES",
     "MAX_TELEMETRY_RECENT_RUNS",
+    "PUBLICATION_POLICY_STATE_CONTRACT_VERSION",
     "QUARANTINE_STATE_CONTRACT_VERSION",
     "REPARSE_STATE_CONTRACT_VERSION",
     "TELEMETRY_STATE_CONTRACT_VERSION",

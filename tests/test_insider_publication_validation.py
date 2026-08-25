@@ -15,7 +15,7 @@ from insider_publication import (
     canonical_public_json_bytes,
     write_insider_publication,
 )
-from security_identity import stock_file_stem
+from security_identity import section16_owner_group_key, stock_file_stem
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "insider_filings"
@@ -586,6 +586,23 @@ class InsiderPublicTreeValidationTests(unittest.TestCase):
                 errors,
             )
 
+    def test_private_owner_group_key_in_allowed_name_is_rejected(self) -> None:
+        private_owner_group_key = section16_owner_group_key(["0000000002"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            public_root = self.write_tree(Path(tmpdir))
+            relative = "filings/0000000001-26-000001.json"
+            detail_path = public_root / relative
+            detail = json.loads(detail_path.read_text())
+            detail["owners"][0]["nameAsFiled"] = private_owner_group_key
+            detail_path.write_bytes(untrusted_public_json_bytes(detail))
+            update_manifest_entry(public_root, relative)
+
+            errors = self.validate(public_root)
+            self.assertTrue(
+                any("owner 0 name" in error for error in errors),
+                errors,
+            )
+
     def test_reporting_owner_address_in_allowed_name_is_rejected(self) -> None:
         for unsafe_name in (
             "123 Main St",
@@ -663,6 +680,7 @@ class InsiderPublicTreeValidationTests(unittest.TestCase):
                 )
 
     def test_address_text_in_group_and_sidebar_names_is_rejected(self) -> None:
+        private_owner_group_key = section16_owner_group_key(["0000000002"])
         mutations = {
             "filing owner group": (
                 "filings/0000000001-26-000001.json",
@@ -746,6 +764,42 @@ class InsiderPublicTreeValidationTests(unittest.TestCase):
                 "securities/03770N101.json",
                 lambda payload: payload["sidebar"]["topBuyers"][0].__setitem__(
                     "displayName", "ATTENTION SYNTHETIC OWNER"
+                ),
+            ),
+            "filing owner group private correlator": (
+                "filings/0000000001-26-000001.json",
+                lambda payload: payload["ownerGroup"].__setitem__(
+                    "displayName", private_owner_group_key
+                ),
+            ),
+            "filing transaction private correlator": (
+                "filings/0000000001-26-000001.json",
+                lambda payload: payload["transactions"][0]["ownerGroup"].__setitem__(
+                    "displayName", private_owner_group_key
+                ),
+            ),
+            "security transaction private correlator": (
+                "securities/03770N101.json",
+                lambda payload: payload["transactions"]["items"][0][
+                    "ownerGroup"
+                ].__setitem__("displayName", private_owner_group_key),
+            ),
+            "chart private correlator": (
+                "securities/03770N101.json",
+                lambda payload: payload["chartEvents"][0].__setitem__(
+                    "ownerGroupDisplayName", private_owner_group_key
+                ),
+            ),
+            "latest transaction private correlator": (
+                "securities/03770N101.json",
+                lambda payload: payload["summary"]["latestMeaningfulTransaction"][
+                    "ownerGroup"
+                ].__setitem__("displayName", private_owner_group_key),
+            ),
+            "sidebar ranking private correlator": (
+                "securities/03770N101.json",
+                lambda payload: payload["sidebar"]["topBuyers"][0].__setitem__(
+                    "displayName", private_owner_group_key
                 ),
             ),
         }
