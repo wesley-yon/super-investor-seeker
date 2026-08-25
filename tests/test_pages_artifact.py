@@ -919,6 +919,36 @@ class PagesArtifactTests(unittest.TestCase):
             self.assertTrue((retained_stage / "owned-index.html").is_file())
             self.assertTrue(not output.exists() or not any(output.iterdir()))
 
+    def test_default_limits_admit_current_validated_live_dataset(self) -> None:
+        # Public production manifest observed before the Phase 3-4 deployment.
+        validated_fund_payloads = 9_494
+        validated_stock_payloads = 57_507
+        validated_source_bytes = 5_212_826_139
+        expected_artifact_files = (
+            len(build_pages_artifact.STATIC_FILES)
+            + len(build_pages_artifact.INDEX_FILES)
+            + validated_fund_payloads
+            + validated_stock_payloads
+            + 1  # deployment-manifest.json
+        )
+
+        self.assertGreaterEqual(
+            build_pages_artifact.MAX_DATA_FILES_PER_DIRECTORY,
+            max(validated_fund_payloads, validated_stock_payloads),
+        )
+        self.assertGreaterEqual(
+            build_pages_artifact.MAX_TOTAL_SOURCE_BYTES,
+            validated_source_bytes,
+        )
+        self.assertGreaterEqual(
+            build_pages_artifact.MAX_ARTIFACT_FILES,
+            expected_artifact_files,
+        )
+        self.assertLessEqual(
+            build_pages_artifact.MAX_DATA_FILES_PER_DIRECTORY,
+            build_pages_artifact.MAX_ARTIFACT_FILES,
+        )
+
     def test_build_enforces_independent_source_resource_limits(self) -> None:
         cases = (
             ("MAX_STATIC_FILE_BYTES", 1, "static file exceeds"),
