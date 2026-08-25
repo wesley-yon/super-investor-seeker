@@ -1,4 +1,6 @@
+import hashlib
 import json
+import struct
 import subprocess
 import unittest
 from pathlib import Path
@@ -59,6 +61,81 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
                 "localDefault": False,
                 "deployedOptIn": False,
                 "wrongValue": False,
+            },
+            json.loads(completed.stdout),
+        )
+
+    def test_fixture_path_requires_exact_canonical_apge_security_identity(self) -> None:
+        preview_start = self.html.index("function insiderPreviewEnabled(")
+        preview_end = self.html.index("// ---------- URL routing ----------", preview_start)
+        fixture_constant_start = self.html.index("const INSIDER_FIXTURE_PATH =")
+        fixture_constant_end = self.html.index("\n", fixture_constant_start) + 1
+        helper_start = self.html.index("function insiderFixturePathForStock(")
+        helper_end = self.html.index("function insiderQueryState(", helper_start)
+        completed = subprocess.run(
+            [
+                "node",
+                "-e",
+                self.html[preview_start:preview_end]
+                + self.html[fixture_constant_start:fixture_constant_end]
+                + self.html[helper_start:helper_end]
+                + """
+                global.location = {
+                  hostname: "localhost",
+                  search: "?insiderPreview=fixture",
+                };
+                const cases = {
+                  exact: insiderFixturePathForStock("03770n101", {
+                    stock_id: "03770N101",
+                    cusip: "03770N101",
+                    ticker: "APGE",
+                  }),
+                  tickerAliasOnly: insiderFixturePathForStock("APGE", {
+                    ticker: "APGE",
+                    issuer: "Apogee Therapeutics",
+                  }),
+                  wrongCanonicalIdentityWithApgeTicker: insiderFixturePathForStock("99999X999", {
+                    stock_id: "99999X999",
+                    cusip: "99999X999",
+                    ticker: "APGE",
+                  }),
+                  conflictingMetadataWithApgeTicker: insiderFixturePathForStock("03770N101", {
+                    stock_id: "99999X999",
+                    cusip: "99999X999",
+                    ticker: "APGE",
+                  }),
+                  nameAliasOnly: insiderFixturePathForStock("APOGEE THERAPEUTICS", {
+                    issuer: "Apogee Therapeutics",
+                  }),
+                };
+                global.location = { hostname: "localhost", search: "" };
+                cases.defaultOff = insiderFixturePathForStock("03770N101", {
+                  stock_id: "03770N101", cusip: "03770N101",
+                });
+                global.location = {
+                  hostname: "example.test",
+                  search: "?insiderPreview=fixture",
+                };
+                cases.nonLoopback = insiderFixturePathForStock("03770N101", {
+                  stock_id: "03770N101", cusip: "03770N101",
+                });
+                console.log(JSON.stringify(cases));
+                """,
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            {
+                "exact": "13f-insider-activity-prd/fixtures/apge-insider-activity.example.json",
+                "tickerAliasOnly": None,
+                "wrongCanonicalIdentityWithApgeTicker": None,
+                "conflictingMetadataWithApgeTicker": None,
+                "nameAliasOnly": None,
+                "defaultOff": None,
+                "nonLoopback": None,
             },
             json.loads(completed.stdout),
         )
@@ -156,10 +233,15 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
                   sale: markup.includes("$9.42M"),
                   net: markup.includes("-$7.61M"),
                   latest: markup.includes("Jane H. Smith"),
-                  tablist: markup.includes('role="tablist"'),
-                  selected: markup.includes(
-                    'aria-selected="true">Insider Activity'
+                  navigation: markup.includes(
+                    '<nav class="security-tabs" aria-label="Security views">'
                   ),
+                  current: markup.includes(
+                    'aria-current="page">Insider Activity'
+                  ),
+                  tablist: markup.includes('role="tablist"'),
+                  tab: markup.includes('role="tab"'),
+                  selected: markup.includes('aria-selected='),
                 }));
                 """,
             ],
@@ -175,10 +257,42 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
                 "sale": True,
                 "net": True,
                 "latest": True,
-                "tablist": True,
-                "selected": True,
+                "navigation": True,
+                "current": True,
+                "tablist": False,
+                "tab": False,
+                "selected": False,
             },
             json.loads(completed.stdout),
+        )
+
+    def test_source_mockup_comparison_manifest_is_exact_and_auditable(
+        self,
+    ) -> None:
+        manifest_path = (
+            ROOT
+            / "13f-insider-activity-prd/reference"
+            / "phase1-implementation-comparison.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(1, manifest["contract_version"])
+        for key in ("source_mockup", "implementation_baseline"):
+            item = manifest[key]
+            artifact = ROOT / item["path"]
+            payload = artifact.read_bytes()
+            self.assertEqual(item["sha256"], hashlib.sha256(payload).hexdigest())
+            self.assertEqual(b"\x89PNG\r\n\x1a\n", payload[:8])
+            self.assertEqual(
+                [item["width"], item["height"]],
+                list(struct.unpack(">II", payload[16:24])),
+            )
+        self.assertEqual(
+            {
+                "fixture_disclaimer",
+                "simplified_fixture_chart_and_markers",
+                "fewer_visible_fixture_rows",
+            },
+            {item["id"] for item in manifest["accepted_differences"]},
         )
 
     def test_complete_fixture_markup_has_chart_table_rail_and_drawer_hooks(
@@ -188,6 +302,7 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
             'id="insiderPriceChart"',
             'aria-label="Share price and insider transaction chart"',
             'id="insiderTransactionTable"',
+            '<button type="button" class="filing-detail-button"',
             'data-insider-accession="${esc(accession)}"',
             'class="insider-summary-rail"',
             'id="insiderDrawer"',
@@ -198,6 +313,10 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
         for contract in required_contracts:
             with self.subTest(contract=contract):
                 self.assertIn(contract, self.html)
+        self.assertNotRegex(
+            self.html,
+            r'<tr class="insider-row"[^>]*(?:tabindex|data-insider-accession)',
+        )
 
     def test_plan_filter_is_url_backed_and_conservative(self) -> None:
         helper_start = self.html.index("function validFixtureIsoDate(")
@@ -281,6 +400,52 @@ class InsiderPhase1SemanticsTests(unittest.TestCase):
         self.assertIn("Insider Activity — 90D", self.html)
         self.assertIn("Illustrative fixture preview · not real filing data", self.html)
         self.assertIn("View insider activity →", self.html)
+
+    def test_data_derived_navigation_uses_delegated_actions(self) -> None:
+        for inline_handler in (
+            'onclick="loadStock(',
+            'onclick="closeGlobalSearch(); loadStock(',
+            'onclick="loadFund(',
+            'onclick="closeGlobalSearch(); loadFund(',
+        ):
+            with self.subTest(inline_handler=inline_handler):
+                self.assertNotIn(inline_handler, self.html)
+        for delegated_contract in (
+            "function wireDataActions()",
+            'data-action="load-stock" data-stock-id="${esc(lookupId)}"',
+            'data-action="load-fund" data-fund-cik="${esc(f.cik)}"',
+            'data-action="load-fund" data-fund-cik="${esc(h.cik)}"',
+            'CIK ${esc(f.cik)}',
+        ):
+            with self.subTest(delegated_contract=delegated_contract):
+                self.assertIn(delegated_contract, self.html)
+
+    def test_plan_records_as_built_private_paths_and_resolved_phase1_scope(
+        self,
+    ) -> None:
+        plan = (ROOT / "IMPLEMENTATION_PLAN.md").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "data/insiders/private/accessions/<accession>/...",
+            plan,
+        )
+        self.assertIn("data/insiders/private/state/...", plan)
+        self.assertIn("Phase 1 is local-only and default-off.", plan)
+        self.assertIn("Reporting Insiders is implemented fixture scope.", plan)
+        for stale_path in (
+            "data/insiders/filings/<accession>.json",
+            "data/insiders/raw/<accession>.xml",
+            "data/insiders/issuers/<issuer-cik>.json",
+            "data/insider_pipeline_state.json",
+        ):
+            with self.subTest(stale_path=stale_path):
+                self.assertNotIn(stale_path, plan)
+        self.assertNotIn(
+            "Decide whether Phase 1 is local/test-only", plan
+        )
+        self.assertNotIn(
+            "Confirm whether the first UI shows a complete fixture subview", plan
+        )
 
     def test_visual_runner_is_pinned_and_ci_gated(self) -> None:
         package = json.loads((ROOT / "package.json").read_text())

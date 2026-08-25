@@ -32,6 +32,10 @@ _ACCESSION_RE = re.compile(r"[0-9]{10}-[0-9]{2}-[0-9]{6}")
 _CIK_RE = re.compile(r"[0-9]{10}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _PARSER_VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_ARCHIVE_PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}")
+_OWNERSHIP_DOCUMENT_FILENAME_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}\.xml"
+)
 _ISO_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _ISO_UTC_TIMESTAMP_RE = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T"
@@ -396,17 +400,28 @@ def _validate_sec_accession_url(
     value: object,
     path: str,
     accession_number: str,
+    *,
+    allow_nested: bool,
 ) -> str:
     _validate_sec_url(value, path)
     assert isinstance(value, str)
     compact_accession = accession_number.replace("-", "")
     path_components = urlsplit(value).path.split("/")
+    document_components = path_components[6:] if len(path_components) >= 7 else []
     if (
-        len(path_components) != 7
+        (len(path_components) != 7 if not allow_nested else len(path_components) < 7)
         or path_components[1:4] != ["Archives", "edgar", "data"]
         or not path_components[4].isdigit()
         or path_components[5] != compact_accession
-        or not path_components[6]
+        or not document_components
+        or any(
+            not _ARCHIVE_PATH_SEGMENT_RE.fullmatch(component)
+            for component in document_components
+        )
+        or (
+            allow_nested
+            and not _OWNERSHIP_DOCUMENT_FILENAME_RE.fullmatch(document_components[-1])
+        )
     ):
         raise InsiderContractError(
             f"{path} must match the filing accession_number archive path"
@@ -730,7 +745,7 @@ def _validate_external_metadata_sources(payload: dict[str, Any]) -> None:
             )
 
 
-def _validate_root_shape(payload: dict[str, Any]) -> None:
+def _validate_root_shape(payload: dict[str, Any]) -> str:
     missing = sorted(_REQUIRED_ROOT_FIELDS - set(payload))
     if missing:
         raise InsiderContractError(
@@ -778,11 +793,13 @@ def _validate_root_shape(payload: dict[str, Any]) -> None:
         source.get("index_url"),
         "source.index_url",
         accession,
+        allow_nested=False,
     )
     source_document_cik = _validate_sec_accession_url(
         source.get("document_url"),
         "source.document_url",
         accession,
+        allow_nested=True,
     )
     _validate_external_metadata_sources(payload)
 
@@ -822,9 +839,9 @@ def _validate_root_shape(payload: dict[str, Any]) -> None:
         or issuer_cik == "0000000000"
     ):
         raise InsiderContractError("issuer.cik is invalid")
-    if source_index_cik != issuer_cik or source_document_cik != issuer_cik:
+    if source_index_cik != issuer_cik:
         raise InsiderContractError(
-            "source URL issuer CIK does not match issuer.cik"
+            "source index URL archive CIK does not match issuer CIK"
         )
     _require_string(issuer.get("name_as_filed"), "issuer.name_as_filed")
     for field in (
@@ -884,9 +901,10 @@ def _validate_root_shape(payload: dict[str, Any]) -> None:
     if not isinstance(payload["amendment"], dict):
         raise InsiderContractError("amendment must be an object")
     _validate_nested_temporal_fields(payload)
+    return source_document_cik
 
 
-def _validate_owner_and_signature_shapes(payload: dict[str, Any]) -> None:
+def _validate_owner_and_signature_shapes(payload: dict[str, Any]) -> frozenset[str]:
     owner_ciks: list[str] = []
     for owner_order, owner in enumerate(payload["owners"]):
         if not isinstance(owner, dict):
@@ -1056,6 +1074,7 @@ def _validate_owner_and_signature_shapes(payload: dict[str, Any]) -> None:
             },
             "signature",
         )
+    return frozenset(owner_ciks)
 
 
 def _validate_amendment_metadata(payload: dict[str, Any]) -> None:
@@ -1896,7 +1915,8 @@ def _validate_footnote_links(payload: dict[str, Any]) -> None:
                 raise InsiderContractError(
                     "row field footnotes do not match raw lineage"
                 )
-            for field_name, referenced_ids in references.items():
+            for field_name in sorted(references):
+                referenced_ids = references[field_name]
                 if type(field_name) is not str or not isinstance(
                     referenced_ids,
                     list,
@@ -1997,10 +2017,18 @@ def validate_insider_filing(payload: object) -> dict[str, Any]:
 
     if not isinstance(payload, dict):
         raise InsiderContractError("insider filing must be a JSON object")
-    _validate_root_shape(payload)
+    source_document_cik = _validate_root_shape(payload)
     _validate_tristate_fields(payload)
     _validate_filing_header_sources(payload)
-    _validate_owner_and_signature_shapes(payload)
+    owner_ciks = _validate_owner_and_signature_shapes(payload)
+    issuer = payload["issuer"]
+    assert isinstance(issuer, dict)
+    issuer_cik = issuer["cik"]
+    assert isinstance(issuer_cik, str)
+    if source_document_cik not in {issuer_cik, *owner_ciks}:
+        raise InsiderContractError(
+            "source document URL archive CIK does not match issuer CIK or owner CIK"
+        )
     _validate_amendment_metadata(payload)
     _validate_unknowns_and_warnings(payload)
     _validate_decimal_fields(payload)

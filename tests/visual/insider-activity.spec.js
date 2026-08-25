@@ -31,6 +31,13 @@ const stock = {
   holders: [],
 };
 
+const fund = {
+  data_contract_version: 5,
+  cik: 1,
+  name: "Fixture Fund",
+  quarters: [],
+};
+
 const fixturePath = path.join(
   root,
   "13f-insider-activity-prd/fixtures/apge-insider-activity.example.json"
@@ -46,6 +53,7 @@ async function installDeterministicRoutes(page) {
     }
     const bodies = {
       "/data/funds-index.json": fundsIndex,
+      "/data/funds/1.json": fund,
       "/data/security_labels.json": securityLabels,
       "/data/stocks/03770N101.json": stock,
     };
@@ -75,8 +83,152 @@ test("local APGE preview renders fixture summary", async ({ page }) => {
 
   await expect(page.getByText("Fixture preview — not real filing data.")).toBeVisible();
   await expect(page.getByText("$1.81M")).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Insider Activity" }))
-    .toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "Insider Activity" }))
+    .toHaveAttribute("aria-current", "page");
+});
+
+test("rendered delegated data actions are native keyboard controls", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    idx = {
+      funds: [{ cik: 1, name: "Fixture Fund", q: [20262, 20261] }],
+      tickers: [{
+        stock_id: "03770N101",
+        cusip: "03770N101",
+        ticker: "APGE",
+        issuer: "Apogee Therapeutics",
+        instrument_type: "EQUITY",
+      }],
+    };
+    globalSearch("FIXTURE");
+    app().insertAdjacentHTML("beforeend", `
+      <table><tbody id="fundTbody"></tbody></table><div id="fundFoot"></div>
+      <table><tbody id="stockTbody"></tbody></table><div id="stockFoot"></div>
+    `);
+    curFundRows = [{
+      cusip: "03770N101", ticker: "APGE", issuer: "Apogee Therapeutics",
+      instrument_type: "EQUITY", pct: 1, value: 100, shares: 10,
+      ch: null, prevPct: 0, sparkData: [],
+    }];
+    curStockRows = [{
+      cik: 1, name: "Fixture Fund", value: 100, shares: 10,
+      pctOfFund: 1, ch: null, sparkData: [], asOfDate: "2026-06-30",
+    }];
+    renderFundTbody();
+    renderStockTbody();
+  });
+
+  const controls = page.locator(
+    ".gsearch-item, #fundTbody [data-action], #stockTbody [data-action]"
+  );
+  await expect(controls).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    const control = controls.nth(index);
+    expect(await control.evaluate(node => ({
+      tag: node.tagName,
+      type: node.getAttribute("type"),
+      tabIndex: node.tabIndex,
+    }))).toEqual({ tag: "BUTTON", type: "button", tabIndex: 0 });
+  }
+
+  await page.evaluate(() => {
+    window.__nativeActionAudit = [];
+    loadFund = cik => window.__nativeActionAudit.push(["fund", cik]);
+    loadStock = stockId => window.__nativeActionAudit.push(["stock", stockId]);
+  });
+  await controls.nth(0).focus();
+  await page.keyboard.press("Enter");
+  await page.evaluate(() => globalSearch("APGE"));
+  await page.locator(".gsearch-item").first().focus();
+  await page.keyboard.press(" ");
+  await page.locator("#fundTbody [data-action]").focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#stockTbody [data-action]").focus();
+  await page.keyboard.press(" ");
+  await page.evaluate(() => {
+    fundIndexByCik = new Map([["1", {
+      cik: 1, name: "Fixture Fund", q: [20262, 20261],
+    }]]);
+    currentReportingQuarter = 20262;
+    renderStock({
+      stock_id: "03770N101",
+      cusip: "03770N101",
+      ticker: "APGE",
+      issuer: "Apogee Therapeutics",
+      instrument_type: "EQUITY",
+      holders: [{
+        cik: 1,
+        name: "Fixture Fund",
+        history: [
+          { date: "2026-06-30", shares: 10, value: 100, pct_of_fund: 1 },
+          { date: "2026-03-31", shares: 9, value: 90, pct_of_fund: 1 },
+        ],
+      }],
+    }, idx.tickers[0]);
+  });
+  const summaryControl = page.locator(".stock-summary-name[data-action]").first();
+  expect(await page.locator(".stock-summary-name[data-action]").count()).toBeGreaterThan(0);
+  expect(await summaryControl.evaluate(node => ({
+    tag: node.tagName,
+    type: node.getAttribute("type"),
+    tabIndex: node.tabIndex,
+  }))).toEqual({ tag: "BUTTON", type: "button", tabIndex: 0 });
+  await summaryControl.focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => window.__nativeActionAudit)).toEqual([
+    ["fund", "1"],
+    ["stock", "03770N101"],
+    ["stock", "03770N101"],
+    ["fund", "1"],
+    ["fund", "1"],
+  ]);
+});
+
+test("browser rejects APGE ticker aliases for the fixture path", async ({ page }) => {
+  await page.goto("/?insiderPreview=fixture");
+  await expect(page).toHaveURL(/insiderPreview=fixture/);
+  await expect(page.evaluate(() => ({
+    exact: insiderFixturePathForStock("03770N101", {
+      stock_id: "03770N101", cusip: "03770N101", ticker: "APGE",
+    }),
+    tickerAlias: insiderFixturePathForStock("APGE", {
+      ticker: "APGE", issuer: "Apogee Therapeutics",
+    }),
+    wrongSecurityWithApgeTicker: insiderFixturePathForStock("99999X999", {
+      stock_id: "99999X999", cusip: "99999X999", ticker: "APGE",
+    }),
+  }))).resolves.toEqual({
+    exact: "13f-insider-activity-prd/fixtures/apge-insider-activity.example.json",
+    tickerAlias: null,
+    wrongSecurityWithApgeTicker: null,
+  });
+});
+
+test("security views use ordinary button keyboard navigation", async ({ page }) => {
+  await page.goto(
+    "/?insiderPreview=fixture#stock/03770N101/insiders"
+  );
+
+  const navigation = page.getByRole("navigation", { name: "Security views" });
+  const holders = navigation.getByRole("button", {
+    name: "Institutional Holders",
+  });
+  const insiders = navigation.getByRole("button", { name: "Insider Activity" });
+  const reporting = navigation.getByRole("button", {
+    name: "Reporting Insiders",
+  });
+
+  await expect(insiders).toHaveAttribute("aria-current", "page");
+  await holders.focus();
+  await page.keyboard.press("Tab");
+  await expect(insiders).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(reporting).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#stock\/03770N101\/reporting-insiders$/);
+  await expect(reporting).toHaveAttribute("aria-current", "page");
 });
 
 test("preview remains default-off and preserves holders", async ({ page }) => {
@@ -86,8 +238,146 @@ test("preview remains default-off and preserves holders", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByText("Fixture preview — not real filing data."))
     .toHaveCount(0);
-  await expect(page.getByRole("tab", { name: "Insider Activity" }))
+  await expect(page.getByRole("button", { name: "Insider Activity" }))
     .toHaveCount(0);
+});
+
+test("native logo and JSON-derived fund cards activate with Enter and Space", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    _popularFundsCache = [{ cik: 1, name: "Fixture Fund" }];
+    renderFundsHome();
+  });
+  const logo = page.getByRole("button", { name: "13F Super Investor Seeker" });
+  const card = page.getByRole("button", { name: /Fixture Fund.*CIK 1/ });
+
+  await expect(card).toBeVisible();
+  await card.focus();
+  await expect(card).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#fund\/1$/);
+  await expect(page.getByText("No quarter data available for this fund yet.")).toBeVisible();
+
+  await logo.focus();
+  await expect(logo).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/$/);
+  await expect(card).toBeVisible();
+  await page.getByRole("button", { name: /Fixture Fund.*CIK 1/ }).click();
+  await expect(page).toHaveURL(/#fund\/1$/);
+  await expect(page.getByText("No quarter data available for this fund yet.")).toBeVisible();
+  await page.getByRole("button", { name: "13F Super Investor Seeker" }).click();
+  await expect(page).toHaveURL(/\/$/);
+
+  await page.goto("/");
+  await page.evaluate(() => {
+    _popularFundsCache = [{ cik: 1, name: "Fixture Fund" }];
+    renderFundsHome();
+    wireDataActions();
+  });
+  const spaceCard = page.getByRole("button", { name: /Fixture Fund.*CIK 1/ });
+  await expect(spaceCard).toBeVisible();
+  await spaceCard.focus();
+  await expect(spaceCard).toBeFocused();
+  await spaceCard.press(" ");
+  await expect(page).toHaveURL(/#fund\/1$/);
+});
+
+test("renderFund rejects malformed total values without DOM injection", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const rendered = await page.evaluate(() => {
+    window.__fundValueXss = false;
+    const invalidValues = [
+      "<img src=x onerror=window.__fundValueXss=true>",
+      "123", "12x", NaN, Infinity, -Infinity,
+    ];
+    return invalidValues.map(total_value => {
+      renderFund({
+        cik: 1,
+        name: "Fixture Fund",
+        quarters: [{
+          report_date: "2026-06-30",
+          filing_date: "2026-08-14",
+          total_value,
+          holdings: [],
+        }],
+      });
+      return {
+        display: document.querySelector(".fund-stat-value").textContent,
+        images: document.querySelectorAll(".fund-stat-value img").length,
+      };
+    });
+  });
+
+  expect(rendered).toEqual([
+    { display: "—", images: 0 },
+    { display: "—", images: 0 },
+    { display: "—", images: 0 },
+    { display: "—", images: 0 },
+    { display: "—", images: 0 },
+    { display: "—", images: 0 },
+  ]);
+  await expect.poll(() => page.evaluate(() => window.__fundValueXss)).toBe(false);
+});
+
+test("deployed hosts ignore fixture opt-in without requesting fixture data", async ({
+  page,
+}) => {
+  let fixtureRequests = 0;
+  const deployedOrigin = "http://13f.wesleyyon.com:4173";
+  await page.route(`${deployedOrigin}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("apge-insider-activity.example.json")) {
+      fixtureRequests += 1;
+      await route.abort("blockedbyclient");
+      return;
+    }
+    const jsonBodies = {
+      "/data/funds-index.json": fundsIndex,
+      "/data/security_labels.json": securityLabels,
+      "/data/stocks/03770N101.json": stock,
+      "/data/index.json": { ...fundsIndex, tickers: [stock] },
+    };
+    if (url.pathname.endsWith(".json.gz")) {
+      await route.fulfill({ status: 404, body: "not found" });
+      return;
+    }
+    if (jsonBodies[url.pathname]) {
+      await route.fulfill({ json: jsonBodies[url.pathname] });
+      return;
+    }
+    const files = {
+      "/": ["index.html", "text/html"],
+      "/index.html": ["index.html", "text/html"],
+      "/site-data-loader.js": [
+        "site-data-loader.js",
+        "application/javascript",
+      ],
+    };
+    if (files[url.pathname]) {
+      const [relativePath, contentType] = files[url.pathname];
+      await route.fulfill({
+        body: fs.readFileSync(path.join(root, relativePath)),
+        contentType,
+      });
+      return;
+    }
+    await route.abort("blockedbyclient");
+  });
+
+  await page.goto(
+    `${deployedOrigin}/?insiderPreview=fixture#stock/03770N101/insiders`
+  );
+  await expect(
+    page.locator(".fund-panel-title").filter({ hasText: "Current Holders" })
+  ).toBeVisible();
+  await expect(page.getByText("Fixture preview — not real filing data."))
+    .toHaveCount(0);
+  expect(fixtureRequests).toBe(0);
 });
 
 test("filters, sorting, empty state, and URL state stay synchronized", async ({ page }) => {
@@ -115,6 +405,28 @@ test("filters, sorting, empty state, and URL state stay synchronized", async ({ 
   await page.getByLabel("Clear insider search").click();
   await page.getByLabel("Sort by Value").click();
   await expect(page).toHaveURL(/sort=value/);
+});
+
+test("insider transaction sort headers expose native keyboard state", async ({ page }) => {
+  await page.goto(
+    "/?insiderPreview=fixture#stock/03770N101/insiders"
+  );
+  const valueSort = () => page.locator("#insiderTransactionTable")
+    .getByRole("button", { name: "Sort by Value" });
+  const valueHeader = () => valueSort().locator("xpath=..");
+
+  await expect(valueSort()).toHaveAttribute("type", "button");
+  await expect(valueHeader()).toHaveAttribute("aria-sort", "none");
+
+  await valueSort().focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/sort=value/);
+  await expect(valueHeader()).toHaveAttribute("aria-sort", "descending");
+
+  await valueSort().focus();
+  await page.keyboard.press(" ");
+  await expect(page).toHaveURL(/order=asc/);
+  await expect(valueHeader()).toHaveAttribute("aria-sort", "ascending");
 });
 
 test("active filters reconcile cards and rail with visible transactions", async ({ page }) => {
@@ -296,8 +608,11 @@ test("filing drawer traps focus, closes with Escape, and restores focus", async 
   await page.goto(
     "/?insiderPreview=fixture#stock/03770N101/insiders"
   );
-  const row = page.locator("#insiderTransactionTable tbody tr.insider-row").first();
-  await row.focus();
+  const detailButton = page.locator(
+    "#insiderTransactionTable .filing-detail-button"
+  ).first();
+  await expect(detailButton).toHaveAttribute("type", "button");
+  await detailButton.focus();
   await page.keyboard.press("Enter");
   const drawer = page.getByRole("dialog", { name: /Form 4 Filing Detail/ });
   await expect(drawer).toBeVisible();
@@ -309,7 +624,43 @@ test("filing drawer traps focus, closes with Escape, and restores focus", async 
   await page.keyboard.press("Escape");
   await expect(drawer).toHaveCount(0);
   await expect(page).not.toHaveURL(/filing=/);
-  await expect(row).toBeFocused();
+  await expect(detailButton).toBeFocused();
+});
+
+test("public sort and load-error actions use native keyboard controls", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    app().innerHTML = `
+      <table id="fundTable"><thead><tr>
+        ${sortableHeader("onFundSort", "value", "Value", "right")}
+      </tr></thead><tbody id="fundTbody"></tbody></table>
+      <div id="fundFoot"></div>
+      <table id="stockTable"><thead><tr>
+        ${sortableHeader("onStockSort", "shares", "Shares", "right")}
+      </tr></thead><tbody id="stockTbody"></tbody></table>
+      <div id="stockFoot"></div>`;
+    curFundRows = [];
+    curStockRows = [];
+  });
+
+  const fundSortButton = page.getByRole("button", { name: "Sort by Value" });
+  await fundSortButton.focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => fundSort.col)).toBe("value");
+
+  const stockSortButton = page.getByRole("button", { name: "Sort by Shares" });
+  await stockSortButton.focus();
+  await page.keyboard.press(" ");
+  await expect.poll(() => page.evaluate(() => stockSort.col)).toBe("shares");
+
+  await page.evaluate(() => {
+    history.replaceState({}, "", `${location.pathname}${location.search}#fund/1`);
+    showLoadError("Missing fixture", "data/funds/1.json");
+  });
+  const back = page.getByRole("button", { name: "Back to search" });
+  await back.focus();
+  await page.keyboard.press(" ");
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test("chart marker opens detail by keyboard and source link is separate", async ({ page }) => {
@@ -343,7 +694,7 @@ test("fixture source links reject non-SEC URLs", async ({ page }) => {
 
   await expect(page.locator("#insiderTransactionTable .filing-cell a"))
     .toHaveCount(0);
-  await page.locator("#insiderTransactionTable tbody tr.insider-row").first().click();
+  await page.locator("#insiderTransactionTable .filing-detail-button").first().click();
   const drawer = page.getByRole("dialog", { name: /Form 4 Filing Detail/ });
   await expect(drawer.locator("a.drawer-source")).toHaveCount(0);
 });
@@ -363,21 +714,238 @@ test("fixture accessions cannot inject inline code", async ({ page }) => {
     hasText: "Jane H. Smith",
   });
   await expect(row).not.toHaveAttribute("onclick");
-  await row.click();
+  await expect(row.locator(".filing-detail-button")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => Boolean(window.__fixtureExecuted)))
     .toBe(false);
   await expect(page.getByRole("dialog", { name: /Form 4 Filing Detail/ }))
     .toHaveCount(0);
 });
 
+test("malicious stock IDs cannot execute through Phase 1 controls", async ({
+  page,
+}) => {
+  const stockId = "x');window.__inlineXss=true;//";
+  await page.goto(
+    "/?insiderPreview=fixture#stock/03770N101/insiders"
+  );
+  await expect(page.getByText("Fixture preview — not real filing data.")).toBeVisible();
+  await page.evaluate(id => {
+    window.loadStock = () => {};
+    window.__inlineXss = false;
+    currentInsiderStockId = id;
+    renderInsiderActivity(currentInsiderFixture, id);
+  }, stockId);
+  await page.getByRole("button", { name: "Reporting Insiders" }).click();
+  const tabExecuted = await page.evaluate(() => window.__inlineXss);
+
+  await page.evaluate(id => {
+    window.__inlineXss = false;
+    renderStock(
+      {
+        stock_id: id,
+        cusip: id,
+        ticker: "XSS",
+        issuer: "XSS Test Security",
+        instrument_type: "EQUITY",
+        holders: [],
+      },
+      { stock_id: id, cusip: id, ticker: "XSS", issuer: "XSS Test Security" }
+    );
+  }, stockId);
+  await page.getByRole("button", { name: "View insider activity →" }).click();
+  const crossLinkExecuted = await page.evaluate(() => window.__inlineXss);
+
+  await page.evaluate(id => {
+    window.__inlineXss = false;
+    currentInsiderStockId = id;
+    renderInsiderActivity(currentInsiderFixture, id);
+  }, stockId);
+  await page.locator(".insider-rail-section")
+    .filter({ hasText: "Largest Latest-Reported Holdings" })
+    .getByRole("button", { name: "View all" })
+    .click();
+  const railExecuted = await page.evaluate(() => window.__inlineXss);
+
+  await page.evaluate(id => {
+    window.__inlineXss = false;
+    renderInsiderError(
+      { ticker: "XSS", issuer: "XSS Test Security", cusip: id },
+      id,
+      "insiders",
+      "test error"
+    );
+  }, stockId);
+  await page.getByRole("button", { name: "Try again" }).click();
+  const errorExecuted = await page.evaluate(() => window.__inlineXss);
+
+  expect({ tabExecuted, crossLinkExecuted, railExecuted, errorExecuted }).toEqual({
+    tabExecuted: false,
+    crossLinkExecuted: false,
+    railExecuted: false,
+    errorExecuted: false,
+  });
+});
+
+test("holders insider cross-link retains its valid routed action", async ({ page }) => {
+  await page.goto("/?insiderPreview=fixture#stock/03770N101");
+  await page.getByRole("button", { name: "View insider activity →" }).click();
+  await expect(page).toHaveURL(
+    /\?insiderPreview=fixture&start=2026-04-01&end=2026-06-30&range=6m#stock\/03770N101\/insiders$/
+  );
+  await expect(page.getByText("Fixture preview — not real filing data.")).toBeVisible();
+});
+
+test("delegated stock actions reject forged IDs and preserve canonical routes", async ({
+  page,
+}) => {
+  await page.goto(
+    "/?insiderPreview=fixture#stock/03770N101/insiders"
+  );
+  await expect(page.getByText("Fixture preview — not real filing data.")).toBeVisible();
+  const baseline = await page.evaluate(() => {
+    window.__delegatedRealLoadStock = window.loadStock;
+    window.__delegatedRealFetch = window.fetch;
+    window.__delegatedActionAudit = { calls: [], fetches: [] };
+    window.loadStock = (...args) => {
+      window.__delegatedActionAudit.calls.push(args);
+    };
+    window.fetch = (...args) => {
+      window.__delegatedActionAudit.fetches.push(String(args[0]));
+      return window.__delegatedRealFetch(...args);
+    };
+    document.body.insertAdjacentHTML("beforeend", `
+      <button id="forgedLoadStock" data-action="load-stock" data-stock-id="FORGED999">forged load</button>
+      <button id="forgedInsiderPreview" data-action="holders-insider-preview" data-stock-id="FORGED999">forged preview</button>
+    `);
+    return location.href;
+  });
+
+  await page.locator("#forgedLoadStock").click();
+  await page.locator("#forgedInsiderPreview").click();
+  expect(await page.evaluate(() => ({
+    href: location.href,
+    ...window.__delegatedActionAudit,
+  }))).toEqual({ href: baseline, calls: [], fetches: [] });
+
+  await page.evaluate(() => {
+    window.loadStock = window.__delegatedRealLoadStock;
+    window.fetch = window.__delegatedRealFetch;
+    document.body.insertAdjacentHTML("beforeend", `
+      <button id="canonicalLoadStock" data-action="load-stock" data-stock-id="  03770n101  ">canonical load</button>
+      <button id="invalidStockView" data-action="load-stock-view" data-stock-id="03770N101" data-stock-view="not-a-view">invalid view</button>
+      ${["holders", "insiders", "reporting-insiders"].map(view =>
+        `<button id="stockView-${view}" data-action="load-stock-view" data-stock-id="03770n101" data-stock-view="${view}">${view}</button>`
+      ).join("")}
+    `);
+  });
+
+  await page.locator("#canonicalLoadStock").click();
+  await expect(page).toHaveURL(/#stock\/03770N101$/);
+  for (const view of ["holders", "insiders", "reporting-insiders"]) {
+    await page.locator(`#stockView-${view}`).click();
+    const suffix = view === "holders" ? "" : `/${view}`;
+    await expect(page).toHaveURL(new RegExp(`#stock/03770N101${suffix}$`));
+  }
+
+  const invalidBaseline = await page.evaluate(() => {
+    window.__delegatedActionAudit = { calls: [], fetches: [] };
+    window.__delegatedRealLoadStock = window.loadStock;
+    window.__delegatedRealFetch = window.fetch;
+    window.loadStock = (...args) => {
+      window.__delegatedActionAudit.calls.push(args);
+    };
+    window.fetch = (...args) => {
+      window.__delegatedActionAudit.fetches.push(String(args[0]));
+      return window.__delegatedRealFetch(...args);
+    };
+    return location.href;
+  });
+  await page.locator("#invalidStockView").click();
+  expect(await page.evaluate(() => ({
+    href: location.href,
+    ...window.__delegatedActionAudit,
+  }))).toEqual({ href: invalidBaseline, calls: [], fetches: [] });
+});
+
+test("JSON-derived stock and fund identifiers cannot execute in navigation controls", async ({
+  page,
+}) => {
+  const stockId = "x');window.__inlineXss=true;//";
+  const fundCik = "1);window.__inlineXss=true;//";
+  await page.goto(
+    "/?insiderPreview=fixture#stock/03770N101/insiders"
+  );
+  await expect(page.getByText("Fixture preview — not real filing data.")).toBeVisible();
+  await page.evaluate(({ maliciousStockId, maliciousFundCik }) => {
+    window.loadStock = () => {};
+    window.loadFund = () => {};
+    window.__inlineXss = false;
+    idx = {
+      funds: [{ cik: maliciousFundCik, name: "EVIL FUND" }],
+      tickers: [{
+        stock_id: maliciousStockId,
+        ticker: "EVIL",
+        issuer: "Evil Security",
+        cusip: "EVILCUSIP",
+        instrument_type: "EQUITY",
+      }],
+    };
+    globalSearch("EVIL");
+  }, { maliciousStockId: stockId, maliciousFundCik: fundCik });
+  await page.locator(".gsearch-item").filter({ hasText: "EVIL" }).first().click();
+  const globalStockExecuted = await page.evaluate(() => window.__inlineXss);
+
+  await page.evaluate(({ maliciousFundCik }) => {
+    window.__inlineXss = false;
+    globalSearch("EVIL");
+  }, { maliciousFundCik: fundCik });
+  await page.locator(".gsearch-item").filter({ hasText: "EVIL FUND" }).click();
+  const globalFundExecuted = await page.evaluate(() => window.__inlineXss);
+
+  await page.evaluate(maliciousFundCik => {
+    _popularFundsCache = [{ cik: maliciousFundCik, name: "EVIL FUND" }];
+    renderFundsHome();
+  }, fundCik);
+  await expect(page.locator(".popular-cik img")).toHaveCount(0);
+  await expect(page.locator(".popular-cik")).toContainText(fundCik);
+
+  await page.evaluate(maliciousStockId => {
+    window.__inlineXss = false;
+    stockLookupId = () => maliciousStockId;
+    app().innerHTML = "<table><tbody id=\"fundTbody\"></tbody></table>"
+      + "<div id=\"fundFoot\"></div>";
+    curFundRows = [{
+      cusip: maliciousStockId,
+      ticker: "EVIL",
+      issuer: "Evil Security",
+      holding_type: "EQUITY",
+      pct: 0,
+      value: 0,
+      shares: 0,
+      ch: null,
+      prevPct: 0,
+      sparkData: [],
+    }];
+    renderFundTbody();
+  }, stockId);
+  await page.locator("#fundTbody .security-label-cell").click();
+  const lookupIdExecuted = await page.evaluate(() => window.__inlineXss);
+
+  expect({ globalStockExecuted, globalFundExecuted, lookupIdExecuted }).toEqual({
+    globalStockExecuted: false,
+    globalFundExecuted: false,
+    lookupIdExecuted: false,
+  });
+});
+
 test("reporting-insiders is a routed fixture subview", async ({ page }) => {
   await page.goto(
     "/?insiderPreview=fixture#stock/03770N101/insiders"
   );
-  await page.getByRole("tab", { name: "Reporting Insiders" }).click();
+  await page.getByRole("button", { name: "Reporting Insiders" }).click();
   await expect(page).toHaveURL(/#stock\/03770N101\/reporting-insiders$/);
-  await expect(page.getByRole("tab", { name: "Reporting Insiders" }))
-    .toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "Reporting Insiders" }))
+    .toHaveAttribute("aria-current", "page");
   await expect(page.locator("#reportingInsidersTable")).toBeVisible();
   await expect(page.getByText("Latest New Relationship")).toBeVisible();
   await expect(
@@ -391,12 +959,12 @@ test("reporting-insiders is a routed fixture subview", async ({ page }) => {
   await expect(janeRow).toContainText("100%");
 });
 
-test("leaving the insider tab clears filters but Back restores them", async ({ page }) => {
+test("leaving the insider view clears filters but Back restores them", async ({ page }) => {
   await page.goto(
     "/?insiderPreview=fixture&ownerScope=officers-directors&plan=10b5-1"
       + "&search=Jane#stock/03770N101/insiders"
   );
-  await page.getByRole("tab", { name: "Institutional Holders" }).click();
+  await page.getByRole("button", { name: "Institutional Holders" }).click();
   await expect(page).toHaveURL(/\?insiderPreview=fixture#stock\/03770N101$/);
   await expect(page).not.toHaveURL(/ownerScope=|plan=|search=/);
 
@@ -521,7 +1089,7 @@ for (const viewport of [
       expect(layout.columns).toBe(1);
     }
     if (viewport.width <= 520) {
-      const tabBounds = await page.getByRole("tab").evaluateAll(tabs =>
+      const tabBounds = await page.locator(".security-tabs .security-tab").evaluateAll(tabs =>
         tabs.map(tab => {
           const box = tab.getBoundingClientRect();
           const textRange = document.createRange();

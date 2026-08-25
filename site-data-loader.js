@@ -1,8 +1,8 @@
 /*
- * GitHub Pages publishes the large per-fund and per-security payloads as
- * deterministic .json.gz files. Keep the application code and public URLs
- * simple by transparently mapping those two data directories to their
- * compressed counterparts.
+ * GitHub Pages publishes the large per-fund, per-security, and allowlisted
+ * public insider payloads as deterministic .json.gz files. Keep application
+ * code and public URLs simple by transparently mapping only those bounded
+ * data paths to their compressed counterparts.
  *
  * Load this file before the application's inline script in index.html.
  */
@@ -13,7 +13,7 @@
 
   const nativeFetch = window.fetch.bind(window);
   const compressedDataPath =
-    /\/data\/(?:funds|stocks)\/[^/?#]+\.json$/;
+    /^data\/(?:(?:funds|stocks)\/[^/?#]+|insiders\/public\/(?:securities\/[A-Z0-9][A-Z0-9._-]{0,159}|filings\/[0-9]{10}-[0-9]{2}-[0-9]{6}))\.json$/;
 
   function compressedURL(input) {
     const raw =
@@ -26,7 +26,15 @@
 
     const url = new URL(raw, document.baseURI);
     if (url.origin !== window.location.origin) return null;
-    if (!compressedDataPath.test(url.pathname)) return null;
+    const siteBase = new URL(".", document.baseURI);
+    if (
+      siteBase.origin !== window.location.origin ||
+      !url.pathname.startsWith(siteBase.pathname)
+    ) {
+      return null;
+    }
+    const siteRelativePath = url.pathname.slice(siteBase.pathname.length);
+    if (!compressedDataPath.test(siteRelativePath)) return null;
 
     url.pathname += ".gz";
     return url;
@@ -87,7 +95,7 @@
 
   window.fetch = compressedDataFetch;
   window.__SIS_COMPRESSED_DATA_LOADER__ = Object.freeze({
-    version: 1,
+    version: 2,
     nativeFetch,
   });
 })();

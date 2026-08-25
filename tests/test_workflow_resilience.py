@@ -577,6 +577,285 @@ gh_mutate_once() {
         self.assertIn('echo "targeted_cik=$targeted_cik" >> "$GITHUB_OUTPUT"', workflow)
         self.assertIn("steps.pipeline.outputs.targeted_cik != 'true'", workflow)
 
+    def test_manual_insider_inputs_are_explicit_and_default_off(self):
+        workflow = read(".github/workflows/update-data.yml")
+        dispatch = workflow.split("  workflow_dispatch:", 1)[1].split(
+            "\nconcurrency:", 1
+        )[0]
+
+        mode = dispatch.split("      insider_mode:", 1)[1].split(
+            "\n      insider_issuer_cik:", 1
+        )[0]
+        self.assertIn("default: 'off'", mode)
+        self.assertIn("type: choice", mode)
+        for choice in ("off", "incremental", "backfill", "reparse"):
+            self.assertIn(f"- {choice}", mode)
+
+        for field, default, input_type in (
+            ("insider_issuer_cik", "''", "string"),
+            ("insider_quarter", "''", "string"),
+            ("insider_max_accessions", "25", "number"),
+            ("insider_deadline_seconds", "600", "number"),
+        ):
+            with self.subTest(field=field):
+                field_block = dispatch.split(f"      {field}:", 1)[1]
+                self.assertIn(f"default: {default}", field_block)
+                self.assertIn(f"type: {input_type}", field_block)
+
+    def test_public_insider_materialization_is_manual_explicit_and_default_off(self):
+        workflow = read(".github/workflows/update-data.yml")
+        dispatch = workflow.split("  workflow_dispatch:", 1)[1].split(
+            "\nconcurrency:", 1
+        )[0]
+
+        publish = dispatch.split("      publish_insider_publication:", 1)[1].split(
+            "\n      insider_publication_as_of:", 1
+        )[0]
+        self.assertIn("required: false", publish)
+        self.assertIn("default: false", publish)
+        self.assertIn("type: boolean", publish)
+        for field, default in (
+            ("insider_publication_as_of", "''"),
+            ("insider_publication_latest_successful_sync_at", "'none'"),
+        ):
+            with self.subTest(field=field):
+                field_block = dispatch.split(f"      {field}:", 1)[1]
+                self.assertIn("required: false", field_block)
+                self.assertIn(f"default: {default}", field_block)
+                self.assertIn("type: string", field_block)
+
+        resolver = workflow.split(
+            "- name: Resolve bounded insider maintenance plan", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn(
+            "REQUESTED_PUBLISH: ${{ inputs.publish_insider_publication || 'false' }}",
+            resolver,
+        )
+        self.assertIn(
+            "REQUESTED_PUBLICATION_AS_OF: ${{ inputs.insider_publication_as_of || '' }}",
+            resolver,
+        )
+        self.assertIn(
+            "REQUESTED_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT: ${{ inputs.insider_publication_latest_successful_sync_at || 'none' }}",
+            resolver,
+        )
+        self.assertIn("publish=false", resolver)
+        dispatch_branch = resolver.split(
+            'elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then', 1
+        )[1].split("\n          fi", 1)[0]
+        self.assertIn('publish="$REQUESTED_PUBLISH"', dispatch_branch)
+        schedule_branch = resolver.split('if [ "$EVENT_NAME" = "schedule" ]; then', 1)[
+            1
+        ].split('elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then', 1)[0]
+        self.assertNotIn("REQUESTED_PUBLISH", schedule_branch)
+        self.assertIn(
+            'if [ "$publish" = "true" ] && [ "$mode" = "off" ]; then', resolver
+        )
+        self.assertIn(
+            "Public insider publication requires a maintenance mode", resolver
+        )
+        for output in (
+            "publish",
+            "publication_as_of",
+            "publication_latest_successful_sync_at",
+        ):
+            self.assertIn(f'echo "{output}=', resolver)
+
+        materialize = workflow.split(
+            "- name: Materialize approved public insider publication", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn(
+            "if: ${{ steps.insider_plan.outputs.publish == 'true' }}",
+            materialize,
+        )
+        self.assertIn("timeout-minutes: 15", materialize)
+        for environment_name in (
+            "INSIDER_MODE",
+            "INSIDER_ISSUER_CIK",
+            "INSIDER_QUARTER",
+            "INSIDER_MAX_ACCESSIONS",
+            "INSIDER_PUBLICATION_AS_OF",
+            "INSIDER_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT",
+        ):
+            self.assertIn(f"{environment_name}:", materialize)
+        self.assertIn("python scripts/publish_insider_activity.py", materialize)
+        self.assertIn('--maintenance-mode "$INSIDER_MODE"', materialize)
+        self.assertIn('--maintenance-issuer-cik "$INSIDER_ISSUER_CIK"', materialize)
+        self.assertIn(
+            '--maintenance-max-accessions "$INSIDER_MAX_ACCESSIONS"', materialize
+        )
+        self.assertIn('--as-of "$INSIDER_PUBLICATION_AS_OF"', materialize)
+        self.assertIn(
+            '--latest-successful-sync-at "$INSIDER_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT"',
+            materialize,
+        )
+        self.assertIn('--maintenance-quarter "$INSIDER_QUARTER"', materialize)
+        self.assertNotIn("SEC_USER_AGENT", materialize)
+        self.assertNotIn("OPENFIGI_API_KEY", materialize)
+
+        self.assertLess(
+            workflow.index("- name: Validate private insider checkpoint state"),
+            workflow.index("- name: Materialize approved public insider publication"),
+        )
+        self.assertLess(
+            workflow.index("- name: Materialize approved public insider publication"),
+            workflow.index("- name: Validate generated data"),
+        )
+
+    def test_insider_plan_is_bounded_and_scheduled_execution_is_opt_in(self):
+        workflow = read(".github/workflows/update-data.yml")
+        resolver = workflow.split(
+            "- name: Resolve bounded insider maintenance plan", 1
+        )[1].split("\n      - name:", 1)[0]
+
+        self.assertIn(
+            "SCHEDULED_ENABLED: ${{ vars.ENABLE_SCHEDULED_INSIDER_INGESTION }}",
+            resolver,
+        )
+        self.assertIn(
+            "SCHEDULED_ISSUER_CIK: ${{ vars.SCHEDULED_INSIDER_ISSUER_CIK }}",
+            resolver,
+        )
+        self.assertIn('[ "$EVENT_NAME" = "schedule" ]', resolver)
+        self.assertIn('[ "$SCHEDULED_ENABLED" = "true" ]', resolver)
+        self.assertNotIn('[ -n "$SCHEDULED_ENABLED" ]', resolver)
+        self.assertIn("mode=off", resolver)
+        self.assertIn("mode=incremental", resolver)
+        self.assertIn("Backfill and reparse are manual-only", resolver)
+        self.assertIn('[[ ! "$issuer_cik" =~ ^[0-9]{1,10}$ ]]', resolver)
+        self.assertIn('[[ "$issuer_cik" =~ ^0+$ ]]', resolver)
+        self.assertIn('[[ ! "$max_accessions" =~ ^[1-9][0-9]*$ ]]', resolver)
+        self.assertIn('"$max_accessions" -gt 100', resolver)
+        self.assertIn('[[ ! "$deadline_seconds" =~ ^[1-9][0-9]*$ ]]', resolver)
+        self.assertIn('"$deadline_seconds" -lt 60', resolver)
+        self.assertIn('"$deadline_seconds" -gt 840', resolver)
+        self.assertIn('[[ ! "$quarter" =~ ^[0-9]{4}Q[1-4]$ ]]', resolver)
+        self.assertIn('if [ -n "$quarter" ]; then', resolver)
+        for output in (
+            "mode",
+            "issuer_cik",
+            "quarter",
+            "max_accessions",
+            "deadline_seconds",
+        ):
+            self.assertIn(f'echo "{output}=', resolver)
+
+    def test_bounded_insider_step_is_sequential_and_checkpoint_aware(self):
+        workflow = read(".github/workflows/update-data.yml")
+        preflight = workflow.split(
+            "- name: Resolve validated insider resume state", 1
+        )[1].split("\n      - name:", 1)[0]
+        insider = workflow.split("- name: Run bounded insider maintenance", 1)[
+            1
+        ].split("- name: Validate private insider checkpoint state", 1)[0]
+        validation = workflow.split(
+            "- name: Validate private insider checkpoint state", 1
+        )[1].split("\n      - name:", 1)[0]
+
+        self.assertIn("InsiderStateStore", preflight)
+        self.assertIn("resolve_incremental_checkpoint_action", preflight)
+        self.assertIn('state_store.read("incremental-v1")', preflight)
+        self.assertIn('state_store.read(f"backfill/{quarter}")', preflight)
+        self.assertIn('state_store.read("reparse-v1")', preflight)
+        self.assertIn("INSIDER_PARSER_VERSION", preflight)
+        self.assertIn('{"running", "incomplete"}', preflight)
+        self.assertIn("existing backfill checkpoint is not resumable", preflight)
+        self.assertIn("existing reparse checkpoint is not resumable", preflight)
+        self.assertNotIn("json.load", preflight)
+        self.assertNotIn("Path.exists", preflight)
+
+        self.assertIn(
+            "if: ${{ steps.insider_plan.outputs.mode != 'off' }}",
+            insider,
+        )
+        self.assertIn("timeout-minutes: 15", insider)
+        self.assertIn("SEC_MAX_REQUESTS_PER_SECOND: '5'", insider)
+        self.assertIn("pipeline.require_declared_sec_user_agent()", insider)
+        self.assertIn("python scripts/refresh_recent_insider_filings.py", insider)
+        self.assertIn("python scripts/backfill_insider_transactions.py", insider)
+        self.assertIn("python scripts/reparse_insider_filings.py", insider)
+        self.assertIn('if [ "$INSIDER_ACTION" = "resume" ]; then', insider)
+        incremental_branch = insider.split("incremental)", 1)[1].split(";;", 1)[0]
+        self.assertIn("set +e", incremental_branch)
+        self.assertIn("incremental_status=$?", incremental_branch)
+        self.assertIn('if [ "$incremental_status" -eq 75 ]; then', incremental_branch)
+        self.assertIn('elif [ "$incremental_status" -ne 0 ]; then', incremental_branch)
+        self.assertIn('if [ "$reparse_status" -eq 75 ]; then', insider)
+        self.assertIn('elif [ "$reparse_status" -ne 0 ]; then', insider)
+        self.assertNotIn("reparse-telemetry-before.json", insider)
+        self.assertNotIn("--all", insider)
+        self.assertNotIn("--refetch", insider)
+        self.assertNotIn("continue-on-error", insider)
+        self.assertNotIn("strategy:", insider)
+        self.assertNotIn("xargs -P", insider)
+
+        self.assertIn('state_store.read("incremental-v1")', validation)
+        self.assertIn("validate_incremental_checkpoint_scope", validation)
+        incremental_validation = validation.split(
+            'if mode == "incremental":', 1
+        )[1].split('elif mode == "backfill":', 1)[0]
+        self.assertIn(
+            'expected_statuses = {"running", "incomplete"} if cooperative_checkpoint else {"completed"}',
+            incremental_validation,
+        )
+        self.assertIn(
+            'checkpoint["status"] not in expected_statuses',
+            incremental_validation,
+        )
+        self.assertIn('state_store.read(f"backfill/{quarter}")', validation)
+        self.assertIn('state_store.read("reparse-v1")', validation)
+        self.assertIn('state_store.read("telemetry-v1")', validation)
+        self.assertIn("cooperative_checkpoint", validation)
+        self.assertIn("reparse checkpoint did not validate", validation)
+
+        ordered_steps = (
+            "- name: Restore latest validated private snapshot",
+            "- name: Run pipeline",
+            "- name: Refresh recently accepted 13F filings",
+            "- name: Regenerate registry-backed site data",
+            "- name: Resolve bounded insider maintenance plan",
+            "- name: Resolve validated insider resume state",
+            "- name: Run bounded insider maintenance",
+            "- name: Validate private insider checkpoint state",
+            "- name: Materialize approved public insider publication",
+            "- name: Validate generated data",
+            "- name: Run full Python regression suite",
+            "- name: Publish validated private snapshot",
+        )
+        offsets = tuple(workflow.index(step) for step in ordered_steps)
+        self.assertEqual(tuple(sorted(offsets)), offsets)
+
+    def test_private_only_snapshot_preserves_active_pages_target(self):
+        workflow = read(".github/workflows/update-data.yml")
+        publisher = read(PUBLISHER_SCRIPT)
+
+        baseline = workflow.split(
+            "- name: Capture restored public artifact identity", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn("python scripts/build_pages_artifact.py", baseline)
+        self.assertIn('echo "tree_sha256=$base_public_tree_sha256"', baseline)
+        self.assertLess(
+            workflow.index("- name: Capture restored public artifact identity"),
+            workflow.index("- name: Run pipeline"),
+        )
+        publish = workflow.split("- name: Publish validated private snapshot", 1)[
+            1
+        ].split("\n  deploy-pages:", 1)[0]
+        self.assertIn(
+            "BASE_PUBLIC_TREE_SHA256: ${{ steps.base_public.outputs.tree_sha256 }}",
+            publish,
+        )
+
+        for fragment in (
+            'if [ -n "${BASE_PUBLIC_TREE_SHA256:-}" ]; then',
+            "python scripts/build_pages_artifact.py",
+            'if [ "$current_public_tree_sha256" = "$BASE_PUBLIC_TREE_SHA256" ]; then',
+            "--latest=false",
+            'echo "site_changed=false"',
+        ):
+            self.assertIn(fragment, publisher)
+        self.assertNotIn("data/insiders", baseline)
+
     def test_keepalive_is_twice_monthly_empty_and_strictly_off_main(self):
         workflow = read(".github/workflows/keepalive.yml")
 
@@ -656,7 +935,10 @@ gh_mutate_once() {
                 self.assertIn("scripts/pages_deploy_needed.sh", checkout)
 
     def test_every_private_data_job_uses_the_scoped_github_app(self):
-        expected_action = "uses: actions/create-github-app-token@v3"
+        expected_action = (
+            "uses: actions/create-github-app-token@"
+            "bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3"
+        )
         expected_repository = "repositories: super-investor-seeker-data"
         for path, minimum in (
             (".github/workflows/update-data.yml", 1),
@@ -1367,17 +1649,58 @@ gh_mutate_once() {
             build.index("run: python validate_data.py"),
             build.index("python scripts/build_pages_artifact.py"),
         )
-        self.assertIn("pip install -r requirements.txt", build)
+        self.assertIn(
+            "pip install --require-hashes -r requirements.lock",
+            build,
+        )
         self.assertIn("- name: Audit the public artifact allowlist", build)
         self.assertIn("include-hidden-files: true", build)
         for public_file in (
             "data/funds-index.json",
             "data/index.json",
             "data/security_labels.json",
-            "data/funds/*.json.gz",
-            "data/stocks/*.json.gz",
+            "data/insiders/public/manifest.json",
         ):
             self.assertIn(public_file, build)
+        self.assertNotIn("data/funds/*.json.gz", build)
+        self.assertNotIn("data/stocks/*.json.gz", build)
+        self.assertNotIn("data/insiders/public/securities/*.json.gz", build)
+        self.assertNotIn("data/insiders/public/filings/*.json.gz", build)
+        self.assertIn(
+            "^data/funds/[0-9]{1,10}\\.json\\.gz$",
+            build,
+        )
+        self.assertIn(
+            "^data/stocks/[A-Z0-9][A-Z0-9._-]{0,159}\\.json\\.gz$",
+            build,
+        )
+        self.assertIn(
+            "^data/insiders/public/securities/[A-Z0-9][A-Z0-9._-]{0,159}\\.json\\.gz$",
+            build,
+        )
+        self.assertIn(
+            "^data/insiders/public/filings/[0-9]{10}-[0-9]{2}-[0-9]{6}\\.json\\.gz$",
+            build,
+        )
+        self.assertIn(
+            'done < <(find "$ARTIFACT_DIR" -mindepth 1 -print0)',
+            build,
+        )
+        self.assertIn('if [ -L "$path" ]; then', build)
+        self.assertIn('elif [ -d "$path" ]; then', build)
+        self.assertIn('elif [ -f "$path" ]; then', build)
+        for public_directory in (
+            "data",
+            "data/funds",
+            "data/stocks",
+            "data/insiders",
+            "data/insiders/public",
+            "data/insiders/public/securities",
+            "data/insiders/public/filings",
+        ):
+            self.assertIn(public_directory, build)
+        self.assertIn("Unsupported public Pages entry type", build)
+        self.assertIn("Required public Pages entry is missing", build)
         for private_file in (
             "cusip_registry.json",
             "pipeline_state.json",
@@ -1495,14 +1818,36 @@ gh_mutate_once() {
         self.assertIn("needs: [resolve, build, deploy]", cleanup)
         self.assertIn("if: ${{ always() }}", cleanup)
         self.assertIn("actions: write", cleanup)
-        self.assertIn("artifacts_json=$(", cleanup)
-        self.assertIn("gh api --paginate --slurp", cleanup)
-        self.assertNotIn("mapfile -t pages_artifact_ids < <(", cleanup)
-        self.assertIn(
-            'select(.name == "github-pages" and .expired == false)', cleanup
+        self.assertIn("Checkout trusted GitHub retry helper for cleanup", cleanup)
+        self.assertIn("repository: ${{ job.workflow_repository }}", cleanup)
+        self.assertIn("ref: ${{ job.workflow_sha }}", cleanup)
+        self.assertIn("sparse-checkout: scripts/github_cli_retry.py", cleanup)
+        self.assertIn("persist-credentials: false", cleanup)
+        self.assertIn("RUN_ID: ${{ github.run_id }}", cleanup)
+        self.assertIn('if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]', cleanup)
+        run_artifacts_endpoint = (
+            '"/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/'
+            'artifacts?name=github-pages&per_page=100"'
         )
-        self.assertIn("actions/artifacts/$artifact_id", cleanup)
-        self.assertIn("--method DELETE", cleanup)
+        self.assertIn(run_artifacts_endpoint, cleanup)
+        self.assertIn(
+            'gh_read_retry api --paginate --slurp "$RUN_ARTIFACTS_ENDPOINT"',
+            cleanup,
+        )
+        self.assertNotIn(
+            '"/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"',
+            cleanup,
+        )
+        self.assertIn("(.workflow_run.id == $run_id)", cleanup)
+        self.assertIn('(.name == "github-pages")', cleanup)
+        self.assertIn('(.expired | type) == "boolean"', cleanup)
+        self.assertIn("gh_delete_once()", cleanup)
+        self.assertEqual(1, cleanup.count("gh_delete_once api --method DELETE"))
+        self.assertNotIn("\n            gh api --method DELETE", cleanup)
+        self.assertIn("|| delete_status=$?", cleanup)
+        self.assertIn("Deletion outcome is uncertain; reconciling by readback", cleanup)
+        self.assertIn("for attempt in 0 1 2; do", cleanup)
+        self.assertIn("readonly -a READBACK_DELAYS_SECONDS=(1 3)", cleanup)
         self.assertIn(
             "Public Pages artifacts remain downloadable after cleanup",
             cleanup,

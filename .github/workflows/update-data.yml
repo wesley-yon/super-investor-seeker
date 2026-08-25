@@ -25,6 +25,51 @@ on:
         required: false
         default: ''
         type: string
+      insider_mode:
+        description: Bounded private insider maintenance mode
+        required: false
+        default: 'off'
+        type: choice
+        options:
+          - off
+          - incremental
+          - backfill
+          - reparse
+      insider_issuer_cik:
+        description: Exact approved issuer CIK for insider maintenance
+        required: false
+        default: ''
+        type: string
+      insider_quarter:
+        description: Exact YYYYQn quarter for a manual insider backfill
+        required: false
+        default: ''
+        type: string
+      insider_max_accessions:
+        description: Maximum insider accessions selected by a bounded live run
+        required: false
+        default: 25
+        type: number
+      insider_deadline_seconds:
+        description: Cooperative insider deadline in seconds (maximum 840)
+        required: false
+        default: 600
+        type: number
+      publish_insider_publication:
+        description: Materialize the complete approved public insider corpus
+        required: false
+        default: false
+        type: boolean
+      insider_publication_as_of:
+        description: Exact UTC as-of timestamp for a manual public insider build
+        required: false
+        default: ''
+        type: string
+      insider_publication_latest_successful_sync_at:
+        description: Exact UTC sync timestamp or none for a manual public insider build
+        required: false
+        default: 'none'
+        type: string
 
 concurrency:
   group: data-maintenance
@@ -78,7 +123,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # A queued push/schedule run should converge the live branch, not
           # spend a full pipeline pass on the event's now-stale SHA.
@@ -89,7 +134,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -98,12 +143,12 @@ jobs:
           permission-contents: read
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.lock
 
       - name: Restore latest validated private snapshot
         id: restore_snapshot
@@ -131,6 +176,30 @@ jobs:
           echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
           echo "code_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "Restored private snapshot $release_tag ($dataset_id)"
+
+      - name: Capture restored public artifact identity
+        id: base_public
+        # Compare only the explicit public builder output. Private insider files
+        # are never named, read, or copied by this public-artifact allowlist.
+        run: |
+          set -euo pipefail
+          base_public_dir=$(mktemp -d "$RUNNER_TEMP/base-public-artifact.XXXXXX")
+          trap 'rm -rf "$base_public_dir"' EXIT
+          base_public_json=$(
+            python scripts/build_pages_artifact.py \
+              --source-root "$GITHUB_WORKSPACE" \
+              --output "$base_public_dir" \
+              --source-sha 0000000000000000000000000000000000000000 \
+              --dataset-id 0000000000000000000000000000000000000000000000000000000000000000 \
+              --workers 1
+          )
+          echo "$base_public_json" | jq -e . >/dev/null
+          base_public_tree_sha256=$(jq -er '.tree_sha256' <<<"$base_public_json")
+          if [[ ! "$base_public_tree_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Restored public artifact returned an invalid tree digest"
+            exit 1
+          fi
+          echo "tree_sha256=$base_public_tree_sha256" >> "$GITHUB_OUTPUT"
 
       - name: Verify SEC_USER_AGENT secret is configured
         # Fail fast with a clear error if the repo secret wasn't set. Without
@@ -287,6 +356,395 @@ jobs:
           OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
         run: python pipeline.py --regenerate-only --retry-unresolved
 
+      - name: Resolve bounded insider maintenance plan
+        id: insider_plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_MODE: ${{ inputs.insider_mode || 'off' }}
+          REQUESTED_ISSUER_CIK: ${{ inputs.insider_issuer_cik || '' }}
+          REQUESTED_QUARTER: ${{ inputs.insider_quarter || '' }}
+          REQUESTED_MAX_ACCESSIONS: ${{ inputs.insider_max_accessions || 25 }}
+          REQUESTED_DEADLINE_SECONDS: ${{ inputs.insider_deadline_seconds || 600 }}
+          REQUESTED_PUBLISH: ${{ inputs.publish_insider_publication || 'false' }}
+          REQUESTED_PUBLICATION_AS_OF: ${{ inputs.insider_publication_as_of || '' }}
+          REQUESTED_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT: ${{ inputs.insider_publication_latest_successful_sync_at || 'none' }}
+          SCHEDULED_ENABLED: ${{ vars.ENABLE_SCHEDULED_INSIDER_INGESTION }}
+          SCHEDULED_ISSUER_CIK: ${{ vars.SCHEDULED_INSIDER_ISSUER_CIK }}
+        run: |
+          set -euo pipefail
+
+          mode=off
+          issuer_cik=''
+          quarter=''
+          max_accessions=0
+          deadline_seconds=0
+          publish=false
+          publication_as_of=''
+          publication_latest_successful_sync_at=none
+
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            if [ "$SCHEDULED_ENABLED" = "true" ]; then
+              mode=incremental
+              issuer_cik="$SCHEDULED_ISSUER_CIK"
+              max_accessions=25
+              deadline_seconds=600
+            fi
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            mode="$REQUESTED_MODE"
+            issuer_cik="$REQUESTED_ISSUER_CIK"
+            quarter="$REQUESTED_QUARTER"
+            max_accessions="$REQUESTED_MAX_ACCESSIONS"
+            deadline_seconds="$REQUESTED_DEADLINE_SECONDS"
+            publish="$REQUESTED_PUBLISH"
+            publication_as_of="$REQUESTED_PUBLICATION_AS_OF"
+            publication_latest_successful_sync_at="$REQUESTED_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT"
+          fi
+
+          case "$mode" in
+            off|incremental|backfill|reparse) ;;
+            *)
+              echo "::error::Requested insider mode is invalid"
+              exit 1
+              ;;
+          esac
+
+          case "$publish" in
+            true|false) ;;
+            *)
+              echo "::error::Public insider publication selection is invalid"
+              exit 1
+              ;;
+          esac
+          if [ "$publish" = "true" ] && [ "$mode" = "off" ]; then
+            echo "::error::Public insider publication requires a maintenance mode"
+            exit 1
+          fi
+          if [ "$publish" = "true" ]; then
+            if [[ ! "$publication_as_of" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+              echo "::error::Public insider publication as-of timestamp is invalid"
+              exit 1
+            fi
+            if [ "$publication_latest_successful_sync_at" != "none" ] &&
+               [[ ! "$publication_latest_successful_sync_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+              echo "::error::Public insider publication sync timestamp is invalid"
+              exit 1
+            fi
+          elif [ -n "$publication_as_of" ] ||
+               [ "$publication_latest_successful_sync_at" != "none" ]; then
+            echo "::error::Public insider timestamps require publication selection"
+            exit 1
+          fi
+
+          if [ "$mode" != "off" ]; then
+            if [[ ! "$issuer_cik" =~ ^[0-9]{1,10}$ ]] || [[ "$issuer_cik" =~ ^0+$ ]]; then
+              echo "::error::Insider issuer CIK is invalid"
+              exit 1
+            fi
+            issuer_cik=$(printf '%010s' "$issuer_cik" | tr ' ' '0')
+            if [[ ! "$max_accessions" =~ ^[1-9][0-9]*$ ]] ||
+               [ "$max_accessions" -gt 100 ]; then
+              echo "::error::Insider accession bound is invalid"
+              exit 1
+            fi
+            if [[ ! "$deadline_seconds" =~ ^[1-9][0-9]*$ ]] ||
+               [ "$deadline_seconds" -lt 60 ] ||
+               [ "$deadline_seconds" -gt 840 ]; then
+              echo "::error::Insider cooperative deadline is invalid"
+              exit 1
+            fi
+            if [ "$mode" = "backfill" ]; then
+              if [[ ! "$quarter" =~ ^[0-9]{4}Q[1-4]$ ]]; then
+                echo "::error::Insider backfill quarter is invalid"
+                exit 1
+              fi
+            else
+              # Backfill and reparse are manual-only; only backfill accepts a quarter.
+              if [ -n "$quarter" ]; then
+                echo "::error::Insider quarter is only valid for backfill"
+                exit 1
+              fi
+            fi
+          else
+            issuer_cik=''
+            quarter=''
+            max_accessions=0
+            deadline_seconds=0
+          fi
+
+          {
+            echo "mode=$mode"
+            echo "issuer_cik=$issuer_cik"
+            echo "quarter=$quarter"
+            echo "max_accessions=$max_accessions"
+            echo "deadline_seconds=$deadline_seconds"
+            echo "publish=$publish"
+            echo "publication_as_of=$publication_as_of"
+            echo "publication_latest_successful_sync_at=$publication_latest_successful_sync_at"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve validated insider resume state
+        id: insider_resume
+        if: ${{ steps.insider_plan.outputs.mode != 'off' }}
+        env:
+          INSIDER_MODE: ${{ steps.insider_plan.outputs.mode }}
+          INSIDER_ISSUER_CIK: ${{ steps.insider_plan.outputs.issuer_cik }}
+          INSIDER_QUARTER: ${{ steps.insider_plan.outputs.quarter }}
+          INSIDER_MAX_ACCESSIONS: ${{ steps.insider_plan.outputs.max_accessions }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from insider_pipeline import resolve_incremental_checkpoint_action
+          from insider_parser import INSIDER_PARSER_VERSION
+          from insider_storage import InsiderStateStore
+
+          state_store = InsiderStateStore(Path.cwd())
+          mode = os.environ["INSIDER_MODE"]
+          issuer_cik = os.environ["INSIDER_ISSUER_CIK"]
+          quarter = os.environ["INSIDER_QUARTER"]
+          maximum = int(os.environ["INSIDER_MAX_ACCESSIONS"])
+          action = "new"
+
+          if mode == "incremental":
+              try:
+                  checkpoint = state_store.read("incremental-v1")
+              except FileNotFoundError:
+                  pass
+              else:
+                  action = resolve_incremental_checkpoint_action(
+                      checkpoint,
+                      issuer_ciks=(issuer_cik,),
+                      max_accessions=maximum,
+                  )
+          elif mode == "backfill":
+              try:
+                  checkpoint = state_store.read(f"backfill/{quarter}")
+              except FileNotFoundError:
+                  pass
+              else:
+                  selected = checkpoint["selected_accessions"]
+                  status = checkpoint["status"]
+                  if (
+                      checkpoint["quarter"] != quarter
+                      or checkpoint["issuer_cik"] != issuer_cik
+                      or len(selected) > maximum
+                  ):
+                      raise SystemExit("existing backfill checkpoint is not resumable")
+                  if status in {"running", "incomplete"}:
+                      action = "resume"
+                  elif status == "completed":
+                      action = "skip"
+                  else:
+                      raise SystemExit("existing backfill checkpoint is not resumable")
+          elif mode == "reparse":
+              issuer = state_store.read(f"issuers/{issuer_cik}")
+              if len(issuer["accessions"]) > maximum:
+                  raise SystemExit("reparse issuer selection exceeds the workflow bound")
+              try:
+                  checkpoint = state_store.read("reparse-v1")
+              except FileNotFoundError:
+                  pass
+              else:
+                  status = checkpoint["status"]
+                  if status == "completed":
+                      action = "new"
+                  elif (
+                      status in {"running", "incomplete"}
+                      and checkpoint["parser_version"] == INSIDER_PARSER_VERSION
+                      and checkpoint["scope"] == "issuer"
+                      and checkpoint["scope_identifier"] == issuer_cik
+                      and len(checkpoint["queue"]) <= maximum
+                  ):
+                      action = "resume"
+                  else:
+                      raise SystemExit("existing reparse checkpoint is not resumable")
+          else:
+              raise SystemExit("resolved insider mode is invalid")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"action={action}\n")
+              output.write(f"resume={'true' if action == 'resume' else 'false'}\n")
+          PY
+
+      - name: Run bounded insider maintenance
+        id: insider_run
+        if: ${{ steps.insider_plan.outputs.mode != 'off' }}
+        # The cooperative deadline is capped at 840 seconds, retaining at
+        # least 60 seconds before this step-level timeout for durable cleanup.
+        timeout-minutes: 15
+        env:
+          INSIDER_MODE: ${{ steps.insider_plan.outputs.mode }}
+          INSIDER_ISSUER_CIK: ${{ steps.insider_plan.outputs.issuer_cik }}
+          INSIDER_QUARTER: ${{ steps.insider_plan.outputs.quarter }}
+          INSIDER_MAX_ACCESSIONS: ${{ steps.insider_plan.outputs.max_accessions }}
+          INSIDER_DEADLINE_SECONDS: ${{ steps.insider_plan.outputs.deadline_seconds }}
+          INSIDER_ACTION: ${{ steps.insider_resume.outputs.action }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          SEC_MAX_REQUESTS_PER_SECOND: '5'
+        run: |
+          set -euo pipefail
+          echo "cooperative_checkpoint=false" >> "$GITHUB_OUTPUT"
+
+          if [ "$INSIDER_ACTION" = "skip" ]; then
+            echo "::notice::Matching insider backfill is already completed"
+            exit 0
+          fi
+
+          validate_live_sec_configuration() {
+            python - <<'PY'
+          import pipeline
+
+          pipeline.require_declared_sec_user_agent()
+          if pipeline.sec_max_requests_per_second() != 5.0:
+              raise SystemExit("SEC request-rate configuration is invalid")
+          PY
+          }
+
+          case "$INSIDER_MODE" in
+            incremental)
+              validate_live_sec_configuration
+              set +e
+              python scripts/refresh_recent_insider_filings.py \
+                --issuer-cik "$INSIDER_ISSUER_CIK" \
+                --max-accessions "$INSIDER_MAX_ACCESSIONS" \
+                --deadline-seconds "$INSIDER_DEADLINE_SECONDS"
+              incremental_status=$?
+              set -e
+              if [ "$incremental_status" -eq 75 ]; then
+                echo "cooperative_checkpoint=true" >> "$GITHUB_OUTPUT"
+                echo "::warning::Incremental ingestion reached a durable cooperative checkpoint"
+              elif [ "$incremental_status" -ne 0 ]; then
+                exit "$incremental_status"
+              fi
+              ;;
+            backfill)
+              validate_live_sec_configuration
+              backfill_args=(
+                --issuer-cik "$INSIDER_ISSUER_CIK"
+                --quarter "$INSIDER_QUARTER"
+                --max-accessions "$INSIDER_MAX_ACCESSIONS"
+                --deadline-seconds "$INSIDER_DEADLINE_SECONDS"
+              )
+              if [ "$INSIDER_ACTION" = "resume" ]; then
+                backfill_args+=(--resume)
+              fi
+              python scripts/backfill_insider_transactions.py "${backfill_args[@]}"
+              ;;
+            reparse)
+              reparse_args=(
+                --issuer-cik "$INSIDER_ISSUER_CIK"
+                --deadline-seconds "$INSIDER_DEADLINE_SECONDS"
+              )
+              if [ "$INSIDER_ACTION" = "resume" ]; then
+                reparse_args+=(--resume)
+              fi
+              set +e
+              python scripts/reparse_insider_filings.py "${reparse_args[@]}"
+              reparse_status=$?
+              set -e
+              if [ "$reparse_status" -eq 75 ]; then
+                echo "cooperative_checkpoint=true" >> "$GITHUB_OUTPUT"
+                echo "::warning::Reparse reached a durable cooperative checkpoint"
+              elif [ "$reparse_status" -ne 0 ]; then
+                exit "$reparse_status"
+              fi
+              ;;
+            *)
+              echo "::error::Resolved insider mode is invalid"
+              exit 1
+              ;;
+          esac
+
+      - name: Validate private insider checkpoint state
+        if: ${{ steps.insider_plan.outputs.mode != 'off' }}
+        env:
+          INSIDER_MODE: ${{ steps.insider_plan.outputs.mode }}
+          INSIDER_ISSUER_CIK: ${{ steps.insider_plan.outputs.issuer_cik }}
+          INSIDER_QUARTER: ${{ steps.insider_plan.outputs.quarter }}
+          INSIDER_MAX_ACCESSIONS: ${{ steps.insider_plan.outputs.max_accessions }}
+          INSIDER_COOPERATIVE_CHECKPOINT: ${{ steps.insider_run.outputs.cooperative_checkpoint }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from insider_pipeline import validate_incremental_checkpoint_scope
+          from insider_parser import INSIDER_PARSER_VERSION
+          from insider_storage import InsiderStateStore
+
+          state_store = InsiderStateStore(Path.cwd())
+          mode = os.environ["INSIDER_MODE"]
+          issuer_cik = os.environ["INSIDER_ISSUER_CIK"]
+          quarter = os.environ["INSIDER_QUARTER"]
+          maximum = int(os.environ["INSIDER_MAX_ACCESSIONS"])
+          cooperative_checkpoint = (
+              os.environ["INSIDER_COOPERATIVE_CHECKPOINT"] == "true"
+          )
+
+          if mode == "incremental":
+              checkpoint = state_store.read("incremental-v1")
+              validate_incremental_checkpoint_scope(
+                  checkpoint,
+                  issuer_ciks=(issuer_cik,),
+                  max_accessions=maximum,
+              )
+              expected_statuses = {"running", "incomplete"} if cooperative_checkpoint else {"completed"}
+              if checkpoint["status"] not in expected_statuses:
+                  raise SystemExit("incremental checkpoint did not validate")
+          elif mode == "backfill":
+              checkpoint = state_store.read(f"backfill/{quarter}")
+              if (
+                  checkpoint["quarter"] != quarter
+                  or checkpoint["issuer_cik"] != issuer_cik
+                  or len(checkpoint["selected_accessions"]) > maximum
+                  or checkpoint["status"]
+                  not in {"running", "incomplete", "completed"}
+              ):
+                  raise SystemExit("backfill checkpoint did not validate")
+          elif mode == "reparse":
+              checkpoint = state_store.read("reparse-v1")
+              expected_status = "running" if cooperative_checkpoint else "completed"
+              if (
+                  checkpoint["parser_version"] != INSIDER_PARSER_VERSION
+                  or checkpoint["scope"] != "issuer"
+                  or checkpoint["scope_identifier"] != issuer_cik
+                  or len(checkpoint["queue"]) > maximum
+                  or checkpoint["status"] != expected_status
+              ):
+                  raise SystemExit("reparse checkpoint did not validate")
+          else:
+              raise SystemExit("resolved insider mode is invalid")
+
+          state_store.read("telemetry-v1")
+          PY
+
+      - name: Materialize approved public insider publication
+        if: ${{ steps.insider_plan.outputs.publish == 'true' }}
+        timeout-minutes: 15
+        env:
+          INSIDER_MODE: ${{ steps.insider_plan.outputs.mode }}
+          INSIDER_ISSUER_CIK: ${{ steps.insider_plan.outputs.issuer_cik }}
+          INSIDER_QUARTER: ${{ steps.insider_plan.outputs.quarter }}
+          INSIDER_MAX_ACCESSIONS: ${{ steps.insider_plan.outputs.max_accessions }}
+          INSIDER_PUBLICATION_AS_OF: ${{ steps.insider_plan.outputs.publication_as_of }}
+          INSIDER_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT: ${{ steps.insider_plan.outputs.publication_latest_successful_sync_at }}
+        run: |
+          set -euo pipefail
+          publication_args=(
+            --maintenance-mode "$INSIDER_MODE"
+            --maintenance-issuer-cik "$INSIDER_ISSUER_CIK"
+            --maintenance-max-accessions "$INSIDER_MAX_ACCESSIONS"
+            --as-of "$INSIDER_PUBLICATION_AS_OF"
+            --latest-successful-sync-at "$INSIDER_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT"
+          )
+          if [ "$INSIDER_MODE" = "backfill" ]; then
+            publication_args+=(--maintenance-quarter "$INSIDER_QUARTER")
+          fi
+          python scripts/publish_insider_activity.py "${publication_args[@]}"
+
       - name: Validate generated data
         id: validate_data
         # Validation runs only after both ingestion paths and regeneration
@@ -319,7 +777,7 @@ jobs:
       # before publication instead of reusing the restore credential.
       - name: Refresh private data publication credential
         id: publish-data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -334,6 +792,7 @@ jobs:
         env:
           DATA_ARCHIVE_TOKEN: ${{ steps.publish-data-app-token.outputs.token }}
           BASE_DATASET_ID: ${{ steps.restore_snapshot.outputs.dataset_id }}
+          BASE_PUBLIC_TREE_SHA256: ${{ steps.base_public.outputs.tree_sha256 }}
           GH_TOKEN: ${{ steps.publish-data-app-token.outputs.token }}
           PUBLIC_GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/publish_private_snapshot.sh

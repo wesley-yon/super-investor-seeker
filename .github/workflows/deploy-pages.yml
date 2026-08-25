@@ -66,7 +66,7 @@ jobs:
     steps:
       - name: Checkout explicitly requested code target
         if: inputs.code_sha != ''
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.code_sha }}
           fetch-depth: 1
@@ -78,7 +78,7 @@ jobs:
 
       - name: Checkout push code target
         if: inputs.code_sha == '' && github.event_name == 'push'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -90,7 +90,7 @@ jobs:
 
       - name: Checkout live main recovery target
         if: inputs.code_sha == '' && github.event_name != 'push'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: main
           fetch-depth: 1
@@ -117,7 +117,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -240,7 +240,7 @@ jobs:
       pages: write
     steps:
       - name: Checkout exact public code
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.resolve.outputs.code_sha }}
           fetch-depth: 1
@@ -259,7 +259,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -268,12 +268,12 @@ jobs:
           permission-contents: read
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
 
       - name: Install validation dependencies
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.lock
 
       - name: Restore exact validated private snapshot
         env:
@@ -331,21 +331,80 @@ jobs:
       - name: Audit the public artifact allowlist
         run: |
           set -euo pipefail
-          if find "$ARTIFACT_DIR" -type l -print -quit | grep -q .; then
-            echo "::error::Pages artifact contains a symlink"
-            exit 1
-          fi
           while IFS= read -r -d '' path; do
             relative=${path#"$ARTIFACT_DIR"/}
-            case "$relative" in
-              .nojekyll|CNAME|index.html|site-data-loader.js|deployment-manifest.json|data/funds-index.json|data/index.json|data/security_labels.json|data/funds/*.json.gz|data/stocks/*.json.gz)
-                ;;
-              *)
-                echo "::error::Unexpected public Pages file: $relative"
+            allowed=false
+            if [ -L "$path" ]; then
+              echo "::error::Pages artifact contains a symlink: $relative"
+              exit 1
+            elif [ -d "$path" ]; then
+              case "$relative" in
+                data|data/funds|data/stocks|data/insiders|data/insiders/public|data/insiders/public/securities|data/insiders/public/filings)
+                  allowed=true
+                  ;;
+              esac
+            elif [ -f "$path" ]; then
+              case "$relative" in
+                .nojekyll|CNAME|index.html|site-data-loader.js|deployment-manifest.json|data/funds-index.json|data/index.json|data/security_labels.json|data/insiders/public/manifest.json)
+                  allowed=true
+                  ;;
+              esac
+              if [[ "$relative" =~ ^data/funds/[0-9]{1,10}\.json\.gz$ ]] ||
+                 [[ "$relative" =~ ^data/stocks/[A-Z0-9][A-Z0-9._-]{0,159}\.json\.gz$ ]] ||
+                 [[ "$relative" =~ ^data/insiders/public/securities/[A-Z0-9][A-Z0-9._-]{0,159}\.json\.gz$ ]] ||
+                 [[ "$relative" =~ ^data/insiders/public/filings/[0-9]{10}-[0-9]{2}-[0-9]{6}\.json\.gz$ ]]; then
+                allowed=true
+              fi
+            else
+              echo "::error::Unsupported public Pages entry type: $relative"
+              exit 1
+            fi
+            if [ "$allowed" != true ]; then
+              echo "::error::Unexpected public Pages entry: $relative"
+              exit 1
+            fi
+          done < <(find "$ARTIFACT_DIR" -mindepth 1 -print0)
+
+          required_directories=(data data/funds data/stocks)
+          required_files=(
+            .nojekyll
+            CNAME
+            index.html
+            site-data-loader.js
+            deployment-manifest.json
+            data/funds-index.json
+            data/index.json
+            data/security_labels.json
+          )
+          for relative in "${required_directories[@]}"; do
+            if [ ! -d "$ARTIFACT_DIR/$relative" ] || [ -L "$ARTIFACT_DIR/$relative" ]; then
+              echo "::error::Required public Pages entry is missing or invalid: $relative"
+              exit 1
+            fi
+          done
+          for relative in "${required_files[@]}"; do
+            if [ ! -f "$ARTIFACT_DIR/$relative" ] || [ -L "$ARTIFACT_DIR/$relative" ]; then
+              echo "::error::Required public Pages entry is missing or invalid: $relative"
+              exit 1
+            fi
+          done
+
+          insider_manifest="$ARTIFACT_DIR/data/insiders/public/manifest.json"
+          if [ -e "$insider_manifest" ] || [ -L "$insider_manifest" ]; then
+            for relative in \
+              data/insiders \
+              data/insiders/public \
+              data/insiders/public/securities \
+              data/insiders/public/filings; do
+              if [ ! -d "$ARTIFACT_DIR/$relative" ] || [ -L "$ARTIFACT_DIR/$relative" ]; then
+                echo "::error::Required public Pages entry is missing or invalid: $relative"
                 exit 1
-                ;;
-            esac
-          done < <(find "$ARTIFACT_DIR" -type f -print0)
+              fi
+            done
+          elif [ -e "$ARTIFACT_DIR/data/insiders" ] || [ -L "$ARTIFACT_DIR/data/insiders" ]; then
+            echo "::error::Unexpected public Pages entry: data/insiders without manifest"
+            exit 1
+          fi
 
       - name: Ensure Actions is the Pages publishing source
         env:
@@ -380,10 +439,10 @@ jobs:
           fi
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
       - name: Upload bounded Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: ${{ env.ARTIFACT_DIR }}
           include-hidden-files: true
@@ -407,7 +466,7 @@ jobs:
       page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout live main for stale-deploy guard
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: main
           fetch-depth: 1
@@ -417,7 +476,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -477,7 +536,7 @@ jobs:
 
       - name: Deploy exact validated artifact
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
         with:
           timeout: 600000
 
@@ -576,7 +635,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -1127,8 +1186,7 @@ jobs:
   cleanup-public-pages-artifacts:
     needs: [resolve, build, deploy]
     # Cleanup must also run when artifact upload succeeds but deployment or
-    # live verification fails. Workflow concurrency prevents this job from
-    # deleting an artifact belonging to another in-flight Pages run.
+    # live verification fails. It is strictly scoped to this run's artifacts.
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1136,28 +1194,69 @@ jobs:
       actions: write
       contents: read
     steps:
+      # Retry policy is trusted workflow machinery, not data from the deployed
+      # code target. Cleanup must remain available for historical rollbacks.
+      - name: Checkout trusted GitHub retry helper for cleanup
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-tools
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: scripts/github_cli_retry.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Remove temporary public Pages bulk artifacts
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          readonly -a READBACK_DELAYS_SECONDS=(1 3)
+
+          gh_read_retry() {
+            python "$GITHUB_WORKSPACE/.workflow-tools/scripts/github_cli_retry.py" \
+              --retry-forbidden-read -- "$@"
+          }
+          gh_delete_once() {
+            python "$GITHUB_WORKSPACE/.workflow-tools/scripts/github_cli_retry.py" \
+              -- "$@"
+          }
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid workflow run identity: $RUN_ID"
+            exit 1
+          fi
+          readonly RUN_ARTIFACTS_ENDPOINT="/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?name=github-pages&per_page=100"
+
+          read_run_artifacts() {
+            gh_read_retry api --paginate --slurp "$RUN_ARTIFACTS_ENDPOINT"
+          }
+          active_pages_ids() {
+            jq -ce --argjson run_id "$RUN_ID" '
+              def artifacts: (map(.artifacts // []) | add // []);
+              artifacts
+              | if all(.[];
+                  ((.name | type) == "string")
+                  and (.name == "github-pages")
+                  and ((.expired | type) == "boolean")
+                  and ((.id | type) == "number")
+                  and ((.workflow_run | type) == "object")
+                  and ((.workflow_run.id | type) == "number")
+                  and (.workflow_run.id == $run_id)
+                )
+                then [.[] | select(.expired == false) | .id] | unique
+                else error("invalid or cross-run Pages artifact identity") end
+            '
+          }
+
           # upload-pages-artifact is necessarily readable while deploy-pages
-          # consumes it. Remove every leftover Pages artifact as soon as the
-          # deploy attempt finishes, regardless of success. A later scheduled
-          # run retries this cleanup if the workflow itself was interrupted.
-          artifacts_json=$(
-            gh api --paginate --slurp \
-              "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"
-          )
-          pages_artifact_ids_json=$(
-            jq -ce '
-              [map(.artifacts // []) | add | .[]
-                | select(.name == "github-pages" and .expired == false)
-                | .id]
-              | if all(.[]; type == "number") then .
-                else error("invalid artifact identity") end
-            ' <<<"$artifacts_json"
-          )
+          # consumes it. Remove only non-expired github-pages artifacts that the
+          # API explicitly binds to this workflow run. Never enumerate or delete
+          # artifacts belonging to another workflow run.
+          artifacts_json=$(read_run_artifacts)
+          pages_artifact_ids_json=$(active_pages_ids <<<"$artifacts_json")
           pages_artifact_count=$(jq -er 'length' <<<"$pages_artifact_ids_json")
           for ((index = 0; index < pages_artifact_count; index++)); do
             artifact_id=$(jq -er ".[${index}]" <<<"$pages_artifact_ids_json")
@@ -1165,20 +1264,31 @@ jobs:
               echo "::error::Refusing to delete unexpected Pages artifact ID: $artifact_id"
               exit 1
             fi
-            gh api --method DELETE \
-              "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+            delete_status=0
+            gh_delete_once api --method DELETE \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" \
+              || delete_status=$?
+            if [ "$delete_status" -ne 0 ]; then
+              echo "::warning::Deletion outcome is uncertain; reconciling by readback"
+            fi
           done
-          remaining_artifacts_json=$(
-            gh api --paginate --slurp \
-              "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"
-          )
-          remaining_pages_count=$(
-            jq -er '
-              [map(.artifacts // []) | add | .[]
-                | select(.name == "github-pages" and .expired == false)]
-              | length
-            ' <<<"$remaining_artifacts_json"
-          )
+
+          remaining_pages_count=-1
+          for attempt in 0 1 2; do
+            remaining_artifacts_json=$(read_run_artifacts)
+            remaining_pages_ids_json=$(
+              active_pages_ids <<<"$remaining_artifacts_json"
+            )
+            remaining_pages_count=$(
+              jq -er 'length' <<<"$remaining_pages_ids_json"
+            )
+            if [ "$remaining_pages_count" -eq 0 ]; then
+              break
+            fi
+            if [ "$attempt" -lt 2 ]; then
+              sleep "${READBACK_DELAYS_SECONDS[$attempt]}"
+            fi
+          done
           if [ "$remaining_pages_count" -ne 0 ]; then
             echo "::error::Public Pages artifacts remain downloadable after cleanup"
             exit 1

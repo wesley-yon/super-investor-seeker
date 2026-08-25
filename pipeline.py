@@ -25,6 +25,10 @@ Optionally reads OPENFIGI_API_KEY for higher-rate CUSIP->ticker lookups.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import concurrent.futures
+from contextlib import contextmanager
+from contextvars import ContextVar
 import fcntl
 import functools
 import hashlib
@@ -34,17 +38,22 @@ import math
 import os
 import queue
 import re
+import secrets
 import shutil
 import signal
+import stat
 import statistics
 import sys
 import tempfile
 import threading
 import time
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Iterator
 from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from typing import cast
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from lxml import etree
@@ -133,10 +142,79 @@ LEGACY_CUSIP_REGISTRY_PATH = DATA_DIR / "cusip_registry.json"
 DEFAULT_USER_AGENT = "SuperInvestorSeeker contact@example.com"
 USER_AGENT = os.environ.get("SEC_USER_AGENT", DEFAULT_USER_AGENT)
 
+
+def _validate_sec_rate(rate: object) -> float:
+    """Return a finite SEC rate inside the shared conservative safety limit."""
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        raise ValueError("SEC request rate must be a finite number")
+    numeric_rate = float(rate)
+    if not math.isfinite(numeric_rate) or not 0 < numeric_rate <= 8:
+        raise ValueError("SEC request rate must be greater than 0 and at most 8")
+    return numeric_rate
+
+
+def sec_max_requests_per_second() -> float:
+    """Read the SEC rate limit and reject unsafe configuration eagerly."""
+    raw = os.environ.get("SEC_MAX_REQUESTS_PER_SECOND")
+    if raw is None:
+        return 8.0
+    try:
+        return _validate_sec_rate(float(raw))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SEC_MAX_REQUESTS_PER_SECOND must be a finite number") from exc
+
+def require_declared_sec_user_agent(user_agent: str | None = None) -> str:
+    """Validate a production SEC identity without enforcing it at import time."""
+    declared = USER_AGENT if user_agent is None else user_agent
+    if not declared or not declared.strip() or declared.strip() == DEFAULT_USER_AGENT:
+        raise ValueError("SEC_USER_AGENT must be a declared contact user agent")
+    if not re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", declared):
+        raise ValueError("SEC_USER_AGENT must include a contact email address")
+    return declared
+
+
+MAX_REDIRECTS = 3
+
+
+def validate_sec_url(url: str) -> str:
+    """Accept only the SEC endpoints this pipeline is allowed to fetch."""
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid SEC URL port") from exc
+    paths = {
+        "www.sec.gov": (
+            "/Archives/",
+            "/files/",
+            "/data/submissions/",
+            "/data-research/",
+            "/edgar/browse/",
+        ),
+        "data.sec.gov": ("/submissions/",),
+    }
+    host = parsed.hostname or ""
+    path_is_allowed = any(parsed.path.startswith(prefix) for prefix in paths.get(host, ()))
+    path_is_allowed = path_is_allowed or (
+        host == "www.sec.gov" and parsed.path == "/cgi-bin/browse-edgar"
+    )
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in paths
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.fragment
+        or not path_is_allowed
+    ):
+        raise ValueError("URL is not an allowed SEC HTTPS endpoint")
+    return url
+
+
 # Rate limiting. SEC's declared limit is 10 req/sec for a given contact;
 # 8 req/sec leaves a 20% safety margin. No inter-filer pause — the per-request
 # throttle already provides even spacing and SEC cares about sustained rate.
-MIN_REQUEST_INTERVAL = 1.0 / 8.0
+MIN_REQUEST_INTERVAL = 1.0 / sec_max_requests_per_second()
 MAX_RETRIES = 6
 RETRY_BASE = 2.0
 RETRY_MAX = 60.0
@@ -355,6 +433,323 @@ class FundDataError(RuntimeError):
     """Existing materialized fund data is unsafe to read or replace."""
 
 
+def close_sec_response(response: object) -> None:
+    """Release an SEC response without letting cleanup replace the outcome."""
+    try:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+    except BaseException:  # cleanup must not mask success, failure, or cancellation
+        pass
+
+
+# Retained only as a compatibility decoy for callers that may have observed the
+# former module-level sentinel. Cleanup authority now lives in a closure-private
+# token, so hostile response properties cannot forge a completed claim.
+_CLOSED_SEC_EXCEPTION_RESPONSE = object()
+_SEC_RESPONSE_CLEANUP_MARKER = "_sec_response_cleanup"
+_SEC_RESPONSE_CLEANUP_FALLBACK_LIMIT = 1_024
+_SEC_RESPONSE_CLEANUP_LOCK = threading.Lock()
+_SEC_EXCEPTION_CLEANUP_FALLBACK: dict[int, object] = {}
+_SEC_RESPONSE_CLEANUP_FALLBACK: dict[int, object] = {}
+
+
+def _build_sec_response_cleanup_marker_helpers():
+    authority = object()
+
+    def is_marked(value: object) -> bool:
+        try:
+            namespace = object.__getattribute__(value, "__dict__")
+        except BaseException:
+            return False
+        return (
+            type(namespace) is dict
+            and namespace.get(_SEC_RESPONSE_CLEANUP_MARKER) is authority
+        )
+
+    def mark(value: object) -> bool:
+        try:
+            namespace = object.__getattribute__(value, "__dict__")
+            if type(namespace) is not dict:
+                return False
+            namespace[_SEC_RESPONSE_CLEANUP_MARKER] = authority
+        except BaseException:
+            return False
+        return is_marked(value)
+
+    return is_marked, mark
+
+
+(
+    _sec_response_cleanup_is_marked,
+    _mark_sec_response_cleanup,
+) = _build_sec_response_cleanup_marker_helpers()
+del _build_sec_response_cleanup_marker_helpers
+
+
+def _claim_sec_response_cleanup(
+    value: object,
+    fallback: dict[int, object],
+) -> bool:
+    """Claim cleanup once while the caller holds the cleanup lock."""
+
+    if _sec_response_cleanup_is_marked(value):
+        return False
+    if _mark_sec_response_cleanup(value):
+        return True
+    identity = id(value)
+    if fallback.get(identity) is value:
+        return False
+    if len(fallback) >= _SEC_RESPONSE_CLEANUP_FALLBACK_LIMIT:
+        # Keep the newest opaque claim recorded rather than reporting an
+        # untracked success. This preserves immediate cross-wrapper,
+        # concurrent, and reentrant exact-once ownership while bounding strong
+        # references for objects that expose no writable instance dictionary.
+        del fallback[next(iter(fallback))]
+    fallback[identity] = value
+    return True
+
+
+def close_sec_response_once(response: object) -> None:
+    """Claim and release one SEC response exactly once across call layers."""
+
+    with _SEC_RESPONSE_CLEANUP_LOCK:
+        if not _claim_sec_response_cleanup(
+            response,
+            _SEC_RESPONSE_CLEANUP_FALLBACK,
+        ):
+            return
+    close_sec_response(response)
+
+
+MAX_SEC_STREAM_PUMPS = 4
+MAX_SEC_STREAM_CLOSERS = 4
+_SEC_STREAM_PUMP_SLOTS = threading.BoundedSemaphore(MAX_SEC_STREAM_PUMPS)
+_SEC_STREAM_CLOSER_SLOTS = threading.BoundedSemaphore(MAX_SEC_STREAM_CLOSERS)
+
+
+def _interrupt_sec_response_async(response: object) -> None:
+    """Bounded best-effort cleanup for a response with a blocked body read.
+
+    Closing an arbitrary transport can itself block. Deadline callers therefore
+    claim cleanup synchronously but perform socket interruption and close in one
+    of a fixed number of daemon closer slots. If every closer is already stuck,
+    the response remains claimed so an outer synchronous finally cannot consume
+    the cooperative cleanup reserve; the ordinary Requests response becomes
+    unreachable and its transport may still be reclaimed by the runtime.
+    """
+
+    with _SEC_RESPONSE_CLEANUP_LOCK:
+        if not _claim_sec_response_cleanup(
+            response,
+            _SEC_RESPONSE_CLEANUP_FALLBACK,
+        ):
+            return
+    closer_slots = _SEC_STREAM_CLOSER_SLOTS
+    if not closer_slots.acquire(blocking=False):
+        return
+
+    def interrupt_and_close() -> None:
+        try:
+            try:
+                raw = getattr(response, "raw", None)
+                shutdown = getattr(raw, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+            except BaseException:
+                pass
+            close_sec_response(response)
+        finally:
+            closer_slots.release()
+
+    closer = threading.Thread(
+        target=interrupt_and_close,
+        name="sec-response-close",
+        daemon=True,
+    )
+    try:
+        closer.start()
+    except BaseException:
+        closer_slots.release()
+
+
+def close_sec_exception_response(error: BaseException) -> None:
+    """Release one exception-attached response at most once across call layers."""
+
+    with _SEC_RESPONSE_CLEANUP_LOCK:
+        if not _claim_sec_response_cleanup(
+            error,
+            _SEC_EXCEPTION_CLEANUP_FALLBACK,
+        ):
+            return
+    try:
+        response = getattr(error, "response", None)
+    except BaseException:
+        return
+    if response is None:
+        return
+    with _SEC_RESPONSE_CLEANUP_LOCK:
+        if not _claim_sec_response_cleanup(
+            response,
+            _SEC_RESPONSE_CLEANUP_FALLBACK,
+        ):
+            return
+
+    # Both guards are installed before invoking attacker-controlled cleanup, so
+    # nested and cross-layer attempts cannot re-enter the close operation.
+    close_sec_response(response)
+
+
+def is_control_flow_exception(error: BaseException) -> bool:
+    """Return whether an exception must propagate as control flow/cancellation."""
+    return isinstance(
+        error,
+        (
+            KeyboardInterrupt,
+            SystemExit,
+            GeneratorExit,
+            asyncio.CancelledError,
+            concurrent.futures.CancelledError,
+        ),
+    )
+
+
+def sec_response_url(response: object) -> str:
+    """Read and validate response.url without exposing transport-owned details."""
+    access_failed = False
+    try:
+        value = getattr(response, "url")
+    except BaseException as error:
+        if is_control_flow_exception(error):
+            raise
+        access_failed = True
+        value = None
+    if access_failed or type(value) is not str:
+        raise ValueError("SEC response URL is invalid") from None
+
+    validation_failed = False
+    try:
+        validate_sec_url(value)
+    except Exception:  # noqa: BLE001 - normalize untrusted response URL text
+        validation_failed = True
+    if validation_failed:
+        raise ValueError("SEC response URL is invalid") from None
+    return value
+
+
+def sec_response_status(response: object) -> int:
+    access_failed = False
+    try:
+        value = getattr(response, "status_code")
+    except BaseException as error:
+        if is_control_flow_exception(error):
+            raise
+        access_failed = True
+        value = None
+    if (
+        access_failed
+        or type(value) is not int
+        or not 100 <= value <= 599
+    ):
+        raise ValueError("SEC response status is invalid") from None
+    return value
+
+
+def _sec_response_header(response: object, name: str) -> str | None:
+    access_failed = False
+    try:
+        headers = getattr(response, "headers")
+        get = getattr(headers, "get")
+        if not callable(get):
+            raise TypeError
+        value = get(name)
+    except BaseException as error:
+        if is_control_flow_exception(error):
+            raise
+        access_failed = True
+        value = None
+    if access_failed or (value is not None and type(value) is not str):
+        raise ValueError("SEC response headers are invalid") from None
+    return value
+
+
+_SEC_REQUEST_EVENT_OBSERVERS: ContextVar[tuple[object, ...]] = ContextVar(
+    "sec_request_event_observers",
+    default=(),
+)
+
+
+@contextmanager
+def observe_sec_request_events(sink: object):
+    """Temporarily receive allowlisted request events from every shared client."""
+
+    if not callable(sink):
+        raise TypeError("SEC request event observer must be callable")
+    observers = _SEC_REQUEST_EVENT_OBSERVERS.get()
+    token = _SEC_REQUEST_EVENT_OBSERVERS.set((*observers, sink))
+    try:
+        yield sink
+    finally:
+        _SEC_REQUEST_EVENT_OBSERVERS.reset(token)
+
+
+class _SecRequestDeadlineReached(RuntimeError):
+    """Raised before a shared SEC request can cross a cooperative deadline."""
+
+
+def is_sec_deadline_reached(error: BaseException) -> bool:
+    """Return whether a sanitized shared SEC deadline stopped an operation."""
+
+    return isinstance(error, _SecRequestDeadlineReached)
+
+
+def validate_sec_deadline_monotonic(value: object) -> float | None:
+    """Validate one optional absolute monotonic SEC deadline."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("SEC request deadline is invalid")
+    deadline = float(value)
+    if not math.isfinite(deadline) or deadline < 0:
+        raise ValueError("SEC request deadline is invalid")
+    return deadline
+
+
+def _sec_monotonic_value(monotonic: object | None = None) -> float:
+    clock = time.monotonic if monotonic is None else monotonic
+    if not callable(clock):
+        raise RuntimeError("SEC monotonic clock is invalid")
+    try:
+        reading = clock()
+    except BaseException as error:
+        if is_control_flow_exception(error):
+            raise
+        raise RuntimeError("SEC monotonic clock is invalid") from None
+    if isinstance(reading, bool) or not isinstance(reading, (int, float)):
+        raise RuntimeError("SEC monotonic clock is invalid")
+    now = float(reading)
+    if not math.isfinite(now) or now < 0:
+        raise RuntimeError("SEC monotonic clock is invalid")
+    return now
+
+
+def sec_deadline_remaining(
+    deadline_monotonic: object,
+    *,
+    monotonic: object | None = None,
+) -> float:
+    """Return positive time remaining or raise a sanitized deadline error."""
+
+    deadline = validate_sec_deadline_monotonic(deadline_monotonic)
+    if deadline is None:
+        raise ValueError("SEC request deadline is invalid")
+    remaining = deadline - _sec_monotonic_value(monotonic)
+    if not math.isfinite(remaining) or remaining <= 0:
+        raise _SecRequestDeadlineReached("SEC request deadline reached")
+    return remaining
+
+
 class RateLimitedSession:
     """Thread-safe global HTTP session. Throttles the rate at which requests
     are *issued* (not in-flight) — multiple workers can have simultaneous
@@ -365,55 +760,603 @@ class RateLimitedSession:
     sleep, not around the actual HTTP call, so workers overlap cleanly on
     round-trip latency."""
 
-    def __init__(self) -> None:
-        self.session = requests.Session()
+    def __init__(
+        self,
+        session: requests.Session | None = None,
+        sleep=None,
+        monotonic=None,
+        wall_now=None,
+        jitter=None,
+        event_sink=None,
+        rate: object | None = None,
+    ) -> None:
+        self.session = session or requests.Session()
         self.session.headers.update({
             "User-Agent": USER_AGENT,
             "Accept-Encoding": "gzip, deflate",
             "Accept": "*/*",
         })
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._wall_now = wall_now
+        self._jitter = jitter or (lambda delay: delay)
+        self._event_sink = event_sink
+        self._min_request_interval = (
+            MIN_REQUEST_INTERVAL if rate is None else 1.0 / _validate_sec_rate(rate)
+        )
         self._last_request = 0.0
         self._rate_lock = threading.Lock()
 
-    def _claim_slot(self) -> None:
-        """Block until this caller may issue its next request. Thread-safe —
-        serializes across workers so we don't burst past MIN_REQUEST_INTERVAL."""
+    @staticmethod
+    def _validate_deadline_monotonic(value: object) -> float | None:
+        return validate_sec_deadline_monotonic(value)
+
+    def _deadline_remaining(self, deadline_monotonic: float) -> float:
+        return sec_deadline_remaining(
+            deadline_monotonic,
+            monotonic=self._monotonic,
+        )
+
+    @staticmethod
+    def _deadline_timeout(timeout: object, remaining: float) -> float:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise ValueError("SEC request timeout is invalid")
+        value = float(timeout)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("SEC request timeout is invalid")
+        return min(value, remaining)
+
+    def _claim_slot(self, deadline_monotonic: float | None = None) -> float:
+        """Block until this caller may issue its next request."""
+        monotonic = self._monotonic or time.monotonic
+        sleep = self._sleep or time.sleep
         with self._rate_lock:
-            now = time.monotonic()
-            wait = MIN_REQUEST_INTERVAL - (now - self._last_request)
+            now = monotonic()
+            wait = self._min_request_interval - (now - self._last_request)
+            if deadline_monotonic is not None:
+                if isinstance(now, bool) or not isinstance(now, (int, float)):
+                    raise RuntimeError("SEC monotonic clock is invalid")
+                now_value = float(now)
+                if not math.isfinite(now_value) or now_value < 0:
+                    raise RuntimeError("SEC monotonic clock is invalid")
+                remaining = deadline_monotonic - now_value
+                if (
+                    not math.isfinite(remaining)
+                    or remaining <= 0
+                    or max(wait, 0.0) >= remaining
+                ):
+                    raise _SecRequestDeadlineReached(
+                        "SEC request deadline reached"
+                    )
             if wait > 0:
-                time.sleep(wait)
-            self._last_request = time.monotonic()
+                sleep(wait)
+            claimed_at = monotonic()
+            if deadline_monotonic is not None:
+                if (
+                    isinstance(claimed_at, bool)
+                    or not isinstance(claimed_at, (int, float))
+                    or not math.isfinite(float(claimed_at))
+                    or float(claimed_at) < 0
+                ):
+                    raise RuntimeError("SEC monotonic clock is invalid")
+                if float(claimed_at) >= deadline_monotonic:
+                    raise _SecRequestDeadlineReached(
+                        "SEC request deadline reached"
+                    )
+            self._last_request = claimed_at
+        return max(wait, 0.0)
+
+    def _retry_sleep(self, response: requests.Response | None, delay: float) -> float:
+        retry_after = None
+        if response is not None:
+            try:
+                retry_after = _sec_response_header(response, "Retry-After")
+            except ValueError:
+                retry_after = None
+        if retry_after:
+            try:
+                retry_after_seconds = float(retry_after)
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    now = (self._wall_now or (lambda: datetime.now(timezone.utc)))()
+                    retry_after_seconds = (retry_at - now).total_seconds()
+                except (TypeError, ValueError, IndexError, OverflowError):
+                    retry_after_seconds = -1.0
+            if math.isfinite(retry_after_seconds) and retry_after_seconds >= 0:
+                return min(RETRY_MAX, retry_after_seconds)
+        return min(RETRY_MAX, max(0.0, self._jitter(delay)))
+
+    def _retry_delay_fits_deadline(
+        self,
+        delay: float,
+        deadline_monotonic: float | None,
+    ) -> bool:
+        if deadline_monotonic is None:
+            return True
+        try:
+            remaining = self._deadline_remaining(deadline_monotonic)
+        except _SecRequestDeadlineReached:
+            return False
+        return delay < remaining
+
+    def _emit(self, *, attempt: int, status: int | None, latency: float, sleep: float, limiter_wait: float) -> None:
+        event = {
+            "attempt": attempt,
+            "status": status,
+            "latency": latency,
+            "sleep": sleep,
+            "limiter_wait": limiter_wait,
+        }
+        sinks = (
+            *((self._event_sink,) if self._event_sink is not None else ()),
+            *_SEC_REQUEST_EVENT_OBSERVERS.get(),
+        )
+        seen: set[int] = set()
+        for sink in sinks:
+            identity = id(sink)
+            if identity in seen or not callable(sink):
+                continue
+            seen.add(identity)
+            try:
+                sink(dict(event))
+            except Exception:  # noqa: BLE001 - telemetry must be best-effort
+                pass
+
+    @staticmethod
+    def _close_exception_response(error: BaseException) -> None:
+        close_sec_exception_response(error)
+
+    def _get_with_redirects(
+        self,
+        url: str,
+        timeout: float,
+        kwargs: dict,
+        limiter_wait: list[float],
+        started: list[float],
+        deadline_monotonic: float | None,
+    ) -> tuple[requests.Response, int]:
+        current = validate_sec_url(url)
+        for _ in range(MAX_REDIRECTS + 1):
+            limiter_wait[0] += self._claim_slot(deadline_monotonic)
+            if started[0] < 0:
+                started[0] = (self._monotonic or time.monotonic)()
+            request_timeout = timeout
+            if deadline_monotonic is not None:
+                request_timeout = self._deadline_timeout(
+                    timeout,
+                    self._deadline_remaining(deadline_monotonic),
+                )
+            request_failed = False
+            try:
+                response = self.session.get(
+                    current,
+                    timeout=request_timeout,
+                    allow_redirects=False,
+                    **kwargs,
+                )
+            except BaseException as error:
+                if is_control_flow_exception(error):
+                    raise
+                if isinstance(error, requests.RequestException):
+                    raise
+                self._close_exception_response(error)
+                request_failed = True
+                response = None
+            if request_failed:
+                raise RuntimeError("SEC request failed") from None
+            if response is None:  # defensive typing invariant
+                raise RuntimeError("SEC request failed")
+            try:
+                if deadline_monotonic is not None:
+                    self._deadline_remaining(deadline_monotonic)
+                sec_response_url(response)
+                status = sec_response_status(response)
+                if status not in (301, 302, 303, 307, 308):
+                    if deadline_monotonic is not None:
+                        self._deadline_remaining(deadline_monotonic)
+                    return response, status
+                location = _sec_response_header(response, "Location")
+                if not location:
+                    raise RuntimeError("SEC redirect response omitted Location")
+                redirect_invalid = False
+                try:
+                    next_url = validate_sec_url(urljoin(current, location))
+                except Exception:  # noqa: BLE001 - normalize untrusted Location
+                    redirect_invalid = True
+                    next_url = ""
+                if redirect_invalid:
+                    raise ValueError("SEC redirect URL is invalid") from None
+                if deadline_monotonic is not None:
+                    self._deadline_remaining(deadline_monotonic)
+            except BaseException as error:
+                if is_sec_deadline_reached(error):
+                    _interrupt_sec_response_async(response)
+                else:
+                    close_sec_response(response)
+                raise
+            close_sec_response(response)
+            current = next_url
+        raise RuntimeError("SEC redirect limit exceeded")
 
     def get(self, url: str, **kwargs) -> requests.Response:
+        if kwargs.pop("allow_redirects", False):
+            raise ValueError("native redirects are not permitted for SEC requests")
+        timeout = kwargs.pop("timeout", HTTP_TIMEOUT)
+        deadline_monotonic = self._validate_deadline_monotonic(
+            kwargs.pop("deadline_monotonic", None)
+        )
+        validate_sec_url(url)
         delay = RETRY_BASE
-        last_exc: Exception | None = None
+        retry_statuses = (403, 429, 500, 502, 503, 504)
+        terminal_request_failure = False
         for attempt in range(MAX_RETRIES):
-            self._claim_slot()
+            limiter_wait = [0.0]
+            started = [-1.0]
+            monotonic = self._monotonic or time.monotonic
             try:
-                resp = self.session.get(url, timeout=HTTP_TIMEOUT, **kwargs)
-                if resp.status_code in (403, 429, 503):
-                    log.warning(
-                        f"  HTTP {resp.status_code} on {url} "
-                        f"(attempt {attempt + 1}/{MAX_RETRIES})"
-                    )
-                    if attempt < MAX_RETRIES - 1:
-                        time.sleep(min(delay, RETRY_MAX))
-                        delay *= 2
-                        continue
-                resp.raise_for_status()
-                return resp
-            except requests.RequestException as e:
-                last_exc = e
+                resp, status = self._get_with_redirects(
+                    url,
+                    timeout,
+                    kwargs,
+                    limiter_wait,
+                    started,
+                    deadline_monotonic,
+                )
+            except (requests.Timeout, requests.ConnectionError) as error:
+                self._close_exception_response(error)
                 log.warning(
-                    f"  request error on {url}: {e} "
+                    "  SEC request transport error "
                     f"(attempt {attempt + 1}/{MAX_RETRIES})"
                 )
                 if attempt < MAX_RETRIES - 1:
-                    time.sleep(min(delay, RETRY_MAX))
-                    delay *= 2
+                    retry_sleep = self._retry_sleep(None, delay)
+                    if not self._retry_delay_fits_deadline(
+                        retry_sleep,
+                        deadline_monotonic,
+                    ):
+                        self._emit(
+                            attempt=attempt + 1,
+                            status=None,
+                            latency=max(0.0, monotonic() - started[0]),
+                            sleep=0.0,
+                            limiter_wait=limiter_wait[0],
+                        )
+                        raise _SecRequestDeadlineReached(
+                            "SEC request deadline reached"
+                        ) from None
+                    self._emit(
+                        attempt=attempt + 1,
+                        status=None,
+                        latency=max(0.0, monotonic() - started[0]),
+                        sleep=retry_sleep,
+                        limiter_wait=limiter_wait[0],
+                    )
+                    (self._sleep or time.sleep)(retry_sleep)
+                    if deadline_monotonic is not None:
+                        self._deadline_remaining(deadline_monotonic)
+                    delay = min(delay * 2, RETRY_MAX)
                     continue
-        raise RuntimeError(f"GET failed after {MAX_RETRIES} retries: {url}") from last_exc
+                self._emit(
+                    attempt=attempt + 1,
+                    status=None,
+                    latency=max(0.0, monotonic() - started[0]),
+                    sleep=0.0,
+                    limiter_wait=limiter_wait[0],
+                )
+                break
+            except requests.RequestException as error:
+                self._close_exception_response(error)
+                self._emit(
+                    attempt=attempt + 1,
+                    status=None,
+                    latency=max(0.0, monotonic() - started[0]),
+                    sleep=0.0,
+                    limiter_wait=limiter_wait[0],
+                )
+                terminal_request_failure = True
+                break
+            try:
+                if status in retry_statuses:
+                    log.warning(
+                        f"  SEC HTTP {status} "
+                        f"(attempt {attempt + 1}/{MAX_RETRIES})"
+                    )
+                    if attempt < MAX_RETRIES - 1:
+                        retry_sleep = self._retry_sleep(resp, delay)
+                        close_sec_response(resp)
+                        if not self._retry_delay_fits_deadline(
+                            retry_sleep,
+                            deadline_monotonic,
+                        ):
+                            self._emit(
+                                attempt=attempt + 1,
+                                status=status,
+                                latency=max(0.0, monotonic() - started[0]),
+                                sleep=0.0,
+                                limiter_wait=limiter_wait[0],
+                            )
+                            raise _SecRequestDeadlineReached(
+                                "SEC request deadline reached"
+                            ) from None
+                        self._emit(
+                            attempt=attempt + 1,
+                            status=status,
+                            latency=max(0.0, monotonic() - started[0]),
+                            sleep=retry_sleep,
+                            limiter_wait=limiter_wait[0],
+                        )
+                        (self._sleep or time.sleep)(retry_sleep)
+                        if deadline_monotonic is not None:
+                            self._deadline_remaining(deadline_monotonic)
+                        delay = min(delay * 2, RETRY_MAX)
+                        continue
+                    close_sec_response(resp)
+                    self._emit(
+                        attempt=attempt + 1,
+                        status=status,
+                        latency=max(0.0, monotonic() - started[0]),
+                        sleep=0.0,
+                        limiter_wait=limiter_wait[0],
+                    )
+                    break
+                if 400 <= status < 600:
+                    error = requests.HTTPError(f"SEC HTTP {status}")
+                    error.response = resp
+                    close_sec_exception_response(error)
+                    self._emit(
+                        attempt=attempt + 1,
+                        status=status,
+                        latency=max(0.0, monotonic() - started[0]),
+                        sleep=0.0,
+                        limiter_wait=limiter_wait[0],
+                    )
+                    raise error
+                self._emit(
+                    attempt=attempt + 1,
+                    status=status,
+                    latency=max(0.0, monotonic() - started[0]),
+                    sleep=0.0,
+                    limiter_wait=limiter_wait[0],
+                )
+                return resp
+            except BaseException as error:
+                if isinstance(error, requests.RequestException):
+                    close_sec_exception_response(error)
+                else:
+                    close_sec_response(resp)
+                raise
+        if terminal_request_failure:
+            raise RuntimeError("SEC request failed")
+        raise RuntimeError(f"SEC GET failed after {MAX_RETRIES} retries") from None
+
+
+_SEC_STREAM_NEXT = object()
+_SEC_STREAM_CHUNK = object()
+_SEC_STREAM_END = object()
+_SEC_STREAM_ERROR = object()
+
+
+def iter_sec_response_chunks(
+    response: object,
+    *,
+    chunk_size: object,
+    deadline_monotonic: object | None = None,
+    monotonic: object | None = None,
+) -> Iterable[object]:
+    """Iterate response chunks without allowing a body read past a deadline."""
+
+    if (
+        isinstance(chunk_size, bool)
+        or not isinstance(chunk_size, int)
+        or chunk_size <= 0
+    ):
+        raise ValueError("SEC response chunk size is invalid")
+    deadline = validate_sec_deadline_monotonic(deadline_monotonic)
+    if deadline is None:
+        iter_content = getattr(response, "iter_content")
+        if not callable(iter_content):
+            raise TypeError("SEC response stream is invalid")
+        stream = cast(Iterable[object], iter_content(chunk_size=chunk_size))
+        yield from iter(stream)
+        return
+
+    try:
+        remaining = sec_deadline_remaining(deadline, monotonic=monotonic)
+    except BaseException as error:
+        if is_sec_deadline_reached(error):
+            _interrupt_sec_response_async(response)
+        raise
+    pump_slots = _SEC_STREAM_PUMP_SLOTS
+    try:
+        acquired = pump_slots.acquire(timeout=remaining)
+    except BaseException as error:
+        _interrupt_sec_response_async(response)
+        if is_control_flow_exception(error):
+            raise
+        raise RuntimeError("SEC response stream failed") from None
+    if not acquired:
+        _interrupt_sec_response_async(response)
+        raise _SecRequestDeadlineReached("SEC request deadline reached") from None
+    try:
+        sec_deadline_remaining(deadline, monotonic=monotonic)
+    except BaseException:
+        pump_slots.release()
+        _interrupt_sec_response_async(response)
+        raise
+
+    requests_queue: queue.Queue[object] = queue.Queue(maxsize=1)
+    results_queue: queue.Queue[tuple[object, object | None]] = queue.Queue(maxsize=1)
+    stopped = threading.Event()
+
+    def publish(kind: object, value: object | None) -> None:
+        while not stopped.is_set():
+            try:
+                results_queue.put((kind, value), timeout=0.05)
+            except queue.Full:
+                continue
+            return
+
+    def read_chunks() -> None:
+        iterator: Iterator[object] | None = None
+        try:
+            while not stopped.is_set():
+                try:
+                    request = requests_queue.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                if request is not _SEC_STREAM_NEXT:
+                    return
+                try:
+                    if iterator is None:
+                        iter_content = getattr(response, "iter_content")
+                        if not callable(iter_content):
+                            raise TypeError("SEC response stream is invalid")
+                        stream = cast(
+                            Iterable[object],
+                            iter_content(chunk_size=chunk_size),
+                        )
+                        iterator = iter(stream)
+                    chunk = next(iterator)
+                except StopIteration:
+                    publish(_SEC_STREAM_END, None)
+                    return
+                except BaseException as error:
+                    publish(_SEC_STREAM_ERROR, error)
+                    return
+                publish(_SEC_STREAM_CHUNK, chunk)
+        finally:
+            pump_slots.release()
+
+    worker = threading.Thread(
+        target=read_chunks,
+        name="sec-response-stream",
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except BaseException as error:
+        pump_slots.release()
+        _interrupt_sec_response_async(response)
+        if is_control_flow_exception(error):
+            raise
+        raise RuntimeError("SEC response stream failed") from None
+
+    completed = False
+    deadline_interrupted = False
+    try:
+        while True:
+            remaining = sec_deadline_remaining(deadline, monotonic=monotonic)
+            try:
+                requests_queue.put_nowait(_SEC_STREAM_NEXT)
+            except queue.Full:
+                raise RuntimeError("SEC response stream failed") from None
+            remaining = min(
+                remaining,
+                sec_deadline_remaining(deadline, monotonic=monotonic),
+            )
+            try:
+                kind, value = results_queue.get(timeout=remaining)
+            except queue.Empty:
+                raise _SecRequestDeadlineReached(
+                    "SEC request deadline reached"
+                ) from None
+            sec_deadline_remaining(deadline, monotonic=monotonic)
+            if kind is _SEC_STREAM_END:
+                completed = True
+                return
+            if kind is _SEC_STREAM_ERROR:
+                if not isinstance(value, BaseException):
+                    raise RuntimeError("SEC response stream failed") from None
+                raise value
+            if kind is not _SEC_STREAM_CHUNK:
+                raise RuntimeError("SEC response stream failed") from None
+            yield value
+    except BaseException as error:
+        if is_sec_deadline_reached(error):
+            deadline_interrupted = True
+            _interrupt_sec_response_async(response)
+        raise
+    finally:
+        stopped.set()
+        if not completed and worker.is_alive() and not deadline_interrupted:
+            _interrupt_sec_response_async(response)
+
+
+def read_bounded_sec_response(
+    response: object,
+    *,
+    max_bytes: object,
+    deadline_monotonic: object | None = None,
+    monotonic: object | None = None,
+) -> bytes:
+    """Read an explicitly bounded SEC payload and always release its socket."""
+    result: bytes | None = None
+    read_error: str | None = None
+    stream_failed = False
+    stream: Iterable[object] | None = None
+    try:
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+            raise ValueError("max_bytes must be a non-negative integer")
+        deadline = validate_sec_deadline_monotonic(deadline_monotonic)
+        if deadline is not None:
+            sec_deadline_remaining(deadline, monotonic=monotonic)
+        content_length = _sec_response_header(response, "Content-Length")
+        if content_length is not None:
+            if (
+                type(content_length) is not str
+                or re.fullmatch(r"(?:0|[1-9][0-9]{0,19})", content_length) is None
+            ):
+                raise ValueError("SEC response Content-Length is invalid")
+            if int(content_length) > max_bytes:
+                raise ValueError("SEC response exceeds configured maximum")
+        chunks: list[bytes] = []
+        size = 0
+        try:
+            stream = iter_sec_response_chunks(
+                response,
+                chunk_size=8192,
+                deadline_monotonic=deadline,
+                monotonic=monotonic,
+            )
+            for chunk in stream:
+                if not chunk:
+                    continue
+                if type(chunk) is not bytes:
+                    read_error = "SEC response stream yielded an invalid chunk"
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    read_error = "SEC response exceeds configured maximum"
+                    break
+                chunks.append(chunk)
+        except BaseException as error:
+            if is_control_flow_exception(error) or is_sec_deadline_reached(error):
+                raise
+            stream_failed = True
+        if not stream_failed and read_error is None:
+            if deadline is not None:
+                sec_deadline_remaining(deadline, monotonic=monotonic)
+            result = b"".join(chunks)
+    except BaseException as error:
+        if is_sec_deadline_reached(error):
+            _interrupt_sec_response_async(response)
+        raise
+    finally:
+        if stream is not None:
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                close_stream()
+        close_sec_response_once(response)
+    if stream_failed:
+        raise RuntimeError("SEC response stream failed") from None
+    if read_error is not None:
+        raise ValueError(read_error)
+    if result is None:  # defensive invariant; all other paths return or raise above
+        raise RuntimeError("SEC response stream failed")
+    return result
 
 
 HTTP = RateLimitedSession()
@@ -3383,11 +4326,159 @@ def resolve_ticker_from_name(
 
 def _fsync_directory(path: Path) -> None:
     """Persist directory-entry changes used by atomic file transactions."""
-    fd = os.open(path, os.O_RDONLY)
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _atomic_json_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _atomic_json_temporary_identity(metadata: os.stat_result) -> tuple[int, int, bool]:
+    """Bind a temporary name to the regular file opened exclusively by its fd."""
+    return metadata.st_dev, metadata.st_ino, stat.S_ISREG(metadata.st_mode)
+
+
+def _atomic_json_temporary_matches(
+    temporary: str,
+    parent_fd: int,
+    expected_identity: tuple[int, int, bool],
+) -> bool:
+    """Compare the fd-owned temp identity with its fd-relative lstat entry."""
+    try:
+        metadata = os.stat(
+            temporary,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return False
+    return _atomic_json_temporary_identity(metadata) == expected_identity
+
+
+def _atomic_json_safety_error() -> FundDataError:
+    return FundDataError("atomic JSON write could not safely access its parent directory")
+
+
+_ATOMIC_JSON_DIRECTORY_FD_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "replace")
+    and all(
+        function in os.supports_dir_fd
+        for function in (os.open, os.mkdir, os.stat, os.unlink, os.rename)
+    )
+)
+
+
+def _atomic_json_directory_flags() -> int:
+    if not _ATOMIC_JSON_DIRECTORY_FD_SUPPORTED:
+        raise _atomic_json_safety_error()
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _atomic_json_open_prepared_parent(
+    raw_path: Path,
+) -> tuple[int, Path, Path, str, tuple[int, int]]:
+    """Anchor a canonical parent and create only missing descendants by fd."""
+    raw_parent = raw_path.parent
+    filename = raw_path.name
+    if not filename or filename in {".", ".."}:
+        raise _atomic_json_safety_error()
+    flags = _atomic_json_directory_flags()
+    try:
+        canonical_parent = raw_parent.resolve(strict=False)
+    except OSError as exc:
+        raise _atomic_json_safety_error() from exc
+
+    missing: list[str] = []
+    deepest_existing = canonical_parent
+    while True:
+        try:
+            metadata = os.stat(deepest_existing, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            component = deepest_existing.name
+            if not component:
+                raise _atomic_json_safety_error() from exc
+            missing.append(component)
+            deepest_existing = deepest_existing.parent
+            continue
+        except OSError as exc:
+            raise _atomic_json_safety_error() from exc
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise _atomic_json_safety_error()
+        deepest_identity = _atomic_json_identity(metadata)
+        break
+
+    try:
+        parent_fd = os.open(deepest_existing, flags)
+    except OSError as exc:
+        raise _atomic_json_safety_error() from exc
+    try:
+        if _atomic_json_identity(os.fstat(parent_fd)) != deepest_identity:
+            raise _atomic_json_safety_error()
+        for component in reversed(missing):
+            created = False
+            try:
+                os.mkdir(component, 0o777, dir_fd=parent_fd)
+                created = True
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise _atomic_json_safety_error() from exc
+            child_fd = -1
+            try:
+                try:
+                    child_fd = os.open(component, flags, dir_fd=parent_fd)
+                    child_metadata = os.fstat(child_fd)
+                except OSError as exc:
+                    raise _atomic_json_safety_error() from exc
+                if not stat.S_ISDIR(child_metadata.st_mode):
+                    raise _atomic_json_safety_error()
+                if created:
+                    try:
+                        os.fchmod(child_fd, 0o777)
+                        os.fsync(child_fd)
+                        os.fsync(parent_fd)
+                    except (AttributeError, OSError) as exc:
+                        raise _atomic_json_safety_error() from exc
+            except BaseException:
+                if child_fd >= 0:
+                    os.close(child_fd)
+                raise
+            os.close(parent_fd)
+            parent_fd = child_fd
+        parent_identity = _atomic_json_identity(os.fstat(parent_fd))
+        return parent_fd, raw_parent, canonical_parent, filename, parent_identity
+    except BaseException:
+        os.close(parent_fd)
+        raise
+
+
+def _atomic_json_revalidate_raw_parent(
+    raw_parent: Path,
+    canonical_parent: Path,
+    expected_identity: tuple[int, int],
+    parent_fd: int,
+) -> None:
+    """Reject a raw-path retarget even though the descriptor remains safe."""
+    try:
+        if raw_parent.resolve(strict=True) != canonical_parent:
+            raise _atomic_json_safety_error()
+        metadata = os.stat(raw_parent)
+    except FundDataError:
+        raise
+    except OSError as exc:
+        raise _atomic_json_safety_error() from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or _atomic_json_identity(metadata) != expected_identity
+        or _atomic_json_identity(os.fstat(parent_fd)) != expected_identity
+    ):
+        raise _atomic_json_safety_error()
 
 
 def _atomic_write_json(
@@ -3398,38 +4489,105 @@ def _atomic_write_json(
     sort_keys: bool = False,
     fsync_parent: bool = True,
 ) -> None:
-    """Write JSON atomically: render to a sibling temp file, fsync, then
-    os.replace() into place. A SIGTERM or power loss mid-write leaves either
-    the old file or the new file — never a half-flushed one that
-    json.load() would reject."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Sibling temp file to guarantee same filesystem (os.replace is atomic
-    # only within a filesystem).
-    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    """Durably publish JSON through a verified, descriptor-anchored parent."""
+    parent_fd, raw_parent, canonical_parent, filename, parent_identity = (
+        _atomic_json_open_prepared_parent(Path(path))
+    )
+    temporary = f".{filename}.{secrets.token_hex(16)}.tmp"
+    temporary_fd = -1
+    temporary_identity: tuple[int, int, bool] | None = None
+    locked = False
     try:
-        with open(tmp, "w") as f:
+        try:
+            fcntl.flock(parent_fd, fcntl.LOCK_EX)
+            locked = True
+        except OSError as exc:
+            raise _atomic_json_safety_error() from exc
+        _atomic_json_revalidate_raw_parent(
+            raw_parent,
+            canonical_parent,
+            parent_identity,
+            parent_fd,
+        )
+        try:
+            existing = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            mode = 0o644
+        except OSError as exc:
+            raise _atomic_json_safety_error() from exc
+        else:
+            if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode):
+                raise ValueError(f"atomic JSON target must be a regular file: {path}")
+            mode = stat.S_IMODE(existing.st_mode)
+
+        temporary_fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            mode,
+            dir_fd=parent_fd,
+        )
+        os.fchmod(temporary_fd, mode)
+        temporary_identity = _atomic_json_temporary_identity(
+            os.fstat(temporary_fd)
+        )
+        if not temporary_identity[2]:
+            raise _atomic_json_safety_error()
+        with os.fdopen(temporary_fd, "w", encoding="utf-8") as handle:
+            temporary_fd = -1
             json.dump(
                 payload,
-                f,
+                handle,
                 indent=indent,
                 sort_keys=sort_keys,
                 separators=(",", ":") if indent is None else None,
             )
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _atomic_json_revalidate_raw_parent(
+            raw_parent,
+            canonical_parent,
+            parent_identity,
+            parent_fd,
+        )
+        if not _atomic_json_temporary_matches(
+            temporary,
+            parent_fd,
+            temporary_identity,
+        ):
+            raise _atomic_json_safety_error()
+        os.replace(
+            temporary,
+            filename,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
         if fsync_parent:
-            _fsync_directory(path.parent)
+            os.fsync(parent_fd)
+        _atomic_json_revalidate_raw_parent(
+            raw_parent,
+            canonical_parent,
+            parent_identity,
+            parent_fd,
+        )
     except BaseException:
-        removed = False
-        try:
-            tmp.unlink()
-            removed = True
-        except FileNotFoundError:
-            pass
-        if removed:
-            _fsync_directory(path.parent)
+        if temporary_fd >= 0:
+            os.close(temporary_fd)
+        if temporary_identity is not None and _atomic_json_temporary_matches(
+            temporary,
+            parent_fd,
+            temporary_identity,
+        ):
+            os.unlink(temporary, dir_fd=parent_fd)
+            os.fsync(parent_fd)
         raise
+    finally:
+        if locked:
+            try:
+                fcntl.flock(parent_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(parent_fd)
+        else:
+            os.close(parent_fd)
 
 
 def _remove_derived_output(path: Path) -> None:

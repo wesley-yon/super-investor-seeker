@@ -123,6 +123,41 @@ if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then
   exit 0
 fi
 
+public_tree_unchanged=false
+active_release_tag=''
+if [ -n "${BASE_PUBLIC_TREE_SHA256:-}" ]; then
+  if [[ ! "$BASE_PUBLIC_TREE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "::error::Restored public tree digest is invalid"
+    exit 1
+  fi
+  current_public_dir=$(mktemp -d "$RUNNER_TEMP/current-public-artifact.XXXXXX")
+  current_public_json=$(
+    python scripts/build_pages_artifact.py \
+      --source-root "$GITHUB_WORKSPACE" \
+      --output "$current_public_dir" \
+      --source-sha 0000000000000000000000000000000000000000 \
+      --dataset-id 0000000000000000000000000000000000000000000000000000000000000000 \
+      --workers 1
+  )
+  echo "$current_public_json" | jq -e . >/dev/null
+  current_public_tree_sha256=$(jq -er '.tree_sha256' <<<"$current_public_json")
+  rm -rf "$current_public_dir"
+  if [[ ! "$current_public_tree_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "::error::Current public artifact returned an invalid tree digest"
+    exit 1
+  fi
+  if [ "$current_public_tree_sha256" = "$BASE_PUBLIC_TREE_SHA256" ]; then
+    public_tree_unchanged=true
+    active_release_json=$(gh_read_retry api "/repos/$DATA_REPOSITORY/releases/latest")
+    active_release_tag=$(jq -er '.tag_name' <<<"$active_release_json")
+    if [[ ! "$active_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
+       [ "$(jq -r '.draft or .prerelease' <<<"$active_release_json")" != false ]; then
+      echo "::error::The active private dataset release is invalid"
+      exit 1
+    fi
+  fi
+fi
+
 release_tag="dataset-$(date -u +%Y%m%dT%H%M%SZ)-${dataset_id:0:12}"
 archive_name=$(basename "$archive_path")
 manifest_name=$(basename "$manifest_path")
@@ -131,6 +166,11 @@ expected_latest_release_tag=$(
 )
 if [[ ! "$expected_latest_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
   echo "::error::The pre-publication latest release pointer is invalid"
+  exit 1
+fi
+if [ "$public_tree_unchanged" = true ] &&
+   [ "$expected_latest_release_tag" != "$active_release_tag" ]; then
+  echo "::error::The latest release pointer changed before private-only publication"
   exit 1
 fi
 
@@ -268,9 +308,15 @@ observe_publication() {
      [ "$observed_draft_state" != false ]; then
     return 3
   fi
-  if [ "$observed_draft_state" = false ] &&
-     [ "$observed_latest_tag" = "$release_tag" ]; then
-    return 0
+  if [ "$observed_draft_state" = false ]; then
+    if [ "${public_tree_unchanged:-false}" = true ] &&
+       [ "$observed_latest_tag" = "$active_release_tag" ]; then
+      return 0
+    fi
+    if [ "${public_tree_unchanged:-false}" != true ] &&
+       [ "$observed_latest_tag" = "$release_tag" ]; then
+      return 0
+    fi
   fi
   # The two read paths may become consistent in either order. Only the target
   # and the captured pre-publication pointer are acceptable during convergence.
@@ -318,10 +364,14 @@ for attempt in 0 1 2; do
   fi
 
   mutation_status=0
+  publication_latest_flag=--latest
+  if [ "${public_tree_unchanged:-false}" = true ]; then
+    publication_latest_flag=--latest=false
+  fi
   gh_mutate_once release edit "$release_tag" \
     --repo "$DATA_REPOSITORY" \
     --draft=false \
-    --latest || mutation_status=$?
+    "$publication_latest_flag" || mutation_status=$?
 
   publication_observation_status=0
   wait_for_publication || publication_observation_status=$?
@@ -350,4 +400,8 @@ fi
 echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
 echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
 echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
-echo "site_changed=true" >> "$GITHUB_OUTPUT"
+if [ "$public_tree_unchanged" = true ]; then
+  echo "site_changed=false" >> "$GITHUB_OUTPUT"
+else
+  echo "site_changed=true" >> "$GITHUB_OUTPUT"
+fi

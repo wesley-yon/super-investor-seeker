@@ -1139,18 +1139,38 @@ class InsiderParserTests(unittest.TestCase):
                         source_document_url=invalid_url,
                     )
 
-    def test_sec_source_urls_must_match_issuer_cik(self) -> None:
+    def test_accepts_index_under_issuer_and_document_under_reporting_owner(
+        self,
+    ) -> None:
         case = ORACLE["filings"]["form4_simple_purchase"]
-        raw_xml = (FIXTURE_ROOT / case["filename"]).read_bytes()
+        reporting_owner_document_url = case["source_document_url"].replace(
+            "/data/1/",
+            "/data/2/",
+        )
+
+        filing = parse_ownership_xml(
+            (FIXTURE_ROOT / case["filename"]).read_bytes(),
+            accession_number=case["accession_number"],
+            filing_date=case["filing_date"],
+            accepted_at=case["accepted_at"],
+            source_index_url=case["source_index_url"],
+            source_document_url=reporting_owner_document_url,
+        )
+
+        self.assertEqual(case["source_index_url"], filing["source"]["index_url"])
+        self.assertEqual(
+            reporting_owner_document_url,
+            filing["source"]["document_url"],
+        )
+
+    def test_rejects_index_archive_cik_outside_issuer(self) -> None:
+        case = ORACLE["filings"]["form4_simple_purchase"]
 
         for archive_cik in ("9999999999", "0000000000"):
             with self.subTest(archive_cik=archive_cik):
-                with self.assertRaisesRegex(
-                    InsiderParseError,
-                    "issuer CIK",
-                ):
+                with self.assertRaisesRegex(InsiderParseError, "issuer CIK"):
                     parse_ownership_xml(
-                        raw_xml,
+                        (FIXTURE_ROOT / case["filename"]).read_bytes(),
                         accession_number=case["accession_number"],
                         filing_date=case["filing_date"],
                         accepted_at=case["accepted_at"],
@@ -1158,11 +1178,81 @@ class InsiderParserTests(unittest.TestCase):
                             "/data/1/",
                             f"/data/{archive_cik}/",
                         ),
-                        source_document_url=case["source_document_url"].replace(
-                            "/data/1/",
-                            f"/data/{archive_cik}/",
-                        ),
+                        source_document_url=case["source_document_url"],
                     )
+
+    def test_rejects_document_archive_cik_outside_issuer_and_reporting_owners(
+        self,
+    ) -> None:
+        case = ORACLE["filings"]["form4_simple_purchase"]
+
+        with self.assertRaisesRegex(InsiderParseError, "issuer CIK"):
+            parse_ownership_xml(
+                (FIXTURE_ROOT / case["filename"]).read_bytes(),
+                accession_number=case["accession_number"],
+                filing_date=case["filing_date"],
+                accepted_at=case["accepted_at"],
+                source_index_url=case["source_index_url"],
+                source_document_url=case["source_document_url"].replace(
+                    "/data/1/",
+                    "/data/9999999999/",
+                ),
+            )
+
+    def test_rejects_document_with_wrong_accession_directory(self) -> None:
+        case = ORACLE["filings"]["form4_simple_purchase"]
+        compact_accession = case["accession_number"].replace("-", "")
+
+        with self.assertRaisesRegex(InsiderParseError, "accession"):
+            parse_ownership_xml(
+                (FIXTURE_ROOT / case["filename"]).read_bytes(),
+                accession_number=case["accession_number"],
+                filing_date=case["filing_date"],
+                accepted_at=case["accepted_at"],
+                source_index_url=case["source_index_url"],
+                source_document_url=case["source_document_url"].replace(
+                    compact_accession,
+                    "000000000126999999",
+                ),
+            )
+
+    def test_nested_document_archive_path_requires_safe_xml_filename(self) -> None:
+        case = ORACLE["filings"]["form4_simple_purchase"]
+        raw_xml = (FIXTURE_ROOT / case["filename"]).read_bytes()
+        document_directory = case["source_document_url"].rsplit("/", 1)[0]
+        invalid_document_urls = (
+            f"{document_directory}/xslF345X05",
+            f"{document_directory}/xslF345X05/document.txt",
+            f"{document_directory}/xslF345X05//document.xml",
+            f"{document_directory}/xslF345X05/../document.xml",
+            f"{document_directory}/xslF345X05/%2e%2e/document.xml",
+            f"{document_directory}/xslF345X05\\document.xml",
+        )
+        for document_url in invalid_document_urls:
+            with self.subTest(document_url=document_url):
+                with self.assertRaisesRegex(InsiderParseError, "accession"):
+                    parse_ownership_xml(
+                        raw_xml,
+                        accession_number=case["accession_number"],
+                        filing_date=case["filing_date"],
+                        accepted_at=case["accepted_at"],
+                        source_index_url=case["source_index_url"],
+                        source_document_url=document_url,
+                    )
+
+        nested_index_url = case["source_index_url"].replace(
+            f"/{case['accession_number']}-index.html",
+            f"/nested/{case['accession_number']}-index.html",
+        )
+        with self.assertRaisesRegex(InsiderParseError, "accession"):
+            parse_ownership_xml(
+                raw_xml,
+                accession_number=case["accession_number"],
+                filing_date=case["filing_date"],
+                accepted_at=case["accepted_at"],
+                source_index_url=nested_index_url,
+                source_document_url=case["source_document_url"],
+            )
 
     def test_invalid_normalized_xml_values_fail_as_parse_errors(self) -> None:
         case = ORACLE["filings"]["form4_simple_purchase"]
@@ -1215,6 +1305,16 @@ class InsiderParserTests(unittest.TestCase):
         missing_price_row = round_tripped["transactions"][1]
         self.assertEqual("5.00000001", missing_price_row["shares"])
         self.assertIsNone(missing_price_row["price_per_share"])
+
+    def test_canonical_joint_filing_revalidates_after_json_round_trip(self) -> None:
+        rendered = canonical_insider_json_bytes(
+            self.parse_case("form4_joint_sale_derivative")
+        )
+        round_tripped = json.loads(rendered)
+
+        validated = validate_insider_filing(round_tripped)
+
+        self.assertEqual(rendered, canonical_insider_json_bytes(validated))
 
     def test_contract_rejects_noncanonical_or_nonstring_decimal_fields(
         self,

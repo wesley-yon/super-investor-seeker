@@ -36,6 +36,7 @@ from composition_integrity import (
     calculate_quarter_composition_hash as _calculate_quarter_composition_hash,
 )
 from data_contract import DATA_CONTRACT_VERSION
+from insider_publication import validate_optional_insider_public_tree
 from quarter_health import (
     add_quarter_peer_observations,
     compile_peer_price_index,
@@ -94,6 +95,7 @@ CUSIP_REGISTRY_PATH = DATA_DIR / "cusip_registry.json"
 SECURITY_LABELS_PATH = DATA_DIR / "security_labels.json"
 COMPANY_TICKERS_PATH = DATA_DIR / "company_tickers.json"
 STATE_PATH = DATA_DIR / "pipeline_state.json"
+INSIDER_PUBLIC_DIR = DATA_DIR / "insiders" / "public"
 _AMENDMENT_REDUCER_VERSION = 2
 _COMPOSITION_HASH_VERSION = 2
 _NEW_HOLDINGS_IDENTITY_VERSION = 1
@@ -4154,6 +4156,14 @@ def validate_funds_index(
         )
 
 
+def validate_insider_public_data(
+    public_root: Path,
+    errors: list[str],
+) -> None:
+    """Validate the optional bounded public insider publication tree."""
+    errors.extend(validate_optional_insider_public_tree(public_root))
+
+
 def main() -> int:
     errors: list[str] = []
     warnings: list[str] = []
@@ -4174,6 +4184,8 @@ def main() -> int:
     if not DATA_DIR.exists():
         print(f"data directory not found: {DATA_DIR}", file=sys.stderr)
         return 1
+
+    validate_insider_public_data(INSIDER_PUBLIC_DIR, errors)
 
     registry_data = load_json(CUSIP_REGISTRY_PATH, errors)
     registry_is_valid = isinstance(registry_data, dict)
