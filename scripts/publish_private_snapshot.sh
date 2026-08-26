@@ -4,6 +4,13 @@ set -euo pipefail
 readonly TRANSIENT_MUTATION_EXIT_CODE=75
 readonly -a RETRY_DELAYS_SECONDS=(1 3)
 
+require_public_tree_unchanged=${REQUIRE_PUBLIC_TREE_UNCHANGED:-false}
+if [ "$require_public_tree_unchanged" != true ] &&
+   [ "$require_public_tree_unchanged" != false ]; then
+  echo "::error::Private publication boundary requirement is invalid"
+  exit 1
+fi
+
 gh_read_retry() {
   python scripts/github_cli_retry.py --retry-forbidden-read -- "$@"
 }
@@ -54,12 +61,19 @@ wait_for_draft_release() {
   return 1
 }
 
+verify_current_main() {
+  local current_main_sha
+
+  git fetch --no-tags origin main:refs/remotes/origin/main
+  current_main_sha=$(git rev-parse origin/main)
+  if [ "$code_sha" != "$current_main_sha" ]; then
+    echo "::error::main moved during generation; aborting stale publication"
+    exit 1
+  fi
+}
+
 code_sha=$(git rev-parse HEAD)
-git fetch --no-tags origin main:refs/remotes/origin/main
-if [ "$code_sha" != "$(git rev-parse origin/main)" ]; then
-  echo "::error::main moved during generation; aborting stale publication"
-  exit 1
-fi
+verify_current_main
 
 snapshot_dir=$(mktemp -d "$RUNNER_TEMP/data-snapshot.XXXXXX")
 pack_json=$(
@@ -158,6 +172,12 @@ if [ -n "${BASE_PUBLIC_TREE_SHA256:-}" ]; then
   fi
 fi
 
+if [ "$require_public_tree_unchanged" = true ] &&
+   [ "$public_tree_unchanged" != true ]; then
+  echo "::error::Private-only publication requires an unchanged public artifact"
+  exit 1
+fi
+
 release_tag="dataset-$(date -u +%Y%m%dT%H%M%SZ)-${dataset_id:0:12}"
 archive_name=$(basename "$archive_path")
 manifest_name=$(basename "$manifest_path")
@@ -177,6 +197,7 @@ fi
 draft_ready=false
 for attempt in 0 1 2; do
   mutation_status=0
+  verify_current_main
   gh_mutate_once release create "$release_tag" \
     --repo "$DATA_REPOSITORY" \
     --draft \
@@ -268,6 +289,7 @@ wait_for_remote_snapshot() {
 snapshot_verified=false
 for attempt in 0 1 2; do
   mutation_status=0
+  verify_current_main
   gh_mutate_once release upload "$release_tag" \
     "$archive_path" "$manifest_path" \
     --repo "$DATA_REPOSITORY" \
@@ -368,6 +390,7 @@ for attempt in 0 1 2; do
   if [ "${public_tree_unchanged:-false}" = true ]; then
     publication_latest_flag=--latest=false
   fi
+  verify_current_main
   gh_mutate_once release edit "$release_tag" \
     --repo "$DATA_REPOSITORY" \
     --draft=false \

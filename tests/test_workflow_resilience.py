@@ -74,6 +74,7 @@ class WorkflowResilienceTests(unittest.TestCase):
                     'expected_latest_release_tag="dataset-old"',
                     'DATA_REPOSITORY="owner/private-data"',
                     "sleep_before_retry() { return 0; }",
+                    "verify_current_main() { return 0; }",
                     r"""
 gh_read_retry() {
   if [ "$1" = release ] && [ "$2" = view ]; then
@@ -1554,8 +1555,10 @@ gh_mutate_once() {
         publisher = read(PUBLISHER_SCRIPT)
         fetch = "git fetch --no-tags origin main:refs/remotes/origin/main"
         self.assertIn(fetch, publisher)
+        self.assertIn("verify_current_main() {", publisher)
+        self.assertIn("current_main_sha=$(git rev-parse origin/main)", publisher)
         self.assertIn(
-            'if [ "$code_sha" != "$(git rev-parse origin/main)" ]; then',
+            'if [ "$code_sha" != "$current_main_sha" ]; then',
             publisher,
         )
         self.assertIn("aborting stale publication", publisher)

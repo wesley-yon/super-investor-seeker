@@ -108,6 +108,16 @@ materialization is stricter: only a manual `workflow_dispatch` can set
 maintenance scope plus explicit UTC `as_of` and latest-sync values. Merge,
 push, and scheduled events cannot select that publication gate.
 
+The fixed-scope `.github/workflows/approve-servicenow-insider-ingestion.yml`
+is the sole hosted approval path for ServiceNow issuer CIK `0001373715`. It
+requires an exact private dataset ID and explicit confirmation, then invokes
+`scripts/approve_insider_issuer.py` through a compare-and-swap update and
+publishes a validated private-only snapshot. The workflow keeps
+`publication-policy-v1` unchanged, verifies that the public artifact is
+unchanged, and has no Pages deployment or public-materialization step. This
+approval permits only a later bounded private ingestion run; it does not make
+ServiceNow data public.
+
 Incremental v1 checkpoints carry their durable issuer scope only in queued
 accessions. A completed empty incremental checkpoint remains a valid ingestion
 no-op, but the publication adapter rejects it because it cannot prove which
