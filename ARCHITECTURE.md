@@ -177,6 +177,15 @@ subset of ingestion-approved issuers. Every materialization rebuilds all policy
 issuers—not merely the issuer touched by the immediately preceding maintenance
 run—so one atomic replacement is always a complete policy corpus.
 
+The fixed-scope `.github/workflows/approve-servicenow-insider-ingestion.yml`
+authorizes only ServiceNow CIK `0001373715` for future private ingestion. It
+pins the newest private snapshot by exact dataset ID, calls
+`scripts/approve_insider_issuer.py` under the maintenance/publication locks,
+and uses the state store's compare-and-swap revision. The resulting snapshot is
+private-only: `publication-policy-v1` and the bounded public artifact must both
+remain unchanged, and the workflow has no public materializer or Pages job.
+Consequently, ingestion approval cannot by itself publish ServiceNow records.
+
 `scripts/publish_insider_activity.py` is an offline production adapter around
 the Phase 4 projection library. It accepts only a fixed repository root and a
 bounded `incremental`, `backfill`, or `reparse` maintenance identity. Before any
