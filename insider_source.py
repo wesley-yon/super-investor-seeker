@@ -379,7 +379,8 @@ def _ownership_row(
             if (
                 rendered_archive_cik in related_archive_ciks
                 and sequence == "1"
-                and values["description"] in {form_type, "PRIMARY DOCUMENT"}
+                and values["description"]
+                in {form_type, f"FORM {form_type}", "PRIMARY DOCUMENT"}
                 and values["size"] == ""
                 and _FILENAME_RE.fullmatch(filename)
                 and link_filename == f"{filename.removesuffix('.xml')}.html"
