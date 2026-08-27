@@ -52,8 +52,9 @@ live Pages deployment remain unchanged.
 5. Changed data is published as a new private, content-addressed snapshot.
 6. Pages restores that exact snapshot, rebuilds a bounded public artifact, and
    refuses stale code or dataset inputs before deployment.
-7. Finalization retains the active snapshot plus one fallback and immediately
-   removes the temporary public Pages bulk artifact.
+7. Finalization verifies the active snapshot and deployment marker, preserves
+   prior private releases and tags for explicit manual reconciliation, and
+   immediately removes only the current run's temporary public Pages artifact.
 8. The browser loads public indexes and individual compressed fund or stock
    payloads on demand. When a validated insider generation is present, the
    insider routes load its bounded per-security payload and digest-bound filing
@@ -176,6 +177,18 @@ issuer CIKs and exact security-class mappings. Its issuer set may be a strict
 subset of ingestion-approved issuers. Every materialization rebuilds all policy
 issuers—not merely the issuer touched by the immediately preceding maintenance
 run—so one atomic replacement is always a complete policy corpus.
+
+Private snapshots created before Section 16 may lack both authority documents.
+The manual-only
+`.github/workflows/initialize-empty-private-insider-authority.yml` workflow is
+the sole genesis boundary for that state. It binds exact current `main` and the
+newest private dataset, accepts only missing or exact empty authority roots,
+and publishes a private replacement only after proving that both roots are the
+canonical empty contracts and that the bounded public tree is unchanged. A
+partial exact-empty genesis is safely repairable; malformed or nonempty state
+fails before a missing counterpart is created. The empty policy represents
+durable deny-all state, and the offline materializer independently rejects a
+policy with no reviewed issuer rows.
 
 The fixed-scope `.github/workflows/approve-servicenow-insider-ingestion.yml`
 authorizes only ServiceNow CIK `0001373715` for future private ingestion. It
@@ -436,7 +449,14 @@ and default-off; live fetch or validation failures cannot fall through to it.
 - Mints a fresh write-scoped token only immediately before publication.
 - If the content digest is unchanged, reuses the active release. Otherwise it
   publishes a draft release, round-trips its manifest and archive, then marks it
-  public and passes the exact release identity to Pages.
+  public and passes the exact release identity to Pages. It retains the draft's
+  immutable release ID and, before every tag-addressed upload or publication
+  retry, re-resolves that ID, exact owned metadata and asset state, current
+  `main`, the restored base, and the locally packed asset digests.
+- GitHub release mutations do not expose a conditional update predicate. These
+  checks narrow the client-side race window; private write authority therefore
+  remains confined to the serialized workflow publisher rather than treating a
+  non-cooperating external writer as part of the supported CAS boundary.
 - Never commits generated data to the public repository.
 
 ### `refresh-cusip-registry.yml`
@@ -452,14 +472,17 @@ and default-off; live fetch or validation failures cannot fall through to it.
 
 - Accepts an exact code SHA, private release tag, and dataset digest from a
   publisher; manual dispatch can also select a retained rollback release.
-- A scheduled recovery pass repairs interrupted finalization and removes any
-  orphaned Pages artifact.
+- A scheduled recovery pass repairs interrupted finalization and removes the
+  current run's temporary Pages artifact.
 - Restores and validates the exact private snapshot, builds only the explicit
   public allowlist, rejects stale public or private inputs, and deploys through
   GitHub Actions Pages.
-- Records the successful deployment identity in the private release, retains
-  the active release plus one fallback, and deletes every temporary public
-  `github-pages` artifact.
+- Records the successful deployment identity in the private release and deletes
+  the current run's temporary public `github-pages` artifact. Private releases,
+  drafts, and dataset tags are preserved for explicit manual reconciliation:
+  GitHub does not provide a conditional/versioned release or tag deletion API,
+  so automatic retention cleanup could delete a record changed after a
+  client-side ownership check.
 
 ### `test.yml` and schedule keepalive
 
@@ -516,7 +539,8 @@ check, restore a private snapshot and run the narrow command plus
 `validate_data.py`; never commit the resulting `data/` or `.cache/` paths.
 
 Full-corpus publication must occur through the hosted workflow so snapshot
-identity, validation, retention, and deployment gates are exercised together.
+identity, validation, conservative history preservation, and deployment gates
+are exercised together.
 
 ### 2. Static website changes
 
@@ -536,6 +560,6 @@ frontend regression tests.
 2. Confirm neither `data/` nor `.cache/` is tracked or present in Git history.
 3. Publish the code change to `main` only after the local gates pass.
 4. Require hosted Test, Update/Refresh, exact Pages deployment, finalization,
-   rollback retention, and artifact cleanup to succeed.
+   rollback preservation, and artifact cleanup to succeed.
 5. Reconcile the private manifest and deployment marker, then verify the live
    site through a browser-capable path.

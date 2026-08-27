@@ -10,6 +10,22 @@ if [ "$require_public_tree_unchanged" != true ] &&
   echo "::error::Private publication boundary requirement is invalid"
   exit 1
 fi
+if [[ ! "${BASE_DATASET_ID:-}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "::error::Restored base dataset ID is invalid"
+  exit 1
+fi
+if [[ ! "${BASE_RELEASE_TAG:-}" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+  echo "::error::Restored base release tag is invalid"
+  exit 1
+fi
+if [[ ! "${BASE_ARCHIVE_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "::error::Restored base archive digest is invalid"
+  exit 1
+fi
+if [[ ! "${BASE_MANIFEST_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "::error::Restored base manifest digest is invalid"
+  exit 1
+fi
 
 gh_read_retry() {
   python scripts/github_cli_retry.py --retry-forbidden-read -- "$@"
@@ -19,18 +35,25 @@ gh_mutate_once() {
   python scripts/github_cli_retry.py -- "$@"
 }
 
-release_state() {
+release_record() {
   local tag=$1
   gh_read_retry api --paginate --slurp \
     "/repos/$DATA_REPOSITORY/releases?per_page=100" |
-    jq -er --arg tag "$tag" '
+    jq -c --arg tag "$tag" '
       (add // [])
       | map(select(.tag_name == $tag))
-      | if length == 0 then "missing"
-        elif length == 1 then (.[0].draft | tostring)
+      | if length == 0 then null
+        elif length == 1 then .[0]
         else error("duplicate release tag")
         end
     '
+}
+
+release_state() {
+  local release_json
+  release_json=$(release_record "$1")
+  jq -er 'if . == null then "missing" else (.draft | tostring) end' \
+    <<<"$release_json"
 }
 
 sleep_before_retry() {
@@ -44,14 +67,29 @@ sleep_before_retry() {
 wait_for_draft_release() {
   local tag=$1
   local observation_attempt
-  local observed_release_state
+  local observed_release
+  local observed_release_id
 
   for observation_attempt in 0 1 2; do
-    observed_release_state=$(release_state "$tag")
-    if [ "$observed_release_state" = true ]; then
+    observed_release=$(release_record "$tag")
+    if jq -e \
+        --arg tag "$tag" \
+        --arg title "$release_title" \
+        --arg notes "$release_notes" \
+        '. != null and
+         (.id | type == "number" and . > 0 and . == floor) and
+         .tag_name == $tag and
+         .name == $title and
+         .body == $notes and
+         .draft == true and
+         .prerelease == false and
+         (.assets | type == "array" and length == 0)' \
+        <<<"$observed_release" >/dev/null &&
+       observed_release_id=$(jq -er '.id | tostring' <<<"$observed_release"); then
+      owned_release_id=$observed_release_id
       return 0
     fi
-    if [ "$observed_release_state" != missing ]; then
+    if [ "$observed_release" != null ]; then
       return 2
     fi
     if ! sleep_before_retry "$observation_attempt"; then
@@ -68,12 +106,50 @@ verify_current_main() {
   current_main_sha=$(git rev-parse origin/main)
   if [ "$code_sha" != "$current_main_sha" ]; then
     echo "::error::main moved during generation; aborting stale publication"
-    exit 1
+    return 1
+  fi
+}
+
+verify_base_snapshot_current() {
+  local current_base_json
+  local current_base_release_tag
+  local current_base_dataset_id
+  local current_base_archive_sha256
+  local current_base_manifest_sha256
+
+  if ! current_base_json=$(
+      python scripts/data_snapshot.py resolve \
+        --repository "$DATA_REPOSITORY"
+    ); then
+    echo "::error::Could not resolve the newest private snapshot"
+    return 1
+  fi
+  if ! current_base_release_tag=$(jq -er '.release_tag' <<<"$current_base_json") ||
+     ! current_base_dataset_id=$(jq -er '.dataset_id' <<<"$current_base_json") ||
+     ! current_base_archive_sha256=$(jq -er '.archive_sha256' <<<"$current_base_json") ||
+     ! current_base_manifest_sha256=$(jq -er '.manifest_sha256' <<<"$current_base_json") ||
+     [[ ! "$current_base_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
+     [[ ! "$current_base_dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
+     [[ ! "$current_base_archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+     [[ ! "$current_base_manifest_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "::error::Newest private snapshot returned invalid identity metadata"
+    return 1
+  fi
+  if [ "$current_base_release_tag" != "$BASE_RELEASE_TAG" ]; then
+    echo "::error::A newer private snapshot superseded the restored base"
+    return 1
+  fi
+  if [ "$current_base_dataset_id" != "$BASE_DATASET_ID" ] ||
+     [ "$current_base_archive_sha256" != "$BASE_ARCHIVE_SHA256" ] ||
+     [ "$current_base_manifest_sha256" != "$BASE_MANIFEST_SHA256" ]; then
+    echo "::error::The newest private snapshot no longer matches the restored base identity"
+    return 1
   fi
 }
 
 code_sha=$(git rev-parse HEAD)
 verify_current_main
+verify_base_snapshot_current
 
 snapshot_dir=$(mktemp -d "$RUNNER_TEMP/data-snapshot.XXXXXX")
 pack_json=$(
@@ -88,8 +164,10 @@ dataset_id=$(jq -er '.dataset_id' <<<"$pack_json")
 archive_path=$(jq -er '.archive_path' <<<"$pack_json")
 manifest_path=$(jq -er '.manifest_path' <<<"$pack_json")
 archive_sha256=$(jq -er '.archive_sha256' <<<"$pack_json")
+manifest_sha256=$(jq -er '.manifest_sha256' <<<"$pack_json")
 if [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
    [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+   [[ ! "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]] ||
    [ ! -f "$archive_path" ] || [ ! -f "$manifest_path" ]; then
   echo "::error::Packed snapshot returned invalid metadata"
   exit 1
@@ -181,6 +259,69 @@ fi
 release_tag="dataset-$(date -u +%Y%m%dT%H%M%SZ)-${dataset_id:0:12}"
 archive_name=$(basename "$archive_path")
 manifest_name=$(basename "$manifest_path")
+release_title=$release_tag
+release_notes="Validated dataset $dataset_id from public code $code_sha; restored base $BASE_RELEASE_TAG ($BASE_DATASET_ID)."
+owned_draft=false
+owned_release_id=''
+
+abort_with_owned_draft_cleanup() {
+  local message=$1
+
+  echo "::error::$message"
+  if [ "$owned_draft" = true ]; then
+    # GitHub release deletion has no server-side conditional identity predicate.
+    # Preserve the draft rather than risk deleting a same-tag replacement or a
+    # release that changed state after a client-side ownership read.
+    echo "::error::Owned unpublished snapshot draft requires manual reconciliation; automatic deletion is disabled"
+  fi
+  exit 1
+}
+
+verify_owned_draft_current() {
+  local expected_asset_state=$1
+  local observed_release
+
+  if [[ ! "$owned_release_id" =~ ^[1-9][0-9]*$ ]] ||
+     { [ "$expected_asset_state" != empty ] &&
+       [ "$expected_asset_state" != complete ]; }; then
+    echo "::error::Exact owned snapshot draft identity is invalid"
+    return 1
+  fi
+  if ! observed_release=$(release_record "$release_tag"); then
+    echo "::error::Could not resolve the exact owned snapshot draft"
+    return 1
+  fi
+  if ! jq -e \
+      --argjson release_id "$owned_release_id" \
+      --arg tag "$release_tag" \
+      --arg title "$release_title" \
+      --arg notes "$release_notes" \
+      --arg expected_asset_state "$expected_asset_state" \
+      --arg archive_name "$archive_name" \
+      --arg manifest_name "$manifest_name" '
+        . != null and
+        .id == $release_id and
+        .tag_name == $tag and
+        .name == $title and
+        .body == $notes and
+        .draft == true and
+        .prerelease == false and
+        (.assets | type == "array") and
+        (if $expected_asset_state == "empty" then
+           (.assets | length == 0)
+         else
+           (.assets | length == 2) and
+           ([.assets[].name] | sort == ([$archive_name, $manifest_name] | sort)) and
+           all(.assets[];
+             (.id | type == "number" and . > 0 and . == floor) and
+             .state == "uploaded")
+         end)' \
+      <<<"$observed_release" >/dev/null; then
+    echo "::error::Remote release is no longer the exact owned snapshot draft"
+    return 1
+  fi
+}
+
 expected_latest_release_tag=$(
   gh_read_retry api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name'
 )
@@ -197,18 +338,22 @@ fi
 draft_ready=false
 for attempt in 0 1 2; do
   mutation_status=0
-  verify_current_main
+  if ! verify_current_main || ! verify_base_snapshot_current; then
+    abort_with_owned_draft_cleanup \
+      "Publication preconditions changed before snapshot draft creation"
+  fi
   gh_mutate_once release create "$release_tag" \
     --repo "$DATA_REPOSITORY" \
     --draft \
-    --title "$release_tag" \
-    --notes "Validated dataset $dataset_id from public code $code_sha." ||
+    --title "$release_title" \
+    --notes "$release_notes" ||
     mutation_status=$?
 
   draft_observation_status=0
   wait_for_draft_release "$release_tag" || draft_observation_status=$?
   if [ "$draft_observation_status" -eq 0 ]; then
     draft_ready=true
+    owned_draft=true
     break
   fi
   if [ "$draft_observation_status" -eq 2 ]; then
@@ -231,8 +376,11 @@ fi
 verify_remote_snapshot() {
   local candidate_dir
   local file_count
+  local remote_archive_sha256
   local remote_dataset_id
+  local remote_manifest_sha256
   local remote_source_sha
+  local remote_verify_json
 
   candidate_dir=$(mktemp -d "$RUNNER_TEMP/remote-snapshot.XXXXXX")
   if ! gh_read_retry release download "$release_tag" \
@@ -254,19 +402,26 @@ verify_remote_snapshot() {
     rm -rf "$candidate_dir"
     return 1
   fi
-  if ! python scripts/data_snapshot.py verify \
+  if ! remote_verify_json=$(python scripts/data_snapshot.py verify \
       --archive "$candidate_dir/$archive_name" \
-      --manifest "$candidate_dir/$manifest_name"; then
+      --manifest "$candidate_dir/$manifest_name"); then
     rm -rf "$candidate_dir"
     return 1
   fi
-  if ! remote_dataset_id=$(jq -er '.dataset_id' "$candidate_dir/$manifest_name") ||
-     ! remote_source_sha=$(jq -er '.source_sha' "$candidate_dir/$manifest_name"); then
+  if ! remote_archive_sha256=$(jq -er '.archive_sha256' <<<"$remote_verify_json") ||
+     ! remote_dataset_id=$(jq -er '.dataset_id' <<<"$remote_verify_json") ||
+     ! remote_manifest_sha256=$(jq -er '.manifest_sha256' <<<"$remote_verify_json") ||
+     ! remote_source_sha=$(jq -er '.source_sha' <<<"$remote_verify_json") ||
+     [[ ! "$remote_archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+     [[ ! "$remote_manifest_sha256" =~ ^[0-9a-f]{64}$ ]]; then
     rm -rf "$candidate_dir"
     return 1
   fi
   if [ "$remote_dataset_id" != "$dataset_id" ] ||
-     [ "$remote_source_sha" != "$code_sha" ]; then
+     [ "$remote_source_sha" != "$code_sha" ] ||
+     [ "$remote_archive_sha256" != "$archive_sha256" ] ||
+     [ "$remote_manifest_sha256" != "$manifest_sha256" ]; then
+    echo "::warning::Downloaded release does not match the exact local target assets"
     rm -rf "$candidate_dir"
     return 1
   fi
@@ -289,11 +444,17 @@ wait_for_remote_snapshot() {
 snapshot_verified=false
 for attempt in 0 1 2; do
   mutation_status=0
-  verify_current_main
+  if ! verify_current_main || ! verify_base_snapshot_current; then
+    abort_with_owned_draft_cleanup \
+      "Publication preconditions changed before snapshot upload"
+  fi
+  if ! verify_owned_draft_current empty; then
+    abort_with_owned_draft_cleanup \
+      "Exact owned snapshot draft changed before snapshot upload"
+  fi
   gh_mutate_once release upload "$release_tag" \
     "$archive_path" "$manifest_path" \
-    --repo "$DATA_REPOSITORY" \
-    --clobber || mutation_status=$?
+    --repo "$DATA_REPOSITORY" || mutation_status=$?
 
   if wait_for_remote_snapshot; then
     snapshot_verified=true
@@ -305,8 +466,8 @@ for attempt in 0 1 2; do
   fi
 done
 if [ "$snapshot_verified" != true ]; then
-  echo "::error::Remote snapshot could not be reconciled after bounded attempts"
-  exit 1
+  abort_with_owned_draft_cleanup \
+    "Remote snapshot could not be reconciled after bounded attempts"
 fi
 
 observe_publication() {
@@ -375,11 +536,12 @@ for attempt in 0 1 2; do
   observe_publication || publication_observation_status=$?
   if [ "$publication_observation_status" -eq 0 ]; then
     publication_verified=true
+    owned_draft=false
     break
   fi
   if [ "$publication_observation_status" -eq 2 ]; then
-    echo "::error::The latest release pointer changed before publication"
-    exit 1
+    abort_with_owned_draft_cleanup \
+      "The latest release pointer changed before publication"
   fi
   if [ "$publication_observation_status" -ne 1 ]; then
     break
@@ -390,7 +552,15 @@ for attempt in 0 1 2; do
   if [ "${public_tree_unchanged:-false}" = true ]; then
     publication_latest_flag=--latest=false
   fi
-  verify_current_main
+  if ! verify_current_main || ! verify_base_snapshot_current; then
+    abort_with_owned_draft_cleanup \
+      "Publication preconditions changed before snapshot publication"
+  fi
+  if ! verify_owned_draft_current complete ||
+     ! verify_remote_snapshot; then
+    abort_with_owned_draft_cleanup \
+      "Exact owned snapshot draft or target assets changed before snapshot publication"
+  fi
   gh_mutate_once release edit "$release_tag" \
     --repo "$DATA_REPOSITORY" \
     --draft=false \
@@ -400,11 +570,12 @@ for attempt in 0 1 2; do
   wait_for_publication || publication_observation_status=$?
   if [ "$publication_observation_status" -eq 0 ]; then
     publication_verified=true
+    owned_draft=false
     break
   fi
   if [ "$publication_observation_status" -eq 2 ]; then
-    echo "::error::The latest release pointer changed during publication"
-    exit 1
+    abort_with_owned_draft_cleanup \
+      "The latest release pointer changed during publication"
   fi
   # Never replay a confirmed release edit because a read replica remained
   # stale. A replay is allowed only when the helper reports an uncertain
@@ -416,8 +587,8 @@ for attempt in 0 1 2; do
   fi
 done
 if [ "$publication_verified" != true ]; then
-  echo "::error::Snapshot publication could not be reconciled after bounded attempts"
-  exit 1
+  abort_with_owned_draft_cleanup \
+    "Snapshot publication could not be reconciled after bounded attempts"
 fi
 
 echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"

@@ -46,7 +46,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
+  DATA_REPOSITORY: wesley-yon/super-investor-seeker-data
 
 jobs:
   resolve:
@@ -60,6 +60,8 @@ jobs:
       code_sha: ${{ steps.target.outputs.code_sha }}
       release_tag: ${{ steps.target.outputs.release_tag }}
       dataset_id: ${{ steps.target.outputs.dataset_id }}
+      archive_sha256: ${{ steps.target.outputs.archive_sha256 }}
+      manifest_sha256: ${{ steps.target.outputs.manifest_sha256 }}
       resolved_latest_release_tag: ${{ steps.target.outputs.resolved_latest_release_tag }}
       deploy_needed: ${{ steps.target.outputs.deploy_needed }}
       allow_older_release: ${{ steps.target.outputs.allow_older_release }}
@@ -68,6 +70,7 @@ jobs:
         if: inputs.code_sha != ''
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           ref: ${{ inputs.code_sha }}
           fetch-depth: 1
           filter: blob:none
@@ -80,6 +83,7 @@ jobs:
         if: inputs.code_sha == '' && github.event_name == 'push'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
           fetch-depth: 1
           filter: blob:none
@@ -92,6 +96,7 @@ jobs:
         if: inputs.code_sha == '' && github.event_name != 'push'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           ref: main
           fetch-depth: 1
           filter: blob:none
@@ -103,7 +108,7 @@ jobs:
       # Retry policy is workflow machinery, not part of the historical code
       # target. Keep manual rollbacks to commits from before this helper was
       # introduced working by loading it from the commit that defines this job.
-      - name: Checkout trusted GitHub retry helper
+      - name: Checkout trusted GitHub retry and snapshot identity helpers
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ job.workflow_repository }}
@@ -111,7 +116,9 @@ jobs:
           path: .workflow-tools
           fetch-depth: 1
           filter: blob:none
-          sparse-checkout: scripts/github_cli_retry.py
+          sparse-checkout: |
+            scripts/data_snapshot.py
+            scripts/github_cli_retry.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -121,7 +128,7 @@ jobs:
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: wesley-yon
           repositories: super-investor-seeker-data
           permission-contents: read
 
@@ -184,6 +191,25 @@ jobs:
             exit 1
           fi
 
+          release_identity_json=$(
+            python "$GITHUB_WORKSPACE/.workflow-tools/scripts/data_snapshot.py" resolve \
+              --repository "$DATA_REPOSITORY" \
+              --release-tag "$release_tag"
+          )
+          identity_repository=$(jq -er '.repository' <<<"$release_identity_json")
+          identity_release_tag=$(jq -er '.release_tag' <<<"$release_identity_json")
+          identity_dataset_id=$(jq -er '.dataset_id' <<<"$release_identity_json")
+          archive_sha256=$(jq -er '.archive_sha256' <<<"$release_identity_json")
+          manifest_sha256=$(jq -er '.manifest_sha256' <<<"$release_identity_json")
+          if [ "$identity_repository" != "$DATA_REPOSITORY" ] ||
+             [ "$identity_release_tag" != "$release_tag" ] ||
+             [[ ! "$identity_dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
+             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+             [[ ! "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Resolved snapshot asset identity is invalid"
+            exit 1
+          fi
+
           release_json=$(gh_read_retry api "/repos/$DATA_REPOSITORY/releases/tags/$release_tag")
           if [ "$(jq -r '.draft or .prerelease' <<<"$release_json")" != false ]; then
             echo "::error::Dataset target must be a published, non-prerelease release"
@@ -201,8 +227,9 @@ jobs:
           fi
           manifest_path=$(find "$manifest_dir" -maxdepth 1 -type f)
           dataset_id=$(jq -er '.dataset_id' "$manifest_path")
-          if [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "::error::Dataset release contains an invalid dataset ID"
+          if [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
+             [ "$dataset_id" != "$identity_dataset_id" ]; then
+            echo "::error::Dataset release does not match its resolved asset identity"
             exit 1
           fi
           if [ -n "$REQUESTED_DATASET_ID" ] &&
@@ -221,6 +248,8 @@ jobs:
           echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
+          echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
           echo "resolved_latest_release_tag=$latest_release_tag" >> "$GITHUB_OUTPUT"
           echo "deploy_needed=$deploy_needed" >> "$GITHUB_OUTPUT"
           echo "allow_older_release=$allow_older_release" >> "$GITHUB_OUTPUT"
@@ -242,6 +271,7 @@ jobs:
       - name: Checkout exact public code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve.outputs.code_sha }}
           fetch-depth: 1
 
@@ -263,7 +293,7 @@ jobs:
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: wesley-yon
           repositories: super-investor-seeker-data
           permission-contents: read
 
@@ -278,7 +308,9 @@ jobs:
       - name: Restore exact validated private snapshot
         env:
           DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.resolve.outputs.archive_sha256 }}
           EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.resolve.outputs.manifest_sha256 }}
           EXPECTED_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           set -euo pipefail
@@ -291,9 +323,13 @@ jobs:
           )
           restored_tag=$(jq -er '.release_tag' <<<"$restore_json")
           restored_id=$(jq -er '.dataset_id' <<<"$restore_json")
+          restored_archive_sha256=$(jq -er '.archive_sha256' <<<"$restore_json")
+          restored_manifest_sha256=$(jq -er '.manifest_sha256' <<<"$restore_json")
           if [ "$restored_tag" != "$EXPECTED_RELEASE_TAG" ] ||
-             [ "$restored_id" != "$EXPECTED_DATASET_ID" ]; then
-            echo "::error::Restored snapshot does not match the resolved Pages target"
+             [ "$restored_id" != "$EXPECTED_DATASET_ID" ] ||
+             [ "$restored_archive_sha256" != "$EXPECTED_ARCHIVE_SHA256" ] ||
+             [ "$restored_manifest_sha256" != "$EXPECTED_MANIFEST_SHA256" ]; then
+            echo "::error::Restored snapshot does not match the resolved Pages target identity"
             exit 1
           fi
 
@@ -468,6 +504,7 @@ jobs:
       - name: Checkout live main for stale-deploy guard
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           ref: main
           fetch-depth: 1
           filter: blob:none
@@ -480,7 +517,7 @@ jobs:
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: wesley-yon
           repositories: super-investor-seeker-data
           permission-contents: read
 
@@ -622,14 +659,16 @@ jobs:
       deployments: read
       pages: read
     steps:
-      - name: Checkout trusted GitHub retry helper
+      - name: Checkout trusted GitHub retry and snapshot identity helpers
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           fetch-depth: 1
           filter: blob:none
-          sparse-checkout: scripts/github_cli_retry.py
+          sparse-checkout: |
+            scripts/data_snapshot.py
+            scripts/github_cli_retry.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -639,15 +678,18 @@ jobs:
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: wesley-yon
           repositories: super-investor-seeker-data
           permission-contents: write
 
       - name: Repair deployment marker and finalize active snapshot set
         env:
           ALLOW_OLDER_RELEASE: ${{ needs.resolve.outputs.allow_older_release }}
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.resolve.outputs.archive_sha256 }}
           EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
           EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.resolve.outputs.manifest_sha256 }}
           EXPECTED_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           EXPECTED_PREVIOUS_LATEST_RELEASE_TAG: ${{ needs.resolve.outputs.resolved_latest_release_tag }}
           GH_TOKEN: ${{ steps.data-app-token.outputs.token }}
@@ -664,33 +706,38 @@ jobs:
           gh_mutate_once() {
             python scripts/github_cli_retry.py -- "$@"
           }
-          gh_delete_once() {
-            python scripts/github_cli_retry.py --allow-release-not-found -- "$@"
-          }
-          release_state() {
-            local tag=$1
-            gh_read_retry api --paginate --slurp \
-              "/repos/$DATA_REPOSITORY/releases?per_page=100" |
-              jq -er --arg tag "$tag" '
-                (add // [])
-                | map(select(.tag_name == $tag))
-                | if length == 0 then "missing"
-                  elif length == 1 then (.[0].draft | tostring)
-                  else error("duplicate release tag")
-                  end
-              '
-          }
-          tag_ref_state() {
-            local tag=$1
-            gh_read_retry api \
-              "/repos/$DATA_REPOSITORY/git/matching-refs/tags/$tag" |
-              jq -er --arg ref "refs/tags/$tag" '
-                map(select(.ref == $ref))
-                | if length == 0 then "missing"
-                  elif length == 1 then "present"
-                  else error("duplicate exact tag ref")
-                  end
-              '
+          verify_target_snapshot_current() {
+            local current_identity_json
+            local current_repository
+            local current_release_tag
+            local current_dataset_id
+            local current_archive_sha256
+            local current_manifest_sha256
+
+            if ! current_identity_json=$(
+                python scripts/data_snapshot.py resolve \
+                  --repository "$DATA_REPOSITORY" \
+                  --release-tag "$EXPECTED_RELEASE_TAG"
+              ); then
+              echo "::error::Could not revalidate the resolved Pages target identity"
+              return 1
+            fi
+            if ! current_repository=$(jq -er '.repository' <<<"$current_identity_json") ||
+               ! current_release_tag=$(jq -er '.release_tag' <<<"$current_identity_json") ||
+               ! current_dataset_id=$(jq -er '.dataset_id' <<<"$current_identity_json") ||
+               ! current_archive_sha256=$(jq -er '.archive_sha256' <<<"$current_identity_json") ||
+               ! current_manifest_sha256=$(jq -er '.manifest_sha256' <<<"$current_identity_json"); then
+              echo "::error::Resolved Pages target identity metadata is invalid"
+              return 1
+            fi
+            if [ "$current_repository" != "$DATA_REPOSITORY" ] ||
+               [ "$current_release_tag" != "$EXPECTED_RELEASE_TAG" ] ||
+               [ "$current_dataset_id" != "$EXPECTED_DATASET_ID" ] ||
+               [ "$current_archive_sha256" != "$EXPECTED_ARCHIVE_SHA256" ] ||
+               [ "$current_manifest_sha256" != "$EXPECTED_MANIFEST_SHA256" ]; then
+              echo "::error::The private snapshot no longer matches the resolved target identity"
+              return 1
+            fi
           }
           sleep_before_retry() {
             local attempt=$1
@@ -698,60 +745,6 @@ jobs:
               return 1
             fi
             sleep "${RETRY_DELAYS_SECONDS[$attempt]}"
-          }
-          wait_for_release_missing() {
-            local tag=$1
-            local observation_attempt
-            for observation_attempt in 0 1 2; do
-              if [ "$(release_state "$tag")" = missing ]; then
-                return 0
-              fi
-              if ! sleep_before_retry "$observation_attempt"; then
-                return 1
-              fi
-            done
-          }
-          wait_for_tag_missing() {
-            local tag=$1
-            local observation_attempt
-            for observation_attempt in 0 1 2; do
-              if [ "$(tag_ref_state "$tag")" = missing ]; then
-                return 0
-              fi
-              if ! sleep_before_retry "$observation_attempt"; then
-                return 1
-              fi
-            done
-          }
-          reconcile_tag_deletion() {
-            local tag=$1
-            local attempt
-            local mutation_status
-            local observed_tag_state
-
-            if [[ ! "$tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
-              echo "::error::Refusing to delete unexpected tag: $tag"
-              return 1
-            fi
-            for attempt in 0 1 2; do
-              observed_tag_state=$(tag_ref_state "$tag")
-              if [ "$observed_tag_state" = missing ]; then
-                return 0
-              fi
-
-              mutation_status=0
-              gh_mutate_once api --method DELETE \
-                "/repos/$DATA_REPOSITORY/git/refs/tags/$tag" || \
-                mutation_status=$?
-              if wait_for_tag_missing "$tag"; then
-                return 0
-              fi
-              if [ "$mutation_status" -ne "$TRANSIENT_MUTATION_EXIT_CODE" ] ||
-                 ! sleep_before_retry "$attempt"; then
-                return 1
-              fi
-            done
-            return 1
           }
           marker_matches_remote() {
             local candidate_dir
@@ -833,6 +826,9 @@ jobs:
 
           if [[ ! "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
             echo "::error::Resolved latest release precondition is invalid"
+            exit 1
+          fi
+          if ! verify_target_snapshot_current; then
             exit 1
           fi
 
@@ -941,11 +937,17 @@ jobs:
             > "$marker_path"
           marker_verified=false
           for attempt in 0 1 2; do
+            if ! verify_target_snapshot_current; then
+              exit 1
+            fi
             mutation_status=0
             gh_mutate_once release upload "$EXPECTED_RELEASE_TAG" "$marker_path" \
               --repo "$DATA_REPOSITORY" \
               --clobber || mutation_status=$?
             if wait_for_marker_match; then
+              if ! verify_target_snapshot_current; then
+                exit 1
+              fi
               marker_verified=true
               break
             fi
@@ -973,6 +975,9 @@ jobs:
                 "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" || \
                 rollback_observation_status=$?
               if [ "$rollback_observation_status" -eq 0 ]; then
+                if ! verify_target_snapshot_current; then
+                  exit 1
+                fi
                 rollback_verified=true
                 break
               fi
@@ -982,6 +987,9 @@ jobs:
               fi
               if [ "$rollback_observation_status" -ne 1 ]; then
                 break
+              fi
+              if ! verify_target_snapshot_current; then
+                exit 1
               fi
 
               mutation_status=0
@@ -995,6 +1003,9 @@ jobs:
                 "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" || \
                 rollback_observation_status=$?
               if [ "$rollback_observation_status" -eq 0 ]; then
+                if ! verify_target_snapshot_current; then
+                  exit 1
+                fi
                 rollback_verified=true
                 break
               fi
@@ -1025,163 +1036,22 @@ jobs:
             exit 1
           fi
 
-          releases_json=$(
-            gh_read_retry api --paginate --slurp \
-              "/repos/$DATA_REPOSITORY/releases?per_page=100"
-          )
-          stale_draft_cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-          fallback_tag=$(
-            jq -r --arg active "$EXPECTED_RELEASE_TAG" '
-              add
-              | map(
-                  select(
-                    ((.draft or .prerelease) | not)
-                    and (.tag_name | startswith("dataset-"))
-                    and .tag_name != $active
-                  )
-                )
-              | sort_by(.published_at // .created_at)
-              | reverse
-              | .[0].tag_name // empty
-            ' <<<"$releases_json"
-          )
-          mapfile -t delete_tags < <(
-            jq -r \
-              --arg active "$EXPECTED_RELEASE_TAG" \
-              --arg fallback "$fallback_tag" \
-              --arg stale_draft_cutoff "$stale_draft_cutoff" '
-              add
-              | map(select(.tag_name | startswith("dataset-")))
-              | .[]
-              | select(
-                  (
-                    (.draft or .prerelease)
-                    and .created_at < $stale_draft_cutoff
-                  )
-                  or
-                  (
-                    ((.draft or .prerelease) | not)
-                    and .tag_name != $active
-                    and ($fallback == "" or .tag_name != $fallback)
-                  )
-                )
-              | .tag_name
-            ' <<<"$releases_json"
-          )
-          for release_tag in "${delete_tags[@]}"; do
-            if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
-              echo "::error::Refusing to delete unexpected release tag: $release_tag"
-              exit 1
-            fi
-            deletion_verified=false
-            for attempt in 0 1 2; do
-              observed_release_state=$(release_state "$release_tag")
-              if [ "$observed_release_state" = missing ]; then
-                deletion_verified=true
-                break
-              fi
-
-              mutation_status=0
-              gh_delete_once release delete "$release_tag" \
-                --repo "$DATA_REPOSITORY" \
-                --cleanup-tag \
-                --yes || mutation_status=$?
-              if wait_for_release_missing "$release_tag"; then
-                deletion_verified=true
-                break
-              fi
-              if [ "$mutation_status" -ne "$TRANSIENT_MUTATION_EXIT_CODE" ] ||
-                 ! sleep_before_retry "$attempt"; then
-                break
-              fi
-            done
-            if [ "$deletion_verified" != true ]; then
-              echo "::error::Stale release deletion could not be reconciled after bounded attempts: $release_tag"
-              exit 1
-            fi
-
-            # gh release delete --cleanup-tag can remove the release before the
-            # tag deletion is observable. Reconcile the tag independently.
-            if ! reconcile_tag_deletion "$release_tag"; then
-              echo "::error::Stale tag deletion could not be reconciled after bounded attempts: $release_tag"
-              exit 1
-            fi
-          done
-
-          # A prior run can be interrupted after deleting a release but before
-          # deleting its tag. Sweep every dataset-* tag that no longer has a
-          # release so the next publication cannot collide with that orphan.
-          retained_json=$(
-            gh_read_retry api --paginate --slurp \
-              "/repos/$DATA_REPOSITORY/releases?per_page=100"
-          )
-          dataset_tag_refs_json=$(
-            gh_read_retry api --paginate --slurp \
-              "/repos/$DATA_REPOSITORY/git/matching-refs/tags/dataset-"
-          )
-          orphan_tags_json=$(
-            jq -cn \
-              --argjson release_pages "$retained_json" \
-              --argjson ref_pages "$dataset_tag_refs_json" '
-              ($release_pages | add // [] | map(.tag_name)) as $release_tags
-              | (
-                  ($ref_pages | add // []
-                    | map(.ref | sub("^refs/tags/"; ""))
-                    | unique)
-                  - $release_tags
-                )
-            '
-          )
-          mapfile -t orphan_tags < <(jq -r '.[]' <<<"$orphan_tags_json")
-          for orphan_tag in "${orphan_tags[@]}"; do
-            if [[ ! "$orphan_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
-              echo "::error::Refusing to delete unexpected orphan tag: $orphan_tag"
-              exit 1
-            fi
-            if [ "$orphan_tag" = "$EXPECTED_RELEASE_TAG" ] ||
-               { [ -n "$fallback_tag" ] && [ "$orphan_tag" = "$fallback_tag" ]; }; then
-              echo "::error::Refusing to delete protected snapshot tag: $orphan_tag"
-              exit 1
-            fi
-            if [ "$(release_state "$orphan_tag")" != missing ]; then
-              echo "::error::Refusing to delete tag because its release appeared during reconciliation: $orphan_tag"
-              exit 1
-            fi
-            if ! reconcile_tag_deletion "$orphan_tag"; then
-              echo "::error::Orphan tag deletion could not be reconciled after bounded attempts: $orphan_tag"
-              exit 1
-            fi
-          done
-
-          # Fail closed if cleanup did not leave precisely the active release
-          # plus the newest available fallback (or only active when no fallback
-          # exists yet).
-          retained_json=$(
-            gh_read_retry api --paginate --slurp \
-              "/repos/$DATA_REPOSITORY/releases?per_page=100"
-          )
-          mapfile -t retained_tags < <(
-            jq -r '
-              add
-              | map(
-                  select(
-                    ((.draft or .prerelease) | not)
-                    and (.tag_name | startswith("dataset-"))
-                  )
-                )
-              | .[].tag_name
-            ' <<<"$retained_json"
-          )
-          expected_count=1
-          if [ -n "$fallback_tag" ]; then
-            expected_count=2
-          fi
-          if [ "${#retained_tags[@]}" -ne "$expected_count" ] ||
-             ! printf '%s\n' "${retained_tags[@]}" | grep -Fxq "$EXPECTED_RELEASE_TAG" ||
-             { [ -n "$fallback_tag" ] && ! printf '%s\n' "${retained_tags[@]}" | grep -Fxq "$fallback_tag"; }; then
-            echo "::error::Snapshot retention did not leave the active release and one fallback"
+          # GitHub exposes no conditional/versioned delete for a release or tag.
+          # A record can change after any client-side ownership check, so automatic
+          # private retention cleanup would risk deleting a replacement or newly
+          # protected release. Keep all prior private records for explicit manual
+          # reconciliation and finish with a fresh exact-target check.
+          if ! verify_target_snapshot_current; then
             exit 1
           fi
+          final_active_release_tag=$(
+            gh_read_retry api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name'
+          )
+          if [ "$final_active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+            echo "::error::The active release changed after finalization"
+            exit 1
+          fi
+          echo "::notice::Automatic private snapshot retention cleanup is disabled; prior releases, drafts, and dataset tags require manual reconciliation"
 
   cleanup-public-pages-artifacts:
     needs: [resolve, build, deploy]

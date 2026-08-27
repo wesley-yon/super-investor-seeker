@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -11,6 +12,11 @@ MAINTENANCE_WORKFLOWS = (
     ".github/workflows/update-data.yml",
     ".github/workflows/refresh-cusip-registry.yml",
 )
+PRIVATE_STATE_WORKFLOWS = (
+    ".github/workflows/approve-servicenow-insider-ingestion.yml",
+    ".github/workflows/initialize-empty-private-insider-authority.yml",
+)
+PUBLISHING_WORKFLOWS = MAINTENANCE_WORKFLOWS + PRIVATE_STATE_WORKFLOWS
 PUBLISHER_SCRIPT = "scripts/publish_private_snapshot.sh"
 GH_RETRY_SCRIPT = "scripts/github_cli_retry.py"
 
@@ -73,8 +79,13 @@ class WorkflowResilienceTests(unittest.TestCase):
                     'release_tag="dataset-new"',
                     'expected_latest_release_tag="dataset-old"',
                     'DATA_REPOSITORY="owner/private-data"',
+                    "owned_draft=false",
                     "sleep_before_retry() { return 0; }",
                     "verify_current_main() { return 0; }",
+                    "verify_base_snapshot_current() { return 0; }",
+                    "verify_owned_draft_current() { return 0; }",
+                    "verify_remote_snapshot() { return 0; }",
+                    'abort_with_owned_draft_cleanup() { echo "::error::$1"; exit 1; }',
                     r"""
 gh_read_retry() {
   if [ "$1" = release ] && [ "$2" = view ]; then
@@ -152,6 +163,7 @@ gh_mutate_once() {
                     'DATA_REPOSITORY="owner/private-data"',
                     'marker_path="/tmp/pages-deployment.json"',
                     "sleep_before_retry() { return 0; }",
+                    "verify_target_snapshot_current() { return 0; }",
                     r"""
 marker_matches_remote() {
   local status
@@ -225,6 +237,7 @@ gh_mutate_once() {
                     'EXPECTED_PREVIOUS_LATEST_RELEASE_TAG="dataset-old"',
                     'DATA_REPOSITORY="owner/private-data"',
                     "sleep_before_retry() { return 0; }",
+                    "verify_target_snapshot_current() { return 0; }",
                     r"""
 gh_read_retry() {
   next_sequence_value "$LATEST_SEQUENCE" "$COUNTER_DIR/latest"
@@ -273,7 +286,7 @@ gh_mutate_once() {
             '          release_json=$(gh_read_retry api "/repos/$DATA_REPOSITORY/releases/tags/$EXPECTED_RELEASE_TAG")'
         )
         block_end = finalization.index(
-            "\n          releases_json=$(\n", block_start
+            "\n          # GitHub exposes no conditional/versioned delete", block_start
         )
         block_source = textwrap.dedent(finalization[block_start:block_end])
 
@@ -346,6 +359,7 @@ gh_mutate_once() {
 }
 wait_for_marker_match() { return 0; }
 sleep_before_retry() { return 0; }
+verify_target_snapshot_current() { return 0; }
 observe_latest_release() { return 99; }
 mapfile() {
   local value
@@ -378,162 +392,6 @@ mapfile() {
             )
             mutation_count = int(mutation_counter.read_text(encoding="utf-8").strip())
         return result, mutation_count
-
-    def _run_orphan_tag_sweep(
-        self,
-        *,
-        release_pages: str,
-        ref_pages: str,
-    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-        finalization = self._finalization_shell()
-        comment_start = finalization.index(
-            "# A prior run can be interrupted after deleting a release"
-        )
-        block_start = finalization.index("          retained_json=$(\n", comment_start)
-        block_end = finalization.index(
-            "          # Fail closed if cleanup", block_start
-        )
-        block_source = textwrap.dedent(finalization[block_start:block_end])
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            deletion_log = Path(tmpdir) / "deletions"
-            deletion_log.write_text("", encoding="utf-8")
-            script = "\n".join(
-                (
-                    "set -euo pipefail",
-                    'DATA_REPOSITORY="owner/private-data"',
-                    'EXPECTED_RELEASE_TAG="dataset-active"',
-                    'fallback_tag="dataset-fallback"',
-                    r"""
-gh_read_retry() {
-  case "$*" in
-    *"/releases?per_page=100"*) printf '%s\n' "$RELEASE_PAGES" ;;
-    *"/git/matching-refs/tags/dataset-"*) printf '%s\n' "$REF_PAGES" ;;
-    *) return 99 ;;
-  esac
-}
-release_state() {
-  printf 'missing\n'
-}
-mapfile() {
-  if [ "${1:-}" = -t ]; then
-    shift
-  fi
-  local array_name=$1
-  local line
-  eval "$array_name=()"
-  while IFS= read -r line; do
-    eval "$array_name+=(\"\$line\")"
-  done
-}
-reconcile_tag_deletion() {
-  printf '%s\n' "$1" >> "$DELETION_LOG"
-}
-""",
-                    block_source,
-                )
-            )
-            env = os.environ.copy()
-            env.update(
-                {
-                    "DELETION_LOG": str(deletion_log),
-                    "REF_PAGES": ref_pages,
-                    "RELEASE_PAGES": release_pages,
-                }
-            )
-            result = subprocess.run(
-                ["bash"],
-                cwd=ROOT,
-                env=env,
-                input=script,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            deleted_tags = deletion_log.read_text(encoding="utf-8").splitlines()
-        return result, deleted_tags
-
-    def _run_release_tag_reconciliation(
-        self,
-        *,
-        tag_sequence: str,
-        mutation_sequence: str,
-    ) -> tuple[subprocess.CompletedProcess[str], int, int]:
-        finalization = self._finalization_shell()
-        function_start = finalization.index("          wait_for_release_missing() {")
-        function_end = finalization.index(
-            "          marker_matches_remote() {", function_start
-        )
-        function_source = textwrap.dedent(
-            finalization[function_start:function_end]
-        )
-        loop_start = finalization.index(
-            '          for release_tag in "${delete_tags[@]}"; do'
-        )
-        loop_end = finalization.index(
-            "\n\n          # A prior run can be interrupted", loop_start
-        )
-        loop_source = textwrap.dedent(finalization[loop_start:loop_end])
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            counters = Path(tmpdir)
-            for name in ("tag", "tag_mutation", "release_mutation"):
-                (counters / name).write_text("0\n", encoding="utf-8")
-            script = "\n".join(
-                (
-                    "set -euo pipefail",
-                    SHELL_SEQUENCE_HELPER,
-                    "readonly TRANSIENT_MUTATION_EXIT_CODE=75",
-                    'DATA_REPOSITORY="owner/private-data"',
-                    'delete_tags=("dataset-stale")',
-                    "sleep_before_retry() { return 0; }",
-                    r"""
-release_state() {
-  printf 'missing\n'
-}
-tag_ref_state() {
-  next_sequence_value "$TAG_SEQUENCE" "$COUNTER_DIR/tag"
-}
-gh_delete_once() {
-  local count
-  count=$(<"$COUNTER_DIR/release_mutation")
-  printf '%s\n' "$((count + 1))" > "$COUNTER_DIR/release_mutation"
-  return 0
-}
-gh_mutate_once() {
-  local status
-  status=$(next_sequence_value "$MUTATION_SEQUENCE" "$COUNTER_DIR/tag_mutation")
-  return "$status"
-}
-""",
-                    function_source,
-                    loop_source,
-                )
-            )
-            env = os.environ.copy()
-            env.update(
-                {
-                    "COUNTER_DIR": tmpdir,
-                    "MUTATION_SEQUENCE": mutation_sequence,
-                    "TAG_SEQUENCE": tag_sequence,
-                }
-            )
-            result = subprocess.run(
-                ["bash"],
-                cwd=ROOT,
-                env=env,
-                input=script,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            release_mutation_count = int(
-                (counters / "release_mutation").read_text(encoding="utf-8").strip()
-            )
-            tag_mutation_count = int(
-                (counters / "tag_mutation").read_text(encoding="utf-8").strip()
-            )
-        return result, release_mutation_count, tag_mutation_count
 
     def test_lxml_dependency_requires_patched_release(self):
         requirement = next(
@@ -920,7 +778,7 @@ gh_mutate_once() {
         workflow = read(".github/workflows/deploy-pages.yml")
         resolve = workflow.split("  resolve:", 1)[1].split("\n  build:", 1)[0]
         target_checkouts = resolve.split(
-            "- name: Checkout trusted GitHub retry helper", 1
+            "- name: Checkout trusted GitHub retry and snapshot identity helpers", 1
         )[0]
         checkouts = re.findall(
             r"(?ms)^      - name: Checkout .*?(?=^      - name: |\Z)",
@@ -977,6 +835,43 @@ gh_mutate_once() {
                 )
                 self.assertNotIn("steps.data-app-token.outputs.token", publish)
 
+    def test_private_publisher_workflows_pin_owner_and_checkout_credentials(self):
+        workflow_paths = MAINTENANCE_WORKFLOWS + (".github/workflows/deploy-pages.yml",)
+        for path in workflow_paths:
+            with self.subTest(path=path):
+                workflow = read(path)
+                self.assertIn(
+                    "DATA_REPOSITORY: wesley-yon/super-investor-seeker-data",
+                    workflow,
+                )
+                self.assertNotIn("${{ github.repository_owner }}", workflow)
+
+                lines = workflow.splitlines()
+                checkout_count = 0
+                for index, line in enumerate(lines):
+                    if "uses: actions/checkout@" not in line:
+                        continue
+                    checkout_count += 1
+                    uses_indent = len(line) - len(line.lstrip())
+                    step_indent = uses_indent - 2
+                    block = [line]
+                    for candidate in lines[index + 1 :]:
+                        candidate_indent = len(candidate) - len(candidate.lstrip())
+                        if (
+                            candidate_indent == step_indent
+                            and candidate.lstrip().startswith("- name:")
+                        ):
+                            break
+                        if candidate.strip() and candidate_indent < step_indent:
+                            break
+                        block.append(candidate)
+                    self.assertIn(
+                        "persist-credentials: false",
+                        "\n".join(block),
+                        f"{path}:{index + 1} persists checkout credentials",
+                    )
+                self.assertGreater(checkout_count, 0)
+
     def test_maintenance_workflows_use_one_shared_snapshot_publisher(self):
         for path in MAINTENANCE_WORKFLOWS:
             with self.subTest(path=path):
@@ -1003,7 +898,7 @@ gh_mutate_once() {
         resolve = workflow.split("\n  resolve:", 1)[1].split("\n  build:", 1)[0]
 
         trusted_helper_checkout = resolve.split(
-            "- name: Checkout trusted GitHub retry helper", 1
+            "- name: Checkout trusted GitHub retry and snapshot identity helpers", 1
         )[1].split("\n      - name:", 1)[0]
         self.assertIn(
             "uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0",
@@ -1012,9 +907,11 @@ gh_mutate_once() {
         self.assertIn("repository: ${{ job.workflow_repository }}", trusted_helper_checkout)
         self.assertIn("ref: ${{ job.workflow_sha }}", trusted_helper_checkout)
         self.assertIn("path: .workflow-tools", trusted_helper_checkout)
-        self.assertIn(f"sparse-checkout: {GH_RETRY_SCRIPT}", trusted_helper_checkout)
+        self.assertIn("sparse-checkout: |", trusted_helper_checkout)
+        self.assertIn("scripts/data_snapshot.py", trusted_helper_checkout)
+        self.assertIn(GH_RETRY_SCRIPT, trusted_helper_checkout)
         target_checkouts = resolve.split(
-            "- name: Checkout trusted GitHub retry helper", 1
+            "- name: Checkout trusted GitHub retry and snapshot identity helpers", 1
         )[0]
         self.assertEqual(3, target_checkouts.count(f"{GH_RETRY_SCRIPT}\n"))
         self.assertIn(
@@ -1282,65 +1179,30 @@ gh_mutate_once() {
         self.assertNotIn("reached-cleanup=true", result.stdout)
         self.assertEqual(0, mutation_count)
 
-    def test_orphan_sweep_recovers_crash_between_release_and_tag_deletion(self):
-        result, deleted_tags = self._run_orphan_tag_sweep(
-            release_pages=(
-                '[[{"tag_name":"dataset-active"},'
-                '{"tag_name":"dataset-fallback"}]]'
-            ),
-            ref_pages=(
-                '[[{"ref":"refs/tags/dataset-active"},'
-                '{"ref":"refs/tags/dataset-fallback"},'
-                '{"ref":"refs/tags/dataset-orphan"}]]'
-            ),
+    def test_pages_finalizer_never_deletes_private_releases_or_dataset_tags(self):
+        finalization = self._finalization_shell()
+
+        for forbidden in (
+            "gh_mutate_once release delete",
+            'gh_mutate_once api --method DELETE \\\n                "/repos/$DATA_REPOSITORY/releases/',
+            'gh_mutate_once api --method DELETE \\\n                "/repos/$DATA_REPOSITORY/git/refs/tags/',
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, finalization)
+        self.assertIn(
+            "Automatic private snapshot retention cleanup is disabled",
+            finalization,
         )
 
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertEqual(["dataset-orphan"], deleted_tags)
+    def test_failed_private_publication_preserves_draft_for_manual_reconciliation(self):
+        publisher = read(PUBLISHER_SCRIPT)
 
-    def test_orphan_sweep_fails_closed_if_active_release_is_missing(self):
-        result, deleted_tags = self._run_orphan_tag_sweep(
-            release_pages='[[{"tag_name":"dataset-fallback"}]]',
-            ref_pages=(
-                '[[{"ref":"refs/tags/dataset-active"},'
-                '{"ref":"refs/tags/dataset-fallback"}]]'
-            ),
+        self.assertNotIn("cleanup_owned_draft() {", publisher)
+        self.assertNotIn('gh_mutate_once release delete "$release_tag"', publisher)
+        self.assertIn(
+            "Owned unpublished snapshot draft requires manual reconciliation",
+            publisher,
         )
-
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn("Refusing to delete protected snapshot tag", result.stdout)
-        self.assertEqual([], deleted_tags)
-
-    def test_orphan_sweep_fails_closed_if_fallback_release_is_missing(self):
-        result, deleted_tags = self._run_orphan_tag_sweep(
-            release_pages='[[{"tag_name":"dataset-active"}]]',
-            ref_pages=(
-                '[[{"ref":"refs/tags/dataset-active"},'
-                '{"ref":"refs/tags/dataset-fallback"}]]'
-            ),
-        )
-
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn("Refusing to delete protected snapshot tag", result.stdout)
-        self.assertEqual([], deleted_tags)
-
-    def test_release_cleanup_reconciles_tag_after_release_is_already_missing(self):
-        for mutation_status in ("0", "75"):
-            with self.subTest(mutation_status=mutation_status):
-                result, release_mutations, tag_mutations = (
-                    self._run_release_tag_reconciliation(
-                        tag_sequence="present,missing",
-                        mutation_sequence=mutation_status,
-                    )
-                )
-
-                self.assertEqual(
-                    0,
-                    result.returncode,
-                    result.stdout + result.stderr,
-                )
-                self.assertEqual(0, release_mutations)
-                self.assertEqual(1, tag_mutations)
 
     def test_github_cli_retries_are_bounded_and_replay_safe(self):
         publisher = read(PUBLISHER_SCRIPT)
@@ -1357,12 +1219,12 @@ gh_mutate_once() {
                 script,
             )
             self.assertIn(f'python {GH_RETRY_SCRIPT} -- "$@"', script)
-            self.assertIn("release_state()", script)
             self.assertNotIn("gh_read_retry release create", script)
             self.assertNotIn("gh_read_retry release upload", script)
             self.assertNotIn("gh_read_retry release edit", script)
             self.assertNotIn("gh_read_retry release delete", script)
 
+        self.assertIn("release_state()", publisher)
         self.assertIn('gh_mutate_once release create "$release_tag"', publisher)
         self.assertIn("wait_for_draft_release()", publisher)
         self.assertIn('wait_for_draft_release "$release_tag"', publisher)
@@ -1382,11 +1244,10 @@ gh_mutate_once() {
             publisher,
         )
 
-        self.assertIn(f"sparse-checkout: {GH_RETRY_SCRIPT}", finalization)
-        self.assertIn(
-            f'python {GH_RETRY_SCRIPT} --allow-release-not-found -- "$@"',
-            finalization,
-        )
+        self.assertIn("sparse-checkout: |", finalization)
+        self.assertIn("scripts/data_snapshot.py", finalization)
+        self.assertIn(GH_RETRY_SCRIPT, finalization)
+        self.assertNotIn("--allow-release-not-found", finalization)
         self.assertIn("marker_matches_remote()", finalization)
         self.assertIn("wait_for_marker_match()", finalization)
         self.assertIn(
@@ -1397,33 +1258,13 @@ gh_mutate_once() {
         self.assertIn(
             'gh_mutate_once release edit "$EXPECTED_RELEASE_TAG"', finalization
         )
-        deletion = finalization.split(
-            'for release_tag in "${delete_tags[@]}"', 1
-        )[1].split("# Fail closed if cleanup", 1)[0]
-        self.assertIn('gh_delete_once release delete "$release_tag"', deletion)
-        self.assertIn('release_state "$release_tag"', deletion)
-        self.assertIn("wait_for_release_missing()", finalization)
-        self.assertIn('wait_for_release_missing "$release_tag"', deletion)
-        self.assertIn("Stale release deletion could not be reconciled", deletion)
-        self.assertIn('tag_ref_state "$tag"', finalization)
-        self.assertIn("wait_for_tag_missing()", finalization)
-        self.assertIn('wait_for_tag_missing "$tag"', finalization)
-        self.assertIn("reconcile_tag_deletion()", finalization)
-        self.assertIn('reconcile_tag_deletion "$release_tag"', deletion)
-        self.assertIn("gh_mutate_once api --method DELETE", finalization)
+        self.assertNotIn("gh_mutate_once release delete", publisher)
+        self.assertNotIn("gh_mutate_once release delete", finalization)
+        self.assertNotIn("gh_mutate_once api --method DELETE", finalization)
         self.assertIn(
-            '"/repos/$DATA_REPOSITORY/git/refs/tags/$tag"', finalization
-        )
-        self.assertIn("Stale tag deletion could not be reconciled", deletion)
-        self.assertIn(
-            '"/repos/$DATA_REPOSITORY/git/matching-refs/tags/dataset-"',
+            "Automatic private snapshot retention cleanup is disabled",
             finalization,
         )
-        self.assertIn('for orphan_tag in "${orphan_tags[@]}"', finalization)
-        self.assertIn("Refusing to delete protected snapshot tag", finalization)
-        self.assertIn('release_state "$orphan_tag"', finalization)
-        self.assertIn('reconcile_tag_deletion "$orphan_tag"', finalization)
-        self.assertIn("Orphan tag deletion could not be reconciled", finalization)
 
         for script in (publisher, finalization):
             lines = script.splitlines()
@@ -1463,6 +1304,576 @@ gh_mutate_once() {
                 self.assertIn('--repository "$DATA_REPOSITORY"', workflow)
                 self.assertIn('--root "$GITHUB_WORKSPACE"', workflow)
                 self.assertIn("--replace", workflow)
+
+    def test_publisher_requires_exact_restored_release_freshness_before_mutations(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        self.assertIn("verify_base_snapshot_current() {", publisher)
+        self.assertIn("python scripts/data_snapshot.py resolve", publisher)
+        self.assertIn(
+            'if [ "$current_base_release_tag" != "$BASE_RELEASE_TAG" ]; then', publisher
+        )
+        self.assertIn(
+            'if [ "$current_base_dataset_id" != "$BASE_DATASET_ID" ] ||', publisher
+        )
+        self.assertIn(
+            '[ "$current_base_archive_sha256" != "$BASE_ARCHIVE_SHA256" ] ||',
+            publisher,
+        )
+        self.assertIn(
+            '[ "$current_base_manifest_sha256" != "$BASE_MANIFEST_SHA256" ]; then',
+            publisher,
+        )
+
+        for path in PUBLISHING_WORKFLOWS:
+            with self.subTest(path=path):
+                workflow = read(path)
+                publish = workflow.split(
+                    "run: bash scripts/publish_private_snapshot.sh", 1
+                )[0]
+                self.assertIn(
+                    "BASE_RELEASE_TAG: ${{ steps.restore_snapshot.outputs.release_tag }}",
+                    publish,
+                )
+                self.assertIn(
+                    "BASE_ARCHIVE_SHA256: ${{ steps.restore_snapshot.outputs.archive_sha256 }}",
+                    publish,
+                )
+                self.assertIn(
+                    "BASE_MANIFEST_SHA256: ${{ steps.restore_snapshot.outputs.manifest_sha256 }}",
+                    publish,
+                )
+
+        for mutation in (
+            'gh_mutate_once release create "$release_tag"',
+            'gh_mutate_once release upload "$release_tag"',
+            'gh_mutate_once release edit "$release_tag"',
+        ):
+            mutation_at = publisher.index(mutation)
+            loop_at = publisher.rfind("for attempt in 0 1 2; do", 0, mutation_at)
+            base_guard_at = publisher.rfind(
+                "verify_base_snapshot_current", 0, mutation_at
+            )
+            self.assertGreater(base_guard_at, loop_at)
+            self.assertLess(base_guard_at, mutation_at)
+
+    def test_pages_finalizer_requires_exact_snapshot_identity_before_mutations(self):
+        pages = read(".github/workflows/deploy-pages.yml")
+        finalization = self._finalization_shell()
+
+        for output_name in ("archive_sha256", "manifest_sha256"):
+            self.assertIn(
+                f"{output_name}: ${{{{ steps.target.outputs.{output_name} }}}}",
+                pages,
+            )
+            self.assertIn(
+                f"EXPECTED_{output_name.upper()}: "
+                f"${{{{ needs.resolve.outputs.{output_name} }}}}",
+                finalization,
+            )
+        self.assertIn("verify_target_snapshot_current() {", finalization)
+        self.assertIn("python scripts/data_snapshot.py resolve", finalization)
+
+        for mutation in (
+            'gh_mutate_once release upload "$EXPECTED_RELEASE_TAG"',
+            'gh_mutate_once release edit "$EXPECTED_RELEASE_TAG"',
+        ):
+            mutation_at = finalization.index(mutation)
+            loop_at = finalization.rfind("for attempt in 0 1 2; do", 0, mutation_at)
+            identity_guard_at = finalization.rfind(
+                "verify_target_snapshot_current", loop_at, mutation_at
+            )
+            self.assertGreater(identity_guard_at, loop_at)
+            self.assertLess(identity_guard_at, mutation_at)
+
+    def test_same_tag_pages_finalizer_asset_replacement_blocks_before_mutation(self):
+        finalization = self._finalization_shell()
+        function_start = finalization.index(
+            "          verify_target_snapshot_current() {"
+        )
+        function_end = finalization.index(
+            "          marker_matches_remote() {", function_start
+        )
+        function_source = textwrap.dedent(finalization[function_start:function_end])
+        expected = {
+            "dataset_id": "1" * 64,
+            "archive_sha256": "2" * 64,
+            "manifest_sha256": "3" * 64,
+        }
+
+        for changed_field in expected:
+            with (
+                self.subTest(changed_field=changed_field),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                current = dict(expected)
+                current[changed_field] = "9" * 64
+                mutation_log = Path(tmpdir) / "mutation.log"
+                current_json = json.dumps(
+                    {
+                        **current,
+                        "release_tag": "dataset-target",
+                        "repository": "owner/private-data",
+                    },
+                    sort_keys=True,
+                )
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        'DATA_REPOSITORY="owner/private-data"',
+                        'EXPECTED_RELEASE_TAG="dataset-target"',
+                        f'EXPECTED_DATASET_ID="{expected["dataset_id"]}"',
+                        f'EXPECTED_ARCHIVE_SHA256="{expected["archive_sha256"]}"',
+                        f'EXPECTED_MANIFEST_SHA256="{expected["manifest_sha256"]}"',
+                        'python() { printf "%s\\n" "$CURRENT_JSON"; }',
+                        function_source,
+                        "verify_target_snapshot_current",
+                        'printf "mutation\\n" > "$MUTATION_LOG"',
+                    )
+                )
+                result = subprocess.run(
+                    ["bash"],
+                    cwd=ROOT,
+                    env={
+                        **os.environ,
+                        "CURRENT_JSON": current_json,
+                        "MUTATION_LOG": str(mutation_log),
+                    },
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(
+                    "no longer matches the resolved target identity",
+                    result.stdout,
+                )
+                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
+
+        for mutation in (
+            'gh_mutate_once release upload "$EXPECTED_RELEASE_TAG"',
+            'gh_mutate_once release edit "$EXPECTED_RELEASE_TAG"',
+        ):
+            with (
+                self.subTest(mutation_boundary=mutation),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                mutation_at = finalization.index(mutation)
+                loop_at = finalization.rfind("for attempt in 0 1 2; do", 0, mutation_at)
+                guard_at = finalization.rfind(
+                    "if ! verify_target_snapshot_current; then", loop_at, mutation_at
+                )
+                self.assertGreater(guard_at, loop_at)
+                guard_end = finalization.index("fi\n", guard_at) + len("fi\n")
+                guard_source = textwrap.dedent(finalization[guard_at:guard_end])
+                mutation_log = Path(tmpdir) / "mutation.log"
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        "verify_target_snapshot_current() { return 1; }",
+                        'gh_mutate_once() { printf "mutation\\n" > "$MUTATION_LOG"; }',
+                        guard_source,
+                        "gh_mutate_once forbidden-finalizer-mutation",
+                    )
+                )
+                result = subprocess.run(
+                    ["bash"],
+                    cwd=ROOT,
+                    env={**os.environ, "MUTATION_LOG": str(mutation_log)},
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
+
+    def test_same_tag_remote_asset_replacement_blocks_before_mutation(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        function_start = publisher.index("verify_base_snapshot_current() {")
+        function_end = publisher.index("\ncode_sha=", function_start)
+        function_source = publisher[function_start:function_end]
+        expected = {
+            "dataset_id": "1" * 64,
+            "archive_sha256": "2" * 64,
+            "manifest_sha256": "3" * 64,
+        }
+
+        for changed_field in expected:
+            with (
+                self.subTest(changed_field=changed_field),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                current = dict(expected)
+                current[changed_field] = "9" * 64
+                mutation_log = Path(tmpdir) / "mutation.log"
+                current_json = json.dumps(
+                    {
+                        **current,
+                        "release_tag": "dataset-base",
+                        "repository": "owner/private-data",
+                    },
+                    sort_keys=True,
+                )
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        'DATA_REPOSITORY="owner/private-data"',
+                        'BASE_RELEASE_TAG="dataset-base"',
+                        f'BASE_DATASET_ID="{expected["dataset_id"]}"',
+                        f'BASE_ARCHIVE_SHA256="{expected["archive_sha256"]}"',
+                        f'BASE_MANIFEST_SHA256="{expected["manifest_sha256"]}"',
+                        f"python() {{ printf '%s\\n' {json.dumps(current_json)}; }}",
+                        function_source,
+                        "verify_base_snapshot_current",
+                        'printf "mutation\\n" > "$MUTATION_LOG"',
+                    )
+                )
+                result = subprocess.run(
+                    ["bash"],
+                    cwd=ROOT,
+                    env={**os.environ, "MUTATION_LOG": str(mutation_log)},
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(
+                    "no longer matches the restored base identity",
+                    result.stdout,
+                )
+                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
+
+    def test_upload_rejects_replaced_or_nonempty_owned_draft_before_mutation(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        function_start = publisher.index("verify_owned_draft_current() {")
+        function_end = publisher.index(
+            "\n}\n\nexpected_latest_release_tag=", function_start
+        ) + len("\n}")
+        function_source = publisher[function_start:function_end]
+        base_release = {
+            "id": 101,
+            "tag_name": "dataset-target",
+            "name": "dataset-target",
+            "body": "owned notes",
+            "draft": True,
+            "prerelease": False,
+            "assets": [],
+        }
+        unsafe_releases = (
+            {**base_release, "id": 202},
+            {**base_release, "draft": False},
+            {
+                **base_release,
+                "assets": [{"id": 301, "name": "foreign.bin", "state": "uploaded"}],
+            },
+        )
+
+        for current_release in unsafe_releases:
+            with (
+                self.subTest(current_release=current_release),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                mutation_log = Path(tmpdir) / "mutation.log"
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        'owned_release_id="101"',
+                        'release_tag="dataset-target"',
+                        'release_title="dataset-target"',
+                        'release_notes="owned notes"',
+                        'archive_name="snapshot.tar.zst"',
+                        'manifest_name="snapshot.manifest.json"',
+                        'release_record() { printf "%s\\n" "$CURRENT_RELEASE_JSON"; }',
+                        function_source,
+                        "verify_owned_draft_current empty",
+                        'printf "mutation\\n" > "$MUTATION_LOG"',
+                    )
+                )
+                result = subprocess.run(
+                    ["bash"],
+                    cwd=ROOT,
+                    env={
+                        **os.environ,
+                        "CURRENT_RELEASE_JSON": json.dumps(current_release),
+                        "MUTATION_LOG": str(mutation_log),
+                    },
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("exact owned snapshot draft", result.stdout)
+                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
+
+        upload_start = publisher.index("snapshot_verified=false")
+        upload_end = publisher.index(
+            'if [ "$snapshot_verified" != true ]; then', upload_start
+        )
+        upload = publisher[upload_start:upload_end]
+        mutation_at = upload.index('gh_mutate_once release upload "$release_tag"')
+        ownership_guard_at = upload.rfind(
+            "if ! verify_owned_draft_current empty; then", 0, mutation_at
+        )
+        base_guard_at = upload.rfind(
+            "if ! verify_current_main || ! verify_base_snapshot_current; then",
+            0,
+            mutation_at,
+        )
+        self.assertGreater(ownership_guard_at, base_guard_at)
+        self.assertLess(ownership_guard_at, mutation_at)
+        upload_command = upload[mutation_at : upload.index("\n\n", mutation_at)]
+        self.assertNotIn("--clobber", upload_command)
+
+    def test_publication_rechecks_owned_target_bytes_immediately_before_edit(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        publication_start = publisher.index("publication_verified=false")
+        mutation_at = publisher.index(
+            'gh_mutate_once release edit "$release_tag"', publication_start
+        )
+        guard_text = (
+            "if ! verify_owned_draft_current complete ||\n"
+            "     ! verify_remote_snapshot; then"
+        )
+        guard_at = publisher.rfind(guard_text, publication_start, mutation_at)
+        self.assertGreater(guard_at, publication_start)
+        self.assertLess(guard_at, mutation_at)
+        guard_end = publisher.index("  fi\n", guard_at) + len("  fi\n")
+        guard_source = textwrap.dedent(publisher[guard_at:guard_end])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mutation_log = Path(tmpdir) / "mutation.log"
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    "verify_owned_draft_current() { return 0; }",
+                    'verify_remote_snapshot() { [ "$REMOTE_STATE" = exact ]; }',
+                    'abort_with_owned_draft_cleanup() { printf "%s\\n" "$1"; exit 1; }',
+                    'gh_mutate_once() { printf "mutation\\n" > "$MUTATION_LOG"; }',
+                    guard_source,
+                    "gh_mutate_once forbidden-publication-edit",
+                )
+            )
+            result = subprocess.run(
+                ["bash"],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "REMOTE_STATE": "replaced",
+                    "MUTATION_LOG": str(mutation_log),
+                },
+                input=script,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("changed before snapshot publication", result.stdout)
+            self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
+
+    def test_uploaded_target_round_trip_requires_exact_local_asset_hashes(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        function_start = publisher.index("verify_remote_snapshot() {")
+        function_end = publisher.index("\nwait_for_remote_snapshot() {", function_start)
+        function_source = publisher[function_start:function_end]
+        expected_dataset_id = "1" * 64
+        expected_source_sha = "a" * 40
+        expected_archive_sha256 = "2" * 64
+        expected_manifest_sha256 = "3" * 64
+        replaced_archive_sha256 = "8" * 64
+        replaced_manifest_sha256 = "9" * 64
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    'release_tag="dataset-target"',
+                    'DATA_REPOSITORY="owner/private-data"',
+                    'archive_name="snapshot.tar.zst"',
+                    'manifest_name="snapshot.manifest.json"',
+                    f'dataset_id="{expected_dataset_id}"',
+                    f'code_sha="{expected_source_sha}"',
+                    f'archive_sha256="{expected_archive_sha256}"',
+                    f'manifest_sha256="{expected_manifest_sha256}"',
+                    r"""
+gh_read_retry() {
+  local candidate_dir=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--dir" ]; then
+      candidate_dir=$2
+      break
+    fi
+    shift
+  done
+  : > "$candidate_dir/$archive_name"
+  printf '{"dataset_id":"%s","source_sha":"%s"}\n' \
+    "$dataset_id" "$code_sha" > "$candidate_dir/$manifest_name"
+}
+""",
+                    r"""
+python() {
+  printf '{"archive_sha256":"%s","dataset_id":"%s","manifest_sha256":"%s","source_sha":"%s","verified":true}\n' \
+    "$REPLACED_ARCHIVE_SHA256" "$dataset_id" \
+    "$REPLACED_MANIFEST_SHA256" "$code_sha"
+}
+""",
+                    function_source,
+                    "verify_remote_snapshot",
+                )
+            )
+            result = subprocess.run(
+                ["bash"],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "RUNNER_TEMP": tmpdir,
+                    "REPLACED_ARCHIVE_SHA256": replaced_archive_sha256,
+                    "REPLACED_MANIFEST_SHA256": replaced_manifest_sha256,
+                },
+                input=script,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("exact local target assets", result.stdout)
+
+        pack_validation = publisher.split("pack_json=$(", 1)[1].split(
+            'if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then', 1
+        )[0]
+        self.assertIn(
+            "manifest_sha256=$(jq -er '.manifest_sha256' <<<\"$pack_json\")",
+            pack_validation,
+        )
+        self.assertIn('[[ ! "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]', pack_validation)
+
+    def test_newer_private_snapshot_blocks_each_target_mutation_boundary(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        for mutation in (
+            'gh_mutate_once release create "$release_tag"',
+            'gh_mutate_once release upload "$release_tag"',
+            'gh_mutate_once release edit "$release_tag"',
+        ):
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                mutation_at = publisher.index(mutation)
+                loop_at = publisher.rfind("for attempt in 0 1 2; do", 0, mutation_at)
+                guard_at = publisher.rfind(
+                    "  if ! verify_current_main || ! verify_base_snapshot_current; then",
+                    loop_at,
+                    mutation_at,
+                )
+                self.assertGreater(guard_at, loop_at)
+                guard_end = publisher.index("  fi\n", guard_at) + len("  fi\n")
+                guard = textwrap.dedent(publisher[guard_at:guard_end])
+                mutation_log = Path(tmpdir) / "mutation.log"
+                cleanup_log = Path(tmpdir) / "cleanup.log"
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        "verify_current_main() { return 0; }",
+                        'verify_base_snapshot_current() { echo "newer snapshot"; return 1; }',
+                        'abort_with_owned_draft_cleanup() { printf "%s\\n" "$1" > "$CLEANUP_LOG"; exit 1; }',
+                        'gh_mutate_once() { printf "%s\\n" "$*" > "$MUTATION_LOG"; }',
+                        guard,
+                        "gh_mutate_once forbidden-target-mutation",
+                    )
+                )
+                result = subprocess.run(
+                    ["bash"],
+                    cwd=ROOT,
+                    env={
+                        **os.environ,
+                        "MUTATION_LOG": str(mutation_log),
+                        "CLEANUP_LOG": str(cleanup_log),
+                    },
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("newer snapshot", result.stdout)
+                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
+                self.assertTrue(cleanup_log.is_file(), result.stdout + result.stderr)
+
+    def test_release_record_treats_an_absent_tag_as_valid_null(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        function_start = publisher.index("release_record() {")
+        function_end = publisher.index("release_state() {", function_start)
+        function_source = publisher[function_start:function_end]
+        script = "\n".join(
+            (
+                "set -euo pipefail",
+                'DATA_REPOSITORY="owner/private-data"',
+                'gh_read_retry() { printf "%s\\n" "[]"; }',
+                function_source,
+                'release_record "dataset-missing"',
+            )
+        )
+
+        result = subprocess.run(
+            ["bash"],
+            cwd=ROOT,
+            input=script,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("null", result.stdout.strip())
+
+    def test_owned_draft_abort_never_deletes_and_requires_manual_reconciliation(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        function_start = publisher.index("abort_with_owned_draft_cleanup() {")
+        function_end = publisher.index("expected_latest_release_tag=", function_start)
+        function_source = publisher[function_start:function_end]
+
+        for owned_draft in ("true", "false"):
+            with (
+                self.subTest(owned_draft=owned_draft),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                mutation_log = Path(tmpdir) / "mutation.log"
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        f"owned_draft={owned_draft}",
+                        'gh_mutate_once() { printf "%s\\n" "$*" > "$MUTATION_LOG"; }',
+                        function_source,
+                        'abort_with_owned_draft_cleanup "forced reconciliation"',
+                    )
+                )
+                result = subprocess.run(
+                    ["bash"],
+                    cwd=ROOT,
+                    env={**os.environ, "MUTATION_LOG": str(mutation_log)},
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
+                self.assertIn("forced reconciliation", result.stdout)
+                if owned_draft == "true":
+                    self.assertIn(
+                        "Owned unpublished snapshot draft requires manual reconciliation",
+                        result.stdout,
+                    )
 
     def test_publishers_are_atomic_private_releases_not_git_commits(self):
         required_fragments = (
@@ -1764,7 +2175,7 @@ gh_mutate_once() {
         self.assertIn('if [ "$http_status" = 403 ]', helper)
         self.assertIn("cf-mitigated:", helper)
 
-    def test_finalization_self_heals_marker_and_keeps_active_plus_fallback(self):
+    def test_finalization_self_heals_marker_and_preserves_private_history(self):
         workflow = read(".github/workflows/deploy-pages.yml")
         deploy = workflow.split("\n  deploy:", 1)[1].split(
             "\n  finalize-private-snapshots:", 1
@@ -1802,13 +2213,13 @@ gh_mutate_once() {
         )
         self.assertIn('gh_mutate_once release upload "$EXPECTED_RELEASE_TAG"', finalization)
         self.assertIn("Private Pages deployment marker did not round-trip exactly", finalization)
-        self.assertIn("date -u -d '24 hours ago'", finalization)
-        self.assertIn("and .created_at < $stale_draft_cutoff", finalization)
-        self.assertIn('and .tag_name != $active', finalization)
-        self.assertIn('and ($fallback == "" or .tag_name != $fallback)', finalization)
-        self.assertIn("gh_delete_once release delete", finalization)
-        self.assertIn("--cleanup-tag", finalization)
-        self.assertIn("active release and one fallback", finalization)
+        self.assertIn(
+            "Automatic private snapshot retention cleanup is disabled",
+            finalization,
+        )
+        self.assertIn("prior releases, drafts, and dataset tags", finalization)
+        self.assertNotIn("gh_mutate_once release delete", finalization)
+        self.assertNotIn("gh_mutate_once api --method DELETE", finalization)
 
         self.assertNotIn("actions/artifacts/$artifact_id", finalization)
 

@@ -119,6 +119,11 @@ class DataSnapshotTests(unittest.TestCase):
                 Path(first["manifest_path"]).read_bytes(),
                 Path(second["manifest_path"]).read_bytes(),
             )
+            self.assertEqual(
+                hashlib.sha256(Path(first["manifest_path"]).read_bytes()).hexdigest(),
+                first["manifest_sha256"],
+            )
+            self.assertEqual(first["manifest_sha256"], second["manifest_sha256"])
             manifest = self.load_manifest(first)
             self.assertEqual(
                 data_snapshot.CONTRACT_VERSION,
@@ -165,6 +170,7 @@ class DataSnapshotTests(unittest.TestCase):
 
             self.assertTrue(verified["verified"])
             self.assertEqual(summary["dataset_id"], verified["dataset_id"])
+            self.assertEqual(summary["manifest_sha256"], verified["manifest_sha256"])
             self.assertEqual(
                 (source / "data/funds/1.json").read_bytes(),
                 (extracted / "data/funds/1.json").read_bytes(),
@@ -1801,8 +1807,22 @@ class DataSnapshotTests(unittest.TestCase):
             real_create = data_snapshot._create_private_directory_at
             displaced = False
             download_parent_identities: list[tuple[int, int]] = []
+            dataset_id = "a" * 64
             release = {
-                "assets": [{"name": "super-investor-data-x.manifest.json", "size": 1, "url": "mock"}],
+                "assets": [
+                    {
+                        "name": f"super-investor-data-{dataset_id}.manifest.json",
+                        "size": 1,
+                        "url": "mock:manifest",
+                        "digest": f"sha256:{'b' * 64}",
+                    },
+                    {
+                        "name": f"super-investor-data-{dataset_id}.tar.gz",
+                        "size": 1,
+                        "url": "mock:archive",
+                        "digest": f"sha256:{'c' * 64}",
+                    },
+                ],
                 "tag_name": "dataset-test",
             }
 
@@ -1874,16 +1894,21 @@ class DataSnapshotTests(unittest.TestCase):
                         "name": manifest_path.name,
                         "size": manifest_path.stat().st_size,
                         "url": "asset:manifest",
+                        "digest": "sha256:"
+                        + hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
                     },
                     {
                         "name": archive_path.name,
                         "size": archive_path.stat().st_size,
                         "url": "asset:archive",
+                        "digest": "sha256:"
+                        + hashlib.sha256(archive_path.read_bytes()).hexdigest(),
                     },
                     {
                         "name": "pages-deployment.json",
                         "size": 1,
                         "url": "asset:marker",
+                        "digest": f"sha256:{'d' * 64}",
                     },
                 ],
                 "draft": False,
@@ -2302,6 +2327,221 @@ class DataSnapshotTests(unittest.TestCase):
                 token="secret",
             )
         self.assertEqual("dataset-new", selected["tag_name"])
+
+    def test_resolve_release_paginates_to_global_newest_stable_dataset(self) -> None:
+        first_page = [
+            {
+                "tag_name": f"dataset-old-{index}",
+                "published_at": "2026-01-01T00:00:00Z",
+                "draft": False,
+                "prerelease": False,
+                "assets": [],
+                "id": index + 1,
+            }
+            for index in range(100)
+        ]
+        newest = {
+            "tag_name": "dataset-global-newest",
+            "published_at": "2026-08-26T23:59:59Z",
+            "draft": False,
+            "prerelease": False,
+            "assets": [],
+            "id": 101,
+        }
+        with mock.patch.object(
+            data_snapshot,
+            "_github_json",
+            side_effect=(first_page, [newest]),
+        ) as github_json:
+            selected = data_snapshot._resolve_release(
+                repository="owner/repo",
+                release_tag=None,
+                token="secret",
+            )
+
+        self.assertEqual("dataset-global-newest", selected["tag_name"])
+        self.assertEqual(
+            [
+                mock.call(
+                    "https://api.github.com/repos/owner/repo/releases?per_page=100&page=1",
+                    "secret",
+                ),
+                mock.call(
+                    "https://api.github.com/repos/owner/repo/releases?per_page=100&page=2",
+                    "secret",
+                ),
+            ],
+            github_json.call_args_list,
+        )
+
+    def test_resolve_release_fails_closed_when_bounded_pagination_is_exhausted(
+        self,
+    ) -> None:
+        full_page = [
+            {
+                "tag_name": f"dataset-old-{index}",
+                "published_at": "2026-01-01T00:00:00Z",
+                "draft": False,
+                "prerelease": False,
+                "assets": [],
+                "id": index + 1,
+            }
+            for index in range(100)
+        ]
+        with (
+            mock.patch.object(
+                data_snapshot,
+                "MAX_RELEASE_LIST_PAGES",
+                2,
+                create=True,
+            ),
+            mock.patch.object(
+                data_snapshot,
+                "_github_json",
+                side_effect=(full_page, full_page),
+            ) as github_json,
+        ):
+            with self.assertRaisesRegex(
+                data_snapshot.SnapshotError,
+                "bounded pagination",
+            ):
+                data_snapshot._resolve_release(
+                    repository="owner/repo",
+                    release_tag=None,
+                    token="secret",
+                )
+
+        self.assertEqual(2, github_json.call_count)
+
+    def test_resolve_release_identity_returns_exact_bounded_snapshot_identity(
+        self,
+    ) -> None:
+        dataset_id = "a" * 64
+        archive_sha256 = "b" * 64
+        manifest_sha256 = "c" * 64
+        release = {
+            "tag_name": "dataset-newest",
+            "published_at": "2026-08-26T23:59:59Z",
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {
+                    "name": f"super-investor-data-{dataset_id}.tar.gz",
+                    "url": "https://api.github.test/archive",
+                    "size": 10,
+                    "digest": f"sha256:{archive_sha256}",
+                },
+                {
+                    "name": f"super-investor-data-{dataset_id}.manifest.json",
+                    "url": "https://api.github.test/manifest",
+                    "size": 11,
+                    "digest": f"sha256:{manifest_sha256}",
+                },
+                {
+                    "name": "pages-deployment.json",
+                    "url": "https://api.github.test/pages-marker",
+                    "size": 12,
+                    "digest": f"sha256:{'d' * 64}",
+                },
+            ],
+            "id": 123,
+        }
+        with mock.patch.object(data_snapshot, "_resolve_release", return_value=release):
+            identity = data_snapshot.resolve_release_identity(
+                repository="owner/repo",
+                token="secret",
+            )
+
+        self.assertEqual(
+            {
+                "archive_sha256": archive_sha256,
+                "dataset_id": dataset_id,
+                "manifest_sha256": manifest_sha256,
+                "release_tag": "dataset-newest",
+                "repository": "owner/repo",
+            },
+            identity,
+        )
+
+    def test_resolve_release_identity_rejects_missing_or_malformed_asset_digests(
+        self,
+    ) -> None:
+        dataset_id = "a" * 64
+        for asset_name, digest in (
+            ("archive", None),
+            ("archive", "sha256:not-a-digest"),
+            ("manifest", None),
+            ("manifest", "sha256:not-a-digest"),
+        ):
+            with self.subTest(asset_name=asset_name, digest=digest):
+                release = {
+                    "tag_name": "dataset-newest",
+                    "assets": [
+                        {
+                            "name": f"super-investor-data-{dataset_id}.tar.gz",
+                            "url": "https://api.github.test/archive",
+                            "size": 10,
+                            "digest": f"sha256:{'b' * 64}",
+                        },
+                        {
+                            "name": f"super-investor-data-{dataset_id}.manifest.json",
+                            "url": "https://api.github.test/manifest",
+                            "size": 11,
+                            "digest": f"sha256:{'c' * 64}",
+                        },
+                    ],
+                }
+                target = release["assets"][0 if asset_name == "archive" else 1]
+                if digest is None:
+                    target.pop("digest")
+                else:
+                    target["digest"] = digest
+
+                with mock.patch.object(
+                    data_snapshot,
+                    "_resolve_release",
+                    return_value=release,
+                ):
+                    with self.assertRaisesRegex(
+                        data_snapshot.SnapshotError,
+                        "release asset digest is invalid",
+                    ):
+                        data_snapshot.resolve_release_identity(
+                            repository="owner/repo",
+                            token="secret",
+                        )
+
+    def test_resolve_release_identity_rejects_mismatched_archive_dataset_name(
+        self,
+    ) -> None:
+        manifest_dataset_id = "a" * 64
+        archive_dataset_id = "b" * 64
+        release = {
+            "tag_name": "dataset-newest",
+            "assets": [
+                {
+                    "name": f"super-investor-data-{archive_dataset_id}.tar.gz",
+                    "url": "https://api.github.test/archive",
+                    "size": 10,
+                    "digest": f"sha256:{'c' * 64}",
+                },
+                {
+                    "name": f"super-investor-data-{manifest_dataset_id}.manifest.json",
+                    "url": "https://api.github.test/manifest",
+                    "size": 11,
+                    "digest": f"sha256:{'d' * 64}",
+                },
+            ],
+        }
+        with mock.patch.object(data_snapshot, "_resolve_release", return_value=release):
+            with self.assertRaisesRegex(
+                data_snapshot.SnapshotError,
+                "release must contain exactly super-investor-data-",
+            ):
+                data_snapshot.resolve_release_identity(
+                    repository="owner/repo",
+                    token="secret",
+                )
 
     def test_resolve_explicit_release_rejects_prerelease(self) -> None:
         release = {

@@ -1697,8 +1697,6 @@ def _validate_publication_policy(payload: object) -> dict[str, object]:
         version=PUBLICATION_POLICY_STATE_CONTRACT_VERSION,
     )
     issuer_rows = _state_list(result["issuers"], "publication policy issuers")
-    if not issuer_rows:
-        raise _state_error("publication policy issuers")
     issuer_ciks: list[str] = []
     for entry in issuer_rows:
         item = _state_exact_keys(
