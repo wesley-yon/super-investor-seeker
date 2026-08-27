@@ -12,6 +12,18 @@
 
 > **Implementation priority:** Preserve the existing application architecture, data model conventions, routing conventions, design system, and deployment workflow. This PRD describes the desired behavior and appearance. It is not permission to replace the current stack or rebuild the application from scratch.
 
+## Current production privacy and topology override
+
+This controlling override supersedes conflicting historical public drawer,
+database, and API requirements in this PRD. Current production uses a screened
+static payload, not a public database or API topology. The SEC source link is
+the complete-record path. Public payloads exclude owner CIKs,
+addresses/contact information, full footnotes, remarks, raw narratives,
+stable/private correlators, and private provenance. All are excluded from public
+payloads and public logs. Historical parser, private-storage, and
+source-preservation requirements remain private and are not rewritten by this
+override.
+
 ---
 
 ## 1. Executive summary

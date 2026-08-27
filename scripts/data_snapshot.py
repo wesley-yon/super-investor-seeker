@@ -2027,7 +2027,18 @@ def _download_url(
         raise SnapshotError("downloaded byte count does not match release asset")
 
 
-def _validated_release(value: object, *, expected_tag: Optional[str]) -> dict[str, Any]:
+def _release_id(value: object) -> int:
+    if type(value) is not int or value < 1:
+        raise SnapshotError("release ID must be a positive integer")
+    return value
+
+
+def _validated_release(
+    value: object,
+    *,
+    expected_tag: Optional[str],
+    expected_release_id: Optional[int] = None,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise SnapshotError("GitHub release response must be an object")
     tag = value.get("tag_name")
@@ -2041,32 +2052,18 @@ def _validated_release(value: object, *, expected_tag: Optional[str]) -> dict[st
         or not value.get("published_at")
     ):
         raise SnapshotError(f"release is not a stable published release: {tag}")
+    release_id = _release_id(value.get("id"))
+    if expected_release_id is not None and release_id != expected_release_id:
+        raise SnapshotError("GitHub returned a different release ID")
     if not isinstance(value.get("assets"), list):
         raise SnapshotError(f"release assets are invalid: {tag}")
     return value
 
 
-def _resolve_release(
-    *,
-    repository: str,
-    release_tag: Optional[str],
-    token: str,
-) -> dict[str, Any]:
+def _resolve_newest_release(*, repository: str, token: str) -> dict[str, Any]:
     quoted_repository = "/".join(
         urllib.parse.quote(part, safe="") for part in repository.split("/")
     )
-    if release_tag is not None:
-        if not release_tag.startswith("dataset-"):
-            raise SnapshotError("release tag must start with dataset-")
-        url = (
-            f"{API_BASE}/repos/{quoted_repository}/releases/tags/"
-            f"{urllib.parse.quote(release_tag, safe='')}"
-        )
-        return _validated_release(
-            _github_json(url, token),
-            expected_tag=release_tag,
-        )
-
     selected: dict[str, Any] | None = None
     for page in range(1, MAX_RELEASE_LIST_PAGES + 1):
         url = (
@@ -2110,10 +2107,104 @@ def _resolve_release(
     return _validated_release(selected, expected_tag=None)
 
 
+def _resolve_release(
+    *,
+    repository: str,
+    release_tag: Optional[str],
+    release_id: Optional[int] = None,
+    token: str,
+) -> dict[str, Any]:
+    if release_tag is not None and release_id is not None:
+        raise SnapshotError("release tag and release ID cannot both select a release")
+    quoted_repository = "/".join(
+        urllib.parse.quote(part, safe="") for part in repository.split("/")
+    )
+    if release_id is not None:
+        release_id = _release_id(release_id)
+        release = _validated_release(
+            _github_json(
+                f"{API_BASE}/repos/{quoted_repository}/releases/{release_id}", token
+            ),
+            expected_tag=None,
+            expected_release_id=release_id,
+        )
+        newest = _resolve_newest_release(repository=repository, token=token)
+        if _release_id(newest["id"]) != release_id:
+            raise SnapshotError("selected release is no longer the newest valid private release")
+        return release
+    if release_tag is not None:
+        if not release_tag.startswith("dataset-"):
+            raise SnapshotError("release tag must start with dataset-")
+        return _validated_release(
+            _github_json(
+                f"{API_BASE}/repos/{quoted_repository}/releases/tags/"
+                f"{urllib.parse.quote(release_tag, safe='')}",
+                token,
+            ),
+            expected_tag=release_tag,
+        )
+    return _resolve_newest_release(repository=repository, token=token)
+
+
+def _canonical_release_identity(
+    *, repository: str, release: dict[str, Any]
+) -> dict[str, Any]:
+    release_id = _release_id(release.get("id"))
+    tag_name = release.get("tag_name")
+    title = release.get("name")
+    body = release.get("body")
+    draft = release.get("draft")
+    prerelease = release.get("prerelease")
+    if not isinstance(tag_name, str) or not tag_name.startswith("dataset-"):
+        raise SnapshotError("release tag must start with dataset-")
+    if not isinstance(title, str) or not isinstance(body, str):
+        raise SnapshotError("release title and body must be strings")
+    if type(draft) is not bool or type(prerelease) is not bool:
+        raise SnapshotError("release draft and prerelease state must be booleans")
+    assets: list[dict[str, Any]] = []
+    for asset in release["assets"]:
+        if not isinstance(asset, dict):
+            raise SnapshotError("release assets are invalid")
+        asset_id = _release_id(asset.get("id"))
+        name = asset.get("name")
+        size = asset.get("size")
+        state = asset.get("state")
+        digest = asset.get("digest")
+        if not isinstance(name, str) or type(size) is not int or size < 1:
+            raise SnapshotError("release asset identity is invalid")
+        if not isinstance(state, str):
+            raise SnapshotError("release asset state is invalid")
+        if not isinstance(digest, str) or ASSET_DIGEST_RE.fullmatch(digest) is None:
+            raise SnapshotError("release asset digest is invalid")
+        assets.append(
+            {"digest": digest, "id": asset_id, "name": name, "size": size, "state": state}
+        )
+    return {
+        "assets": sorted(assets, key=lambda asset: (asset["name"], asset["id"])),
+        "body": body,
+        "contract_version": 1,
+        "draft": draft,
+        "prerelease": prerelease,
+        "release_id": release_id,
+        "repository": repository,
+        "tag_name": tag_name,
+        "title": title,
+    }
+
+
+def release_identity_sha256(*, repository: str, release: dict[str, Any]) -> str:
+    """Hash the complete bounded private-release identity without exposing notes."""
+    canonical = _canonical_release_identity(repository=repository, release=release)
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def resolve_release_identity(
     *,
     repository: str,
     release_tag: Optional[str] = None,
+    release_id: Optional[int] = None,
     token: Optional[str] = None,
 ) -> dict[str, Any]:
     """Resolve a private release and return only bounded identity metadata."""
@@ -2126,16 +2217,37 @@ def resolve_release_identity(
     release = _resolve_release(
         repository=repository,
         release_tag=release_tag,
+        release_id=release_id,
         token=resolved_token,
     )
     dataset_id, archive_asset, manifest_asset = _snapshot_release_assets(release)
-    return {
+    result = {
         "archive_sha256": _release_asset_sha256(archive_asset),
         "dataset_id": dataset_id,
         "manifest_sha256": _release_asset_sha256(manifest_asset),
         "release_tag": release["tag_name"],
         "repository": repository,
     }
+    if release_id is not None or (
+        isinstance(release.get("name"), str)
+        and isinstance(release.get("body"), str)
+        and all(
+            isinstance(asset, dict)
+            and type(asset.get("id")) is int
+            and isinstance(asset.get("state"), str)
+            for asset in release["assets"]
+        )
+    ):
+        result.update(
+            {
+                "release_id": _release_id(release["id"]),
+                "release_identity_sha256": release_identity_sha256(
+                    repository=repository,
+                    release=release,
+                ),
+            }
+        )
+    return result
 
 
 def _find_asset(
@@ -2709,6 +2821,7 @@ def pull_snapshot(
     root: Path,
     replace: bool,
     release_tag: Optional[str] = None,
+    release_id: Optional[int] = None,
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
     max_content_bytes: int = DEFAULT_MAX_CONTENT_BYTES,
     max_file_count: int = DEFAULT_MAX_FILE_COUNT,
@@ -2752,7 +2865,12 @@ def pull_snapshot(
         resolved_token = token if token is not None else os.environ.get(TOKEN_ENV)
         if not resolved_token:
             raise SnapshotError(f"{TOKEN_ENV} is not set")
-        release = _resolve_release(repository=repository, release_tag=release_tag, token=resolved_token)
+        release = _resolve_release(
+            repository=repository,
+            release_tag=release_tag,
+            release_id=release_id,
+            token=resolved_token,
+        )
         release_dataset_id, archive_asset, manifest_asset = _snapshot_release_assets(
             release
         )
@@ -2828,6 +2946,25 @@ def pull_snapshot(
                 "restored_root": str(root),
             }
         )
+        if release_id is not None or (
+            isinstance(release.get("name"), str)
+            and isinstance(release.get("body"), str)
+            and all(
+                isinstance(asset, dict)
+                and type(asset.get("id")) is int
+                and isinstance(asset.get("state"), str)
+                for asset in release["assets"]
+            )
+        ):
+            summary.update(
+                {
+                    "release_id": _release_id(release["id"]),
+                    "release_identity_sha256": release_identity_sha256(
+                        repository=repository,
+                        release=release,
+                    ),
+                }
+            )
         return summary
     finally:
         if staging_descriptor >= 0:
@@ -2873,6 +3010,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     resolve.add_argument("--repository", required=True)
     resolve.add_argument("--release-tag")
+    resolve.add_argument("--release-id", type=int)
 
     pull = commands.add_parser(
         "pull",
@@ -2881,6 +3019,7 @@ def _parser() -> argparse.ArgumentParser:
     pull.add_argument("--repository", required=True)
     pull.add_argument("--root", type=Path, default=ROOT)
     pull.add_argument("--release-tag")
+    pull.add_argument("--release-id", type=int)
     pull.add_argument("--replace", action="store_true", required=True)
     pull.add_argument(
         "--max-archive-bytes",
@@ -2919,12 +3058,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = resolve_release_identity(
                 repository=args.repository,
                 release_tag=args.release_tag,
+                release_id=args.release_id,
             )
         else:
             result = pull_snapshot(
                 repository=args.repository,
                 root=args.root,
                 release_tag=args.release_tag,
+                release_id=args.release_id,
                 replace=args.replace,
                 max_archive_bytes=args.max_archive_bytes,
                 max_content_bytes=args.max_content_bytes,

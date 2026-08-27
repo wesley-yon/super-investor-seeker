@@ -10,6 +10,14 @@ if [ "$require_public_tree_unchanged" != true ] &&
   echo "::error::Private publication boundary requirement is invalid"
   exit 1
 fi
+if [[ ! "${BASE_RELEASE_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::Restored base release ID is invalid"
+  exit 1
+fi
+if [[ ! "${BASE_RELEASE_IDENTITY_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "::error::Restored base release identity digest is invalid"
+  exit 1
+fi
 if [[ ! "${BASE_DATASET_ID:-}" =~ ^[0-9a-f]{64}$ ]]; then
   echo "::error::Restored base dataset ID is invalid"
   exit 1
@@ -112,6 +120,8 @@ verify_current_main() {
 
 verify_base_snapshot_current() {
   local current_base_json
+  local current_base_release_id
+  local current_base_release_identity_sha256
   local current_base_release_tag
   local current_base_dataset_id
   local current_base_archive_sha256
@@ -119,15 +129,20 @@ verify_base_snapshot_current() {
 
   if ! current_base_json=$(
       python scripts/data_snapshot.py resolve \
-        --repository "$DATA_REPOSITORY"
+        --repository "$DATA_REPOSITORY" \
+        --release-id "$BASE_RELEASE_ID"
     ); then
     echo "::error::Could not resolve the newest private snapshot"
     return 1
   fi
-  if ! current_base_release_tag=$(jq -er '.release_tag' <<<"$current_base_json") ||
+  if ! current_base_release_id=$(jq -er '.release_id | tostring' <<<"$current_base_json") ||
+     ! current_base_release_identity_sha256=$(jq -er '.release_identity_sha256' <<<"$current_base_json") ||
+     ! current_base_release_tag=$(jq -er '.release_tag' <<<"$current_base_json") ||
      ! current_base_dataset_id=$(jq -er '.dataset_id' <<<"$current_base_json") ||
      ! current_base_archive_sha256=$(jq -er '.archive_sha256' <<<"$current_base_json") ||
      ! current_base_manifest_sha256=$(jq -er '.manifest_sha256' <<<"$current_base_json") ||
+     [[ ! "$current_base_release_id" =~ ^[1-9][0-9]*$ ]] ||
+     [[ ! "$current_base_release_identity_sha256" =~ ^[0-9a-f]{64}$ ]] ||
      [[ ! "$current_base_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
      [[ ! "$current_base_dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
      [[ ! "$current_base_archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
@@ -135,8 +150,10 @@ verify_base_snapshot_current() {
     echo "::error::Newest private snapshot returned invalid identity metadata"
     return 1
   fi
-  if [ "$current_base_release_tag" != "$BASE_RELEASE_TAG" ]; then
-    echo "::error::A newer private snapshot superseded the restored base"
+  if [ "$current_base_release_id" != "$BASE_RELEASE_ID" ] ||
+     [ "$current_base_release_identity_sha256" != "$BASE_RELEASE_IDENTITY_SHA256" ] ||
+     [ "$current_base_release_tag" != "$BASE_RELEASE_TAG" ]; then
+    echo "::error::A newer or replaced private snapshot superseded the restored base"
     return 1
   fi
   if [ "$current_base_dataset_id" != "$BASE_DATASET_ID" ] ||

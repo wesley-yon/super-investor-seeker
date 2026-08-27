@@ -199,6 +199,18 @@ private-only: `publication-policy-v1` and the bounded public artifact must both
 remain unchanged, and the workflow has no public materializer or Pages job.
 Consequently, ingestion approval cannot by itself publish ServiceNow records.
 
+The separate fixed-scope `.github/workflows/approve-servicenow-insider-publication.yml`
+may transition only private `publication-policy-v1` for CIK `0001373715`. It
+requires complete exact class mappings, zero unresolved ambiguities, exact issuer
+generation/current policy/candidate digests, and immutable private-release
+identity. Candidate bytes and class keys remain private in the protected
+`insider-publication-approval` Environment secret. This policy-approval boundary
+cannot run SEC ingestion, the materializer, Pages, or public deployment; it
+leaves the public tree unchanged. Materialization remains the separate manual
+and default-off `update-data.yml` boundary described below. The operational
+sequence and fail-closed recovery rules are in the
+[ServiceNow insider launch runbook](docs/servicenow-insider-launch.md).
+
 `scripts/publish_insider_activity.py` is an offline production adapter around
 the Phase 4 projection library. It accepts only a fixed repository root and a
 bounded `incremental`, `backfill`, or `reparse` maintenance identity. Before any

@@ -2806,6 +2806,86 @@ class DataSnapshotTests(unittest.TestCase):
             self.assertEqual("verify", payload["command"])
             self.assertEqual(summary["dataset_id"], payload["dataset_id"])
 
+    def test_release_identity_binds_positive_id_every_release_and_asset_field(self) -> None:
+        dataset_id = "a" * 64
+        release = {
+            "id": 123,
+            "tag_name": "dataset-newest",
+            "name": "private snapshot title",
+            "body": "private snapshot notes",
+            "published_at": "2026-08-26T23:59:59Z",
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {
+                    "id": 11,
+                    "name": f"super-investor-data-{dataset_id}.tar.gz",
+                    "url": "https://api.github.test/archive",
+                    "size": 10,
+                    "state": "uploaded",
+                    "digest": f"sha256:{'b' * 64}",
+                },
+                {
+                    "id": 12,
+                    "name": f"super-investor-data-{dataset_id}.manifest.json",
+                    "url": "https://api.github.test/manifest",
+                    "size": 11,
+                    "state": "uploaded",
+                    "digest": f"sha256:{'c' * 64}",
+                },
+            ],
+        }
+        with mock.patch.object(data_snapshot, "_resolve_release", return_value=release):
+            identity = data_snapshot.resolve_release_identity(
+                repository="wesley-yon/super-investor-seeker-data",
+                release_id=123,
+                token="secret",
+            )
+
+        self.assertEqual(123, identity["release_id"])
+        self.assertRegex(identity["release_identity_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("name", identity)
+        self.assertNotIn("body", identity)
+        baseline = identity["release_identity_sha256"]
+        for field, replacement in (
+            ("id", 124),
+            ("tag_name", "dataset-replaced"),
+            ("name", "replaced title"),
+            ("body", "replaced notes"),
+            ("draft", True),
+            ("prerelease", True),
+        ):
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(release))
+                changed[field] = replacement
+                self.assertNotEqual(
+                    baseline,
+                    data_snapshot.release_identity_sha256(
+                        repository="wesley-yon/super-investor-seeker-data",
+                        release=changed,
+                    ),
+                )
+        for field, replacement in (("id", 99), ("name", "replaced"), ("size", 99), ("state", "starter"), ("digest", f"sha256:{'d' * 64}")):
+            with self.subTest(asset_field=field):
+                changed = json.loads(json.dumps(release))
+                changed["assets"][0][field] = replacement
+                self.assertNotEqual(
+                    baseline,
+                    data_snapshot.release_identity_sha256(
+                        repository="wesley-yon/super-investor-seeker-data",
+                        release=changed,
+                    ),
+                )
+        for invalid_id in (0, -1, True, "123"):
+            with self.subTest(invalid_id=invalid_id):
+                changed = json.loads(json.dumps(release))
+                changed["id"] = invalid_id
+                with self.assertRaisesRegex(data_snapshot.SnapshotError, "release ID"):
+                    data_snapshot.release_identity_sha256(
+                        repository="wesley-yon/super-investor-seeker-data",
+                        release=changed,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
