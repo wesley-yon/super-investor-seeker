@@ -108,6 +108,17 @@ materialization is stricter: only a manual `workflow_dispatch` can set
 maintenance scope plus explicit UTC `as_of` and latest-sync values. Merge,
 push, and scheduled events cannot select that publication gate.
 
+A legacy private snapshot that predates Section 16 authority state can be
+prepared only through the manual
+`.github/workflows/initialize-empty-private-insider-authority.yml` genesis
+boundary. It pins exact current `main` and the newest private dataset, and it
+accepts only missing or byte-equivalent empty `approved-issuers-v1` and
+`publication-policy-v1` roots. The resulting private-only snapshot approves no
+ingestion issuer, authorizes no public issuer, and must reproduce the same
+public artifact tree. An empty publication policy is valid durable deny-all
+state, but the public materializer still rejects it because there is no reviewed
+issuer corpus to publish.
+
 The fixed-scope `.github/workflows/approve-servicenow-insider-ingestion.yml`
 is the sole hosted approval path for ServiceNow issuer CIK `0001373715`. It
 requires an exact private dataset ID and explicit confirmation, then invokes

@@ -17,7 +17,7 @@ permissions:
   pages: read
 
 env:
-  DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
+  DATA_REPOSITORY: wesley-yon/super-investor-seeker-data
 
 jobs:
   refresh-cusips:
@@ -36,6 +36,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           # Scheduled runs otherwise use the default-branch SHA captured when
           # the event was queued. Snapshot generation must start from the live
           # main branch tip whenever checkout runs.
@@ -50,7 +51,7 @@ jobs:
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: wesley-yon
           repositories: super-investor-seeker-data
           permission-contents: read
 
@@ -78,14 +79,18 @@ jobs:
           release_tag=$(jq -er '.release_tag' <<<"$restore_json")
           dataset_id=$(jq -er '.dataset_id' <<<"$restore_json")
           archive_sha256=$(jq -er '.archive_sha256' <<<"$restore_json")
+          manifest_sha256=$(jq -er '.manifest_sha256' <<<"$restore_json")
           if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
              [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
-             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+             [[ ! "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]; then
             echo "::error::Private snapshot returned invalid identity metadata"
             exit 1
           fi
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
+          echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
           echo "Restored private snapshot $release_tag ($dataset_id)"
 
       - name: Verify OPENFIGI_API_KEY secret is configured
@@ -133,7 +138,7 @@ jobs:
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: wesley-yon
           repositories: super-investor-seeker-data
           permission-contents: write
 
@@ -142,6 +147,9 @@ jobs:
         env:
           DATA_ARCHIVE_TOKEN: ${{ steps.publish-data-app-token.outputs.token }}
           BASE_DATASET_ID: ${{ steps.restore_snapshot.outputs.dataset_id }}
+          BASE_RELEASE_TAG: ${{ steps.restore_snapshot.outputs.release_tag }}
+          BASE_ARCHIVE_SHA256: ${{ steps.restore_snapshot.outputs.archive_sha256 }}
+          BASE_MANIFEST_SHA256: ${{ steps.restore_snapshot.outputs.manifest_sha256 }}
           GH_TOKEN: ${{ steps.publish-data-app-token.outputs.token }}
           PUBLIC_GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/publish_private_snapshot.sh

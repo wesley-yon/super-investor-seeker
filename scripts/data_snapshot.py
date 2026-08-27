@@ -46,6 +46,8 @@ DEFAULT_MAX_MEMBER_COUNT = 200_000
 DEFAULT_MAX_PATH_COMPONENTS = 64
 MAX_MANIFEST_BYTES = 1_000_000
 MAX_API_RESPONSE_BYTES = 10_000_000
+RELEASES_PER_PAGE = 100
+MAX_RELEASE_LIST_PAGES = 100
 GITHUB_RETRY_DELAYS_SECONDS = (1, 3)
 # The Python restore helpers perform GET requests only. A newly minted GitHub App
 # token can briefly return 403 while repository permissions propagate, so those
@@ -65,6 +67,7 @@ ARCHIVE_PREFIX = "super-investor-data-"
 ARCHIVE_SUFFIX = ".tar.gz"
 MANIFEST_SUFFIX = ".manifest.json"
 SHA_RE = re.compile(r"[0-9a-f]{64}")
+ASSET_DIGEST_RE = re.compile(r"sha256:([0-9a-f]{64})")
 SOURCE_SHA_RE = re.compile(r"[0-9a-f]{40}")
 CREATED_AT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -1461,6 +1464,7 @@ def verify_snapshot(
     if stat.S_IMODE(archive_metadata.st_mode) != 0o600:
         raise SnapshotError("archive mode must be exactly 0600")
     manifest = _load_manifest(manifest_path)
+    manifest_sha256 = _sha256_file(manifest_path)
     _preflight_manifest_extraction_limits(
         manifest,
         max_content_bytes=max_content_bytes,
@@ -1573,6 +1577,7 @@ def verify_snapshot(
             os.close(destination_parent_descriptor)
 
     summary = _manifest_summary(manifest)
+    summary["manifest_sha256"] = manifest_sha256
     summary["verified"] = True
     if destination is not None:
         summary["extract_root"] = str(destination)
@@ -1888,6 +1893,7 @@ def pack_snapshot(
             "insider_file_count": insider_file_count,
             "manifest_filename": manifest_name,
             "manifest_path": str(manifest_path),
+            "manifest_sha256": _sha256_file(manifest_path),
         }
     )
     return summary
@@ -2061,31 +2067,75 @@ def _resolve_release(
             expected_tag=release_tag,
         )
 
-    url = f"{API_BASE}/repos/{quoted_repository}/releases?per_page=100"
-    response = _github_json(url, token)
-    if not isinstance(response, list):
-        raise SnapshotError("GitHub releases response must be an array")
-    candidates = [
-        release
-        for release in response
-        if isinstance(release, dict)
-        and isinstance(release.get("tag_name"), str)
-        and release["tag_name"].startswith("dataset-")
-        and release.get("draft") is False
-        and release.get("prerelease") is False
-        and isinstance(release.get("published_at"), str)
-        and isinstance(release.get("assets"), list)
-    ]
-    if not candidates:
+    selected: dict[str, Any] | None = None
+    for page in range(1, MAX_RELEASE_LIST_PAGES + 1):
+        url = (
+            f"{API_BASE}/repos/{quoted_repository}/releases"
+            f"?per_page={RELEASES_PER_PAGE}&page={page}"
+        )
+        response = _github_json(url, token)
+        if not isinstance(response, list):
+            raise SnapshotError("GitHub releases response must be an array")
+        if len(response) > RELEASES_PER_PAGE:
+            raise SnapshotError(
+                "GitHub releases response exceeded the requested page size"
+            )
+        for release in response:
+            if not (
+                isinstance(release, dict)
+                and isinstance(release.get("tag_name"), str)
+                and release["tag_name"].startswith("dataset-")
+                and release.get("draft") is False
+                and release.get("prerelease") is False
+                and isinstance(release.get("published_at"), str)
+                and isinstance(release.get("assets"), list)
+            ):
+                continue
+            if selected is None or (
+                release["published_at"],
+                release.get("id", 0) if type(release.get("id", 0)) is int else 0,
+            ) > (
+                selected["published_at"],
+                selected.get("id", 0) if type(selected.get("id", 0)) is int else 0,
+            ):
+                selected = release
+        if len(response) < RELEASES_PER_PAGE:
+            break
+    else:
+        raise SnapshotError(
+            "GitHub release list exceeded bounded pagination; refusing a partial newest-release result"
+        )
+    if selected is None:
         raise SnapshotError("no published dataset-* release was found")
-    selected = max(
-        candidates,
-        key=lambda release: (
-            release["published_at"],
-            release.get("id", 0) if type(release.get("id", 0)) is int else 0,
-        ),
-    )
     return _validated_release(selected, expected_tag=None)
+
+
+def resolve_release_identity(
+    *,
+    repository: str,
+    release_tag: Optional[str] = None,
+    token: Optional[str] = None,
+) -> dict[str, Any]:
+    """Resolve a private release and return only bounded identity metadata."""
+
+    if not REPOSITORY_RE.fullmatch(repository):
+        raise SnapshotError("repository must use OWNER/REPO format")
+    resolved_token = token if token is not None else os.environ.get(TOKEN_ENV)
+    if not resolved_token:
+        raise SnapshotError(f"{TOKEN_ENV} is not set")
+    release = _resolve_release(
+        repository=repository,
+        release_tag=release_tag,
+        token=resolved_token,
+    )
+    dataset_id, archive_asset, manifest_asset = _snapshot_release_assets(release)
+    return {
+        "archive_sha256": _release_asset_sha256(archive_asset),
+        "dataset_id": dataset_id,
+        "manifest_sha256": _release_asset_sha256(manifest_asset),
+        "release_tag": release["tag_name"],
+        "repository": repository,
+    }
 
 
 def _find_asset(
@@ -2119,6 +2169,43 @@ def _find_asset(
     if type(asset.get("size")) is not int or asset["size"] < 1:
         raise SnapshotError(f"release asset size is invalid: {asset.get('name')}")
     return asset
+
+
+def _release_asset_sha256(asset: dict[str, Any]) -> str:
+    digest = asset.get("digest")
+    match = ASSET_DIGEST_RE.fullmatch(digest) if type(digest) is str else None
+    if match is None:
+        raise SnapshotError(f"release asset digest is invalid: {asset.get('name')}")
+    return match.group(1)
+
+
+def _snapshot_release_assets(
+    release: dict[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    assets = release["assets"]
+    manifest_asset = _find_asset(assets, suffix=MANIFEST_SUFFIX)
+    manifest_name = manifest_asset["name"]
+    dataset_id = manifest_name[len(ARCHIVE_PREFIX) : -len(MANIFEST_SUFFIX)]
+    if not SHA_RE.fullmatch(dataset_id):
+        raise SnapshotError("release manifest name has an invalid dataset ID")
+    archive_name, expected_manifest_name = _manifest_names(dataset_id)
+    if manifest_name != expected_manifest_name:
+        raise SnapshotError("release manifest name does not match its dataset ID")
+    archive_asset = _find_asset(assets, name=archive_name)
+    asset_names = [
+        asset.get("name") if isinstance(asset, dict) else None for asset in assets
+    ]
+    required_asset_names = {manifest_name, archive_name}
+    allowed_asset_names = required_asset_names | {"pages-deployment.json"}
+    if (
+        len(asset_names) != len(set(asset_names))
+        or not required_asset_names.issubset(set(asset_names))
+        or not set(asset_names).issubset(allowed_asset_names)
+    ):
+        raise SnapshotError(
+            "release assets must be the snapshot archive and manifest, with only an optional pages-deployment.json marker"
+        )
+    return dataset_id, archive_asset, manifest_asset
 
 
 def _download_asset(
@@ -2666,23 +2753,35 @@ def pull_snapshot(
         if not resolved_token:
             raise SnapshotError(f"{TOKEN_ENV} is not set")
         release = _resolve_release(repository=repository, release_tag=release_tag, token=resolved_token)
-        assets = release["assets"]
-        manifest_asset = _find_asset(assets, suffix=MANIFEST_SUFFIX)
+        release_dataset_id, archive_asset, manifest_asset = _snapshot_release_assets(
+            release
+        )
         staging_name, staging_descriptor = _create_private_directory_at(
             staging_parent_descriptor,
             ".data-snapshot-pull-",
             "pull staging directory",
         )
         _download_asset_at(asset=manifest_asset, directory_descriptor=staging_descriptor, name=manifest_asset["name"], token=resolved_token, max_bytes=MAX_MANIFEST_BYTES)
+        manifest_descriptor, _ = _open_regular_file_at(
+            staging_descriptor,
+            manifest_asset["name"],
+            "snapshot manifest",
+        )
+        with os.fdopen(manifest_descriptor, "rb") as manifest_handle:
+            manifest_sha256 = _sha256_handle(manifest_handle)
+        if manifest_sha256 != _release_asset_sha256(manifest_asset):
+            raise SnapshotError(
+                "release manifest digest does not match downloaded bytes"
+            )
         manifest = _load_manifest_at(staging_descriptor, manifest_asset["name"])
-        archive_asset = _find_asset(assets, name=manifest["archive"]["filename"])
-        asset_names = [asset.get("name") if isinstance(asset, dict) else None for asset in assets]
-        required_asset_names = {manifest_asset["name"], archive_asset["name"]}
-        allowed_asset_names = required_asset_names | {"pages-deployment.json"}
-        if len(asset_names) != len(set(asset_names)) or not required_asset_names.issubset(set(asset_names)) or not set(asset_names).issubset(allowed_asset_names):
-            raise SnapshotError("release assets must be the snapshot archive and manifest, with only an optional pages-deployment.json marker")
+        if manifest["dataset_id"] != release_dataset_id:
+            raise SnapshotError("release assets do not match the manifest dataset ID")
+        if archive_asset["name"] != manifest["archive"]["filename"]:
+            raise SnapshotError("release archive name does not match manifest")
         if archive_asset["size"] != manifest["archive"]["bytes"]:
             raise SnapshotError("release archive asset size does not match manifest")
+        if _release_asset_sha256(archive_asset) != manifest["archive"]["sha256"]:
+            raise SnapshotError("release archive digest does not match manifest")
         _download_asset_at(asset=archive_asset, directory_descriptor=staging_descriptor, name=archive_asset["name"], token=resolved_token, max_bytes=max_archive_bytes)
         _verify_snapshot_at(
             directory_descriptor=staging_descriptor,
@@ -2721,7 +2820,14 @@ def pull_snapshot(
             os.close(payload_descriptor)
         summary = _manifest_summary(manifest)
         summary.pop("extract_root", None)
-        summary.update({"release_tag": release["tag_name"], "repository": repository, "restored_root": str(root)})
+        summary.update(
+            {
+                "manifest_sha256": manifest_sha256,
+                "release_tag": release["tag_name"],
+                "repository": repository,
+                "restored_root": str(root),
+            }
+        )
         return summary
     finally:
         if staging_descriptor >= 0:
@@ -2760,6 +2866,13 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--max-file-count", type=int, default=DEFAULT_MAX_FILE_COUNT)
     verify.add_argument("--max-member-count", type=int, default=DEFAULT_MAX_MEMBER_COUNT)
     verify.add_argument("--max-path-components", type=int, default=DEFAULT_MAX_PATH_COMPONENTS)
+
+    resolve = commands.add_parser(
+        "resolve",
+        help="resolve bounded private GitHub Release identity metadata",
+    )
+    resolve.add_argument("--repository", required=True)
+    resolve.add_argument("--release-tag")
 
     pull = commands.add_parser(
         "pull",
@@ -2801,6 +2914,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 max_member_count=args.max_member_count,
                 max_path_components=args.max_path_components,
                 extract_root=args.extract_root,
+            )
+        elif args.command == "resolve":
+            result = resolve_release_identity(
+                repository=args.repository,
+                release_tag=args.release_tag,
             )
         else:
             result = pull_snapshot(

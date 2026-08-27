@@ -56,6 +56,10 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
         self.assertIn("permission-contents: read", workflow)
         self.assertIn("permission-contents: write", workflow)
         self.assertIn("BASE_PUBLIC_TREE_SHA256:", workflow)
+        self.assertIn(
+            "BASE_RELEASE_TAG: ${{ steps.restore_snapshot.outputs.release_tag }}",
+            workflow,
+        )
         self.assertIn("site_changed", workflow)
         self.assertIn("must not change the public site", workflow)
         self.assertEqual(1, workflow.count(f"bash {PUBLISHER_SCRIPT}"))
@@ -158,6 +162,9 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
 
     def test_dispatch_binds_exact_reviewed_code_before_credentials(self) -> None:
         workflow = read(WORKFLOW_PATH)
+        request = workflow.split("- name: Validate explicit approval request", 1)[
+            1
+        ].split("\n      - name:", 1)[0]
         checkout = workflow.split("- name: Checkout repository", 1)[1].split(
             "\n      - name:", 1
         )[0]
@@ -165,7 +172,22 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
             "- name: Verify exact dispatch code checkout", 1
         )[1].split("\n      - name:", 1)[0]
 
+        self.assertIn(
+            "REQUESTED_REPOSITORY: ${{ github.repository }}",
+            request,
+        )
+        self.assertIn(
+            'if [ "$REQUESTED_REPOSITORY" != "wesley-yon/super-investor-seeker" ]; then',
+            request,
+        )
+        self.assertIn(
+            "DATA_REPOSITORY: wesley-yon/super-investor-seeker-data",
+            workflow,
+        )
+        self.assertIn("owner: wesley-yon", workflow)
+        self.assertNotIn("${{ github.repository_owner }}", workflow)
         self.assertIn("ref: ${{ github.sha }}", checkout)
+        self.assertIn("persist-credentials: false", checkout)
         self.assertNotIn("ref: main", checkout)
         self.assertIn("EXPECTED_CODE_SHA: ${{ github.sha }}", exact_checkout)
         self.assertIn("actual_code_sha=$(git rev-parse HEAD)", exact_checkout)
@@ -179,6 +201,35 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
         self.assertLess(
             workflow.index("- name: Verify exact dispatch code checkout"),
             workflow.index("- name: Authenticate to the private data repository"),
+        )
+
+    def test_workflow_revalidates_current_main_before_restore_and_approval_mutation(
+        self,
+    ) -> None:
+        workflow = read(WORKFLOW_PATH)
+        credential = workflow.index(
+            "- name: Authenticate to the private data repository"
+        )
+        restore_guard = workflow.index(
+            "- name: Revalidate current main before private snapshot restore"
+        )
+        restore = workflow.index("- name: Restore exact validated private snapshot")
+        mutation_guard = workflow.index(
+            "- name: Revalidate current main before private approval mutation"
+        )
+        mutation = workflow.index("- name: Approve ServiceNow for private ingestion")
+
+        self.assertLess(credential, restore_guard)
+        self.assertLess(restore_guard, restore)
+        self.assertLess(restore, mutation_guard)
+        self.assertLess(mutation_guard, mutation)
+        self.assertEqual(
+            3,
+            workflow.count("git fetch --no-tags origin main:refs/remotes/origin/main"),
+        )
+        self.assertEqual(
+            3,
+            workflow.count("Dispatch code is not the exact current main revision"),
         )
 
     def test_private_snapshot_publisher_fails_before_public_tree_drift_mutation(
@@ -209,22 +260,27 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
         self.assertLess(guard_at, publisher.index("gh_mutate_once release create"))
         self.assertLess(guard_at, publisher.index("gh_mutate_once release edit"))
 
-    def test_publisher_rechecks_current_main_immediately_before_each_mutation(
+    def test_publisher_rechecks_current_main_and_newest_base_before_each_mutation(
         self,
     ) -> None:
         publisher = read(PUBLISHER_SCRIPT)
 
         self.assertIn("verify_current_main() {", publisher)
+        self.assertIn("verify_base_snapshot_current() {", publisher)
         for mutation in (
             "gh_mutate_once release create",
             "gh_mutate_once release upload",
             "gh_mutate_once release edit",
         ):
             mutation_at = publisher.index(mutation)
-            preceding_guard = publisher.rfind("verify_current_main", 0, mutation_at)
             preceding_loop = publisher.rfind("for attempt in 0 1 2; do", 0, mutation_at)
-            self.assertGreater(preceding_guard, preceding_loop)
-            self.assertLess(preceding_guard, mutation_at)
+            current_main_guard = publisher.rfind("verify_current_main", 0, mutation_at)
+            base_snapshot_guard = publisher.rfind(
+                "verify_base_snapshot_current", 0, mutation_at
+            )
+            self.assertGreater(current_main_guard, preceding_loop)
+            self.assertGreater(base_snapshot_guard, current_main_guard)
+            self.assertLess(base_snapshot_guard, mutation_at)
 
     def test_publisher_rejects_main_advance_after_generation_without_mutation(
         self,
@@ -285,8 +341,12 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
                       manifest_path="$RUNNER_TEMP/payload.manifest.json"
                       : > "$archive_path"
                       : > "$manifest_path"
-                      printf '{"dataset_id":"%s","archive_path":"%s","manifest_path":"%s","archive_sha256":"%s"}\\n' \
-                        "$DATASET_ID" "$archive_path" "$manifest_path" "$ARCHIVE_SHA256"
+                      printf '{"dataset_id":"%s","archive_path":"%s","manifest_path":"%s","archive_sha256":"%s","manifest_sha256":"%s"}\\n' \
+                        "$DATASET_ID" "$archive_path" "$manifest_path" \
+                        "$ARCHIVE_SHA256" "$MANIFEST_SHA256"
+                    elif [ "$1" = scripts/data_snapshot.py ] && [ "$2" = resolve ]; then
+                      printf '{"release_tag":"%s","repository":"%s","dataset_id":"%s","archive_sha256":"%s","manifest_sha256":"%s","command":"resolve","ok":true}\\n' \
+                        "$BASE_RELEASE_TAG" "$DATA_REPOSITORY" "$BASE_DATASET_ID" "$BASE_ARCHIVE_SHA256" "$BASE_MANIFEST_SHA256"
                     elif [ "$1" = scripts/build_pages_artifact.py ]; then
                       printf '{"tree_sha256":"%s"}\\n' "$PUBLIC_TREE_SHA256"
                     elif [ "$1" = scripts/github_cli_retry.py ]; then
@@ -323,8 +383,12 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
                 "GITHUB_OUTPUT": str(output_path),
                 "DATASET_ID": dataset_id,
                 "ARCHIVE_SHA256": archive_sha256,
+                "MANIFEST_SHA256": "6" * 64,
                 "PUBLIC_TREE_SHA256": public_tree_sha256,
                 "BASE_DATASET_ID": "0" * 64,
+                "BASE_RELEASE_TAG": "dataset-base",
+                "BASE_ARCHIVE_SHA256": "4" * 64,
+                "BASE_MANIFEST_SHA256": "5" * 64,
                 "BASE_PUBLIC_TREE_SHA256": public_tree_sha256,
                 "REQUIRE_PUBLIC_TREE_UNCHANGED": "true",
                 "DATA_REPOSITORY": "example/private-data",
