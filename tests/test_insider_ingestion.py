@@ -673,7 +673,7 @@ class InsiderIndexMetadataTests(unittest.TestCase):
             b'000000000126000001/xslF345X05/form4-synthetic.xml">'
             b"form4-synthetic.html</a></td><td>4</td><td>&nbsp;</td></tr>"
         )
-        for description in (b"4", b"PRIMARY DOCUMENT"):
+        for description in (b"4", b"FORM 4", b"PRIMARY DOCUMENT"):
             with self.subTest(description=description):
                 rendered = rendered_template.replace(b"{description}", description)
                 html = FIXTURE.read_bytes().replace(header, header + rendered, 1)
