@@ -1,0 +1,390 @@
+name: Approve ServiceNow Private Insider Publication Policy
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact current public main SHA
+        required: true
+        type: string
+      private_release_id:
+        description: Exact positive newest private GitHub Release ID
+        required: true
+        type: string
+      private_release_identity_sha256:
+        description: Canonical immutable private release identity SHA-256
+        required: true
+        type: string
+      dataset_id:
+        description: Exact private dataset SHA-256
+        required: true
+        type: string
+      archive_sha256:
+        description: Exact private archive SHA-256
+        required: true
+        type: string
+      manifest_sha256:
+        description: Exact private manifest SHA-256
+        required: true
+        type: string
+      current_policy_sha256:
+        description: Exact current publication policy SHA-256
+        required: true
+        type: string
+      issuer_generation_digest:
+        description: Exact ServiceNow issuer generation SHA-256
+        required: true
+        type: string
+      candidate_policy_sha256:
+        description: Exact reviewed candidate policy SHA-256
+        required: true
+        type: string
+      confirmation:
+        description: Type APPROVE_SERVICENOW_PUBLIC_INSIDER_POLICY exactly
+        required: true
+        type: string
+
+concurrency:
+  group: data-maintenance
+  cancel-in-progress: false
+
+env:
+  DATA_REPOSITORY: wesley-yon/super-investor-seeker-data
+  SERVICENOW_CIK: '0001373715'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      source_sha: ${{ steps.private_release.outputs.source_sha }}
+      private_release_id: ${{ steps.private_release.outputs.private_release_id }}
+      private_release_identity_sha256: ${{ steps.private_release.outputs.private_release_identity_sha256 }}
+      dataset_id: ${{ steps.private_release.outputs.dataset_id }}
+      archive_sha256: ${{ steps.private_release.outputs.archive_sha256 }}
+      manifest_sha256: ${{ steps.private_release.outputs.manifest_sha256 }}
+    steps:
+      - name: Validate exact publication request
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PRIVATE_RELEASE_ID: ${{ inputs.private_release_id }}
+          PRIVATE_RELEASE_IDENTITY_SHA256: ${{ inputs.private_release_identity_sha256 }}
+          DATASET_ID: ${{ inputs.dataset_id }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          CURRENT_POLICY_SHA256: ${{ inputs.current_policy_sha256 }}
+          ISSUER_GENERATION_DIGEST: ${{ inputs.issuer_generation_digest }}
+          CANDIDATE_POLICY_SHA256: ${{ inputs.candidate_policy_sha256 }}
+          REQUESTED_EVENT: ${{ github.event_name }}
+          REQUESTED_REPOSITORY: ${{ github.repository }}
+          REQUESTED_REF: ${{ github.ref }}
+          REQUESTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$REQUESTED_EVENT" != "workflow_dispatch" ] ||
+             [ "$REQUESTED_REPOSITORY" != "wesley-yon/super-investor-seeker" ] ||
+             [ "$REQUESTED_REF" != "refs/heads/main" ] ||
+             [ "$CONFIRMATION" != "APPROVE_SERVICENOW_PUBLIC_INSIDER_POLICY" ] ||
+             [ "$SOURCE_SHA" != "$REQUESTED_SHA" ] ||
+             [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ ! "$PRIVATE_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Publication-policy request is invalid"
+            exit 1
+          fi
+          for digest in "$PRIVATE_RELEASE_IDENTITY_SHA256" "$DATASET_ID" "$ARCHIVE_SHA256" "$MANIFEST_SHA256" "$CURRENT_POLICY_SHA256" "$ISSUER_GENERATION_DIGEST" "$CANDIDATE_POLICY_SHA256"; do
+            if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Publication-policy digest is invalid"
+              exit 1
+            fi
+          done
+          remote_main=$(git ls-remote https://github.com/wesley-yon/super-investor-seeker.git refs/heads/main)
+          if [ "$(printf '%s\n' "$remote_main" | wc -l | tr -d ' ')" != 1 ] ||
+             [ "${remote_main%%$'\t'*}" != "$SOURCE_SHA" ]; then
+            echo "::error::Public main is not the reviewed source SHA"
+            exit 1
+          fi
+
+      - name: Checkout exact reviewed source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 10
+          persist-credentials: false
+
+      - name: Verify exact public checkout and credential removal
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          ! git config --local --get-regexp '^http\..*\.extraheader$'
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+
+      - name: Install locked dependencies
+        run: pip install --require-hashes -r requirements.lock
+
+      - name: Authenticate to the private data repository
+        id: data-read-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Resolve exact newest immutable private release
+        id: private_release
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-read-token.outputs.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PRIVATE_RELEASE_ID: ${{ inputs.private_release_id }}
+          PRIVATE_RELEASE_IDENTITY_SHA256: ${{ inputs.private_release_identity_sha256 }}
+          DATASET_ID: ${{ inputs.dataset_id }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          release_json=$(python scripts/data_snapshot.py resolve --repository "$DATA_REPOSITORY" --release-id "$PRIVATE_RELEASE_ID")
+          echo "$release_json" | jq -e . >/dev/null
+          test "$(jq -er '.release_id | tostring' <<<"$release_json")" = "$PRIVATE_RELEASE_ID"
+          test "$(jq -er '.release_identity_sha256' <<<"$release_json")" = "$PRIVATE_RELEASE_IDENTITY_SHA256"
+          test "$(jq -er '.dataset_id' <<<"$release_json")" = "$DATASET_ID"
+          test "$(jq -er '.archive_sha256' <<<"$release_json")" = "$ARCHIVE_SHA256"
+          test "$(jq -er '.manifest_sha256' <<<"$release_json")" = "$MANIFEST_SHA256"
+          printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          printf 'private_release_id=%s\n' "$PRIVATE_RELEASE_ID" >> "$GITHUB_OUTPUT"
+          printf 'private_release_identity_sha256=%s\n' "$PRIVATE_RELEASE_IDENTITY_SHA256" >> "$GITHUB_OUTPUT"
+          printf 'dataset_id=%s\n' "$DATASET_ID" >> "$GITHUB_OUTPUT"
+          printf 'archive_sha256=%s\n' "$ARCHIVE_SHA256" >> "$GITHUB_OUTPUT"
+          printf 'manifest_sha256=%s\n' "$MANIFEST_SHA256" >> "$GITHUB_OUTPUT"
+
+  approve-private-publication-policy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: insider-publication-approval
+    concurrency:
+      group: private-release-publication
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Validate exact publication request after approval boundary
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REQUESTED_REPOSITORY: ${{ github.repository }}
+          REQUESTED_REF: ${{ github.ref }}
+          REQUESTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_REPOSITORY" = "wesley-yon/super-investor-seeker"
+          test "$REQUESTED_REF" = "refs/heads/main"
+          test "$REQUESTED_SHA" = "$SOURCE_SHA"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Checkout exact reviewed source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 10
+          persist-credentials: false
+
+      - name: Revalidate current main before private restore
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          ! git config --local --get-regexp '^http\..*\.extraheader$'
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+
+      - name: Install locked dependencies
+        run: pip install --require-hashes -r requirements.lock
+
+      - name: Authenticate to the private data repository
+        id: data-read-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Restore exact immutable private snapshot
+        id: restore_snapshot
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-read-token.outputs.token }}
+          PRIVATE_RELEASE_ID: ${{ inputs.private_release_id }}
+          PRIVATE_RELEASE_IDENTITY_SHA256: ${{ inputs.private_release_identity_sha256 }}
+          DATASET_ID: ${{ inputs.dataset_id }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          restore_json=$(python scripts/data_snapshot.py pull --repository "$DATA_REPOSITORY" --release-id "$PRIVATE_RELEASE_ID" --root "$GITHUB_WORKSPACE" --replace)
+          echo "$restore_json" | jq -e . >/dev/null
+          test "$(jq -er '.release_id | tostring' <<<"$restore_json")" = "$PRIVATE_RELEASE_ID"
+          test "$(jq -er '.release_identity_sha256' <<<"$restore_json")" = "$PRIVATE_RELEASE_IDENTITY_SHA256"
+          test "$(jq -er '.dataset_id' <<<"$restore_json")" = "$DATASET_ID"
+          test "$(jq -er '.archive_sha256' <<<"$restore_json")" = "$ARCHIVE_SHA256"
+          test "$(jq -er '.manifest_sha256' <<<"$restore_json")" = "$MANIFEST_SHA256"
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$restore_json" | grep -E '^(release_id|release_tag|release_identity_sha256|dataset_id|archive_sha256|manifest_sha256)=' >> "$GITHUB_OUTPUT"
+
+      - name: Capture private-only public artifact baseline
+        id: public_baseline
+        run: |
+          set -euo pipefail
+          baseline_dir=$(mktemp -d "$RUNNER_TEMP/public-baseline.XXXXXX")
+          trap 'rm -rf "$baseline_dir"' EXIT
+          baseline_json=$(python scripts/build_pages_artifact.py --source-root "$GITHUB_WORKSPACE" --output "$baseline_dir" --source-sha 0000000000000000000000000000000000000000 --dataset-id 0000000000000000000000000000000000000000000000000000000000000000 --workers 1)
+          tree_sha256=$(jq -er '.tree_sha256' <<<"$baseline_json")
+          [[ "$tree_sha256" =~ ^[0-9a-f]{64}$ ]]
+          printf 'tree_sha256=%s\n' "$tree_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Validate restored policy transition origin
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          from insider_storage import (
+              InsiderStateStore,
+              canonical_insider_state_json_bytes,
+          )
+          store = InsiderStateStore(Path.cwd())
+          cik = "0001373715"
+          approved = store.read_canonical("approved-issuers-v1")
+          issuer = store.read_canonical(f"issuers/{cik}")
+          policy = store.read_canonical("publication-policy-v1")
+          if cik not in approved["issuer_ciks"]:
+              raise SystemExit("ServiceNow is not approved for private ingestion")
+          if not issuer["accessions"] or issuer["unresolved_ambiguities"]:
+              raise SystemExit("ServiceNow issuer state is not publication-ready")
+          if issuer["generation_digest"] != os.environ["ISSUER_GENERATION_DIGEST"]:
+              raise SystemExit("ServiceNow issuer generation changed")
+          current_policy_sha256 = hashlib.sha256(
+              canonical_insider_state_json_bytes(policy)
+          ).hexdigest()
+          if current_policy_sha256 != os.environ["CURRENT_POLICY_SHA256"]:
+              raise SystemExit("Publication policy changed")
+          PY
+        env:
+          ISSUER_GENERATION_DIGEST: ${{ inputs.issuer_generation_digest }}
+          CURRENT_POLICY_SHA256: ${{ inputs.current_policy_sha256 }}
+
+      - name: Revalidate immutable private release before candidate use
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-read-token.outputs.token }}
+          PRIVATE_RELEASE_ID: ${{ inputs.private_release_id }}
+          PRIVATE_RELEASE_IDENTITY_SHA256: ${{ inputs.private_release_identity_sha256 }}
+          DATASET_ID: ${{ inputs.dataset_id }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          release_json=$(python scripts/data_snapshot.py resolve --repository "$DATA_REPOSITORY" --release-id "$PRIVATE_RELEASE_ID")
+          test "$(jq -er '.release_identity_sha256' <<<"$release_json")" = "$PRIVATE_RELEASE_IDENTITY_SHA256"
+          test "$(jq -er '.dataset_id' <<<"$release_json")" = "$DATASET_ID"
+          test "$(jq -er '.archive_sha256' <<<"$release_json")" = "$ARCHIVE_SHA256"
+          test "$(jq -er '.manifest_sha256' <<<"$release_json")" = "$MANIFEST_SHA256"
+
+      - name: Approve exact protected ServiceNow candidate
+        id: approve_policy
+        env:
+          SERVICENOW_INSIDER_PUBLICATION_POLICY_JSON: ${{ secrets.SERVICENOW_INSIDER_PUBLICATION_POLICY_JSON }}
+          CURRENT_POLICY_SHA256: ${{ inputs.current_policy_sha256 }}
+          ISSUER_GENERATION_DIGEST: ${{ inputs.issuer_generation_digest }}
+          CANDIDATE_POLICY_SHA256: ${{ inputs.candidate_policy_sha256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          candidate_file=$(mktemp "$RUNNER_TEMP/servicenow-policy.XXXXXX")
+          trap 'rm -f "$candidate_file"' EXIT
+          printf '%s' "$SERVICENOW_INSIDER_PUBLICATION_POLICY_JSON" > "$candidate_file"
+          test "$(sha256sum "$candidate_file" | cut -d ' ' -f 1)" = "$CANDIDATE_POLICY_SHA256"
+          approval_json=$(python scripts/approve_insider_publication_policy.py --repository-root "$GITHUB_WORKSPACE" --candidate-policy "$candidate_file" --expected-current-policy-sha256 "$CURRENT_POLICY_SHA256" --expected-issuer-generation-digest "$ISSUER_GENERATION_DIGEST" --expected-candidate-policy-sha256 "$CANDIDATE_POLICY_SHA256")
+          echo "$approval_json" | jq -e '.changed | type == "boolean"' >/dev/null
+          printf 'changed=%s\n' "$(jq -er '.changed | tostring' <<<"$approval_json")" >> "$GITHUB_OUTPUT"
+
+      - name: Verify public artifact remains unchanged
+        env:
+          EXPECTED_PUBLIC_TREE_SHA256: ${{ steps.public_baseline.outputs.tree_sha256 }}
+        run: |
+          set -euo pipefail
+          current_dir=$(mktemp -d "$RUNNER_TEMP/public-current.XXXXXX")
+          trap 'rm -rf "$current_dir"' EXIT
+          current_json=$(python scripts/build_pages_artifact.py --source-root "$GITHUB_WORKSPACE" --output "$current_dir" --source-sha 0000000000000000000000000000000000000000 --dataset-id 0000000000000000000000000000000000000000000000000000000000000000 --workers 1)
+          test "$(jq -er '.tree_sha256' <<<"$current_json")" = "$EXPECTED_PUBLIC_TREE_SHA256" || { echo "::error::Public artifact changed during private publication-policy approval"; exit 1; }
+
+      - name: Validate generated data
+        run: python validate_data.py
+
+      - name: Run focused publication-policy regression tests
+        run: python -m unittest -v tests.test_approve_insider_publication_policy tests.test_servicenow_publication_policy_workflow
+
+      - name: Run full Python regression suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Test compressed site loader
+        run: node --test tests/test_site_data_loader.mjs
+
+      - name: Refresh private write credential after all gates
+        if: steps.approve_policy.outputs.changed == 'true'
+        id: data-write-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: wesley-yon
+          repositories: super-investor-seeker-data
+          permission-contents: write
+
+      - name: Publish guarded private-only policy snapshot
+        if: steps.approve_policy.outputs.changed == 'true'
+        id: publish_snapshot
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-write-token.outputs.token }}
+          GH_TOKEN: ${{ steps.data-write-token.outputs.token }}
+          BASE_RELEASE_ID: ${{ steps.restore_snapshot.outputs.release_id }}
+          BASE_RELEASE_IDENTITY_SHA256: ${{ steps.restore_snapshot.outputs.release_identity_sha256 }}
+          BASE_RELEASE_TAG: ${{ steps.restore_snapshot.outputs.release_tag }}
+          BASE_DATASET_ID: ${{ steps.restore_snapshot.outputs.dataset_id }}
+          BASE_ARCHIVE_SHA256: ${{ steps.restore_snapshot.outputs.archive_sha256 }}
+          BASE_MANIFEST_SHA256: ${{ steps.restore_snapshot.outputs.manifest_sha256 }}
+          BASE_PUBLIC_TREE_SHA256: ${{ steps.public_baseline.outputs.tree_sha256 }}
+          REQUIRE_PUBLIC_TREE_UNCHANGED: 'true'
+        run: bash scripts/publish_private_snapshot.sh
+
+      - name: Verify idempotent policy approval skips private write capability
+        if: steps.approve_policy.outputs.changed == 'false'
+        env:
+          WRITE_TOKEN_STEP_OUTCOME: ${{ steps.data-write-token.outcome }}
+          PUBLISH_STEP_OUTCOME: ${{ steps.publish_snapshot.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$WRITE_TOKEN_STEP_OUTCOME" != "skipped" ] || [ "$PUBLISH_STEP_OUTCOME" != "skipped" ]; then
+            echo "::error::Idempotent publication-policy approval attempted a private mutation"
+            exit 1
+          fi

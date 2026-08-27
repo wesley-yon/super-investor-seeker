@@ -14,6 +14,7 @@ MAINTENANCE_WORKFLOWS = (
 )
 PRIVATE_STATE_WORKFLOWS = (
     ".github/workflows/approve-servicenow-insider-ingestion.yml",
+    ".github/workflows/approve-servicenow-insider-publication.yml",
     ".github/workflows/initialize-empty-private-insider-authority.yml",
 )
 PUBLISHING_WORKFLOWS = MAINTENANCE_WORKFLOWS + PRIVATE_STATE_WORKFLOWS
@@ -1310,7 +1311,10 @@ mapfile() {
         self.assertIn("verify_base_snapshot_current() {", publisher)
         self.assertIn("python scripts/data_snapshot.py resolve", publisher)
         self.assertIn(
-            'if [ "$current_base_release_tag" != "$BASE_RELEASE_TAG" ]; then', publisher
+            'if [ "$current_base_release_id" != "$BASE_RELEASE_ID" ] ||', publisher
+        )
+        self.assertIn(
+            '[ "$current_base_release_identity_sha256" != "$BASE_RELEASE_IDENTITY_SHA256" ] ||', publisher
         )
         self.assertIn(
             'if [ "$current_base_dataset_id" != "$BASE_DATASET_ID" ] ||', publisher
@@ -1330,6 +1334,14 @@ mapfile() {
                 publish = workflow.split(
                     "run: bash scripts/publish_private_snapshot.sh", 1
                 )[0]
+                self.assertIn(
+                    "BASE_RELEASE_ID: ${{ steps.restore_snapshot.outputs.release_id }}",
+                    publish,
+                )
+                self.assertIn(
+                    "BASE_RELEASE_IDENTITY_SHA256: ${{ steps.restore_snapshot.outputs.release_identity_sha256 }}",
+                    publish,
+                )
                 self.assertIn(
                     "BASE_RELEASE_TAG: ${{ steps.restore_snapshot.outputs.release_tag }}",
                     publish,
@@ -1512,6 +1524,8 @@ mapfile() {
                 current_json = json.dumps(
                     {
                         **current,
+                        "release_id": 123,
+                        "release_identity_sha256": "4" * 64,
                         "release_tag": "dataset-base",
                         "repository": "owner/private-data",
                     },
@@ -1521,6 +1535,8 @@ mapfile() {
                     (
                         "set -euo pipefail",
                         'DATA_REPOSITORY="owner/private-data"',
+                        'BASE_RELEASE_ID="123"',
+                        'BASE_RELEASE_IDENTITY_SHA256="4444444444444444444444444444444444444444444444444444444444444444"',
                         'BASE_RELEASE_TAG="dataset-base"',
                         f'BASE_DATASET_ID="{expected["dataset_id"]}"',
                         f'BASE_ARCHIVE_SHA256="{expected["archive_sha256"]}"',

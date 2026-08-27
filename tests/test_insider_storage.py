@@ -26,6 +26,7 @@ from insider_pipeline import (
 from insider_storage import (
     ImmutableInsiderStorageConflict,
     InsiderApprovalScopeError,
+    InsiderStateRevisionError,
     InsiderStateStore,
     InsiderStorage,
     InsiderStorageError,
@@ -37,6 +38,14 @@ from security_identity import section16_owner_group_key, section16_security_clas
 
 
 ACCESSION = "0000000001-26-000001"
+SERVICENOW_CIK = "0001373715"
+SERVICENOW_ACCESSION = "0001373715-26-000001"
+SERVICENOW_CLASS_TITLE = "COMMON STOCK"
+SERVICENOW_CLASS_KEY = section16_security_class_key(
+    SERVICENOW_CIK,
+    SERVICENOW_CLASS_TITLE,
+    is_derivative=False,
+)
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "insider_filings"
 ORACLE = json.loads((FIXTURE_ROOT / "expectations.json").read_text())
 SIMPLE_CASE = ORACLE["filings"]["form4_simple_purchase"]
@@ -207,6 +216,57 @@ def with_valid_issuer_generation_digest(
     assert isinstance(accessions, list) and isinstance(amendments, list)
     result["generation_digest"] = issuer_generation_digest(accessions, amendments)
     return result
+
+
+def servicenow_issuer_state_payload() -> dict[str, object]:
+    accessions: list[dict[str, object]] = [
+        {
+            "accession_number": SERVICENOW_ACCESSION,
+            "parser_version": "test-v1",
+            "normalized_sha256": hashlib.sha256(
+                b"canonical ServiceNow policy approval fixture"
+            ).hexdigest(),
+        }
+    ]
+    return {
+        "contract_version": 1,
+        "issuer_cik": SERVICENOW_CIK,
+        "accessions": accessions,
+        "owner_groups": [],
+        "security_classes": [
+            {
+                "security_class_key": SERVICENOW_CLASS_KEY,
+                "derivative": False,
+                "title": SERVICENOW_CLASS_TITLE,
+            }
+        ],
+        "amendments": [],
+        "unresolved_ambiguities": [],
+        "generation_digest": issuer_generation_digest(accessions, []),
+    }
+
+
+def servicenow_publication_policy_candidate() -> dict[str, object]:
+    return {
+        "contract_version": 1,
+        "issuers": [
+            {
+                "issuer_cik": SERVICENOW_CIK,
+                "security_mappings": {
+                    SERVICENOW_CLASS_KEY: {
+                        "stockId": "81762P102",
+                        "fileStem": "81762P102",
+                        "ticker": "NOW",
+                        "companyName": "Synthetic ServiceNow",
+                        "securityType": "Common Stock",
+                        "securityTypeLabel": SERVICENOW_CLASS_TITLE,
+                        "cusip": "81762P102",
+                        "primary": True,
+                    }
+                },
+            }
+        ],
+    }
 
 
 def telemetry_example(
@@ -423,6 +483,63 @@ def _state_update_worker(
         result_queue.put("ok")
     except BaseException as error:
         result_queue.put(f"{type(error).__name__}:{error}")
+    finally:
+        done_event.set()
+
+
+def _publication_policy_cas_worker(
+    repository_root: str,
+    expected_policy_sha256: str,
+    attempted_event: Any,
+    done_event: Any,
+    result_queue: Any,
+) -> None:
+    import insider_storage as storage_module
+
+    store = storage_module.InsiderStateStore(Path(repository_root))
+    foreign_policy = {
+        "contract_version": 1,
+        "issuers": [
+            {
+                "issuer_cik": "0001652044",
+                "security_mappings": {
+                    "f" * 64: {
+                        "stockId": "02079K305",
+                        "fileStem": "02079K305",
+                        "ticker": "OTHER",
+                        "companyName": "Synthetic Other",
+                        "securityType": "Common Stock",
+                        "securityTypeLabel": "COMMON STOCK",
+                        "cusip": "02079K305",
+                        "primary": True,
+                    }
+                },
+            }
+        ],
+    }
+    original_lock = storage_module._exclusive_directory_lock
+
+    @contextmanager
+    def signal_before_flock(directory_descriptor: int) -> Any:
+        attempted_event.set()
+        with original_lock(directory_descriptor):
+            yield
+
+    try:
+        with patch.object(
+            storage_module,
+            "_exclusive_directory_lock",
+            side_effect=signal_before_flock,
+        ):
+            store.write(
+                "publication-policy-v1",
+                foreign_policy,
+                expected_sha256=expected_policy_sha256,
+            )
+    except BaseException as error:
+        result_queue.put((type(error).__name__, str(error)))
+    else:
+        result_queue.put(("ok", ""))
     finally:
         done_event.set()
 
@@ -2514,6 +2631,960 @@ class InsiderPrivateStateTests(unittest.TestCase):
                 )
             self.assertEqual(changed, state.read(key))
 
+    def test_publication_policy_approval_transitions_empty_to_exact_candidate_under_one_lock(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state = InsiderStateStore(root)
+            state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            empty_policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+
+            stored = state.approve_publication_policy_for_approved_issuer(
+                SERVICENOW_CIK,
+                candidate,
+                expected_current_policy_sha256=empty_policy.sha256,
+                expected_issuer_generation_digest=generation_digest,
+                expected_candidate_policy_sha256=candidate_sha256,
+            )
+
+            self.assertTrue(stored.created)
+            self.assertEqual(candidate_sha256, stored.sha256)
+            self.assertEqual(candidate, state.read("publication-policy-v1"))
+
+    def test_publication_policy_approval_rejects_stale_policy_sha_without_mutation(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state = InsiderStateStore(root)
+            approval = state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            issuer = state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            before = {
+                artifact.path: artifact.path.read_bytes()
+                for artifact in (approval, issuer, policy)
+            }
+
+            with self.assertRaises(InsiderStateRevisionError):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256="0" * 64,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+
+            for path, rendered in before.items():
+                self.assertEqual(rendered, path.read_bytes())
+
+    def test_publication_policy_approval_rejects_stale_issuer_generation_without_mutation(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state = InsiderStateStore(root)
+            approval = state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            issuer = state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            before = {
+                artifact.path: artifact.path.read_bytes()
+                for artifact in (approval, issuer, policy)
+            }
+
+            with self.assertRaises(InsiderStateRevisionError):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=policy.sha256,
+                    expected_issuer_generation_digest="0" * 64,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+
+            for path, rendered in before.items():
+                self.assertEqual(rendered, path.read_bytes())
+
+    def test_publication_policy_approval_exact_candidate_is_noop_only_at_current_revision(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state = InsiderStateStore(root)
+            state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            empty_policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            changed = state.approve_publication_policy_for_approved_issuer(
+                SERVICENOW_CIK,
+                candidate,
+                expected_current_policy_sha256=empty_policy.sha256,
+                expected_issuer_generation_digest=generation_digest,
+                expected_candidate_policy_sha256=candidate_sha256,
+            )
+            rendered = changed.path.read_bytes()
+
+            no_op = state.approve_publication_policy_for_approved_issuer(
+                SERVICENOW_CIK,
+                candidate,
+                expected_current_policy_sha256=candidate_sha256,
+                expected_issuer_generation_digest=generation_digest,
+                expected_candidate_policy_sha256=candidate_sha256,
+            )
+
+            self.assertFalse(no_op.created)
+            self.assertEqual(candidate_sha256, no_op.sha256)
+            self.assertEqual(rendered, no_op.path.read_bytes())
+            with self.assertRaises(InsiderStateRevisionError):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=empty_policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+            self.assertEqual(rendered, no_op.path.read_bytes())
+
+    def test_publication_policy_approval_rejects_unapproved_missing_or_malformed_state(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = InsiderStateStore(Path(tmpdir))
+            with self.assertRaises(FileNotFoundError):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256="0" * 64,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = InsiderStateStore(Path(tmpdir))
+            state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": []},
+            )
+            policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            rendered = policy.path.read_bytes()
+            with self.assertRaises(InsiderApprovalScopeError):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+            self.assertEqual(rendered, policy.path.read_bytes())
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = InsiderStateStore(Path(tmpdir))
+            state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            rendered = policy.path.read_bytes()
+            with self.assertRaises(FileNotFoundError):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+            self.assertEqual(rendered, policy.path.read_bytes())
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = InsiderStateStore(Path(tmpdir))
+            state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            issuer = state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            rendered = policy.path.read_bytes()
+            issuer.path.write_bytes(b"{}\n")
+            with self.assertRaises(InsiderStorageError):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+            self.assertEqual(rendered, policy.path.read_bytes())
+
+    def test_publication_policy_approval_requires_nonempty_unambiguous_exact_class_set(
+        self,
+    ) -> None:
+        base_issuer = servicenow_issuer_state_payload()
+        base_candidate = servicenow_publication_policy_candidate()
+        second_title = "RESTRICTED STOCK"
+        second_key = section16_security_class_key(
+            SERVICENOW_CIK,
+            second_title,
+            is_derivative=False,
+        )
+        second_class = {
+            "security_class_key": second_key,
+            "derivative": False,
+            "title": second_title,
+        }
+        two_class_issuer = dict(base_issuer)
+        base_classes = base_issuer["security_classes"]
+        assert isinstance(base_classes, list)
+        two_class_issuer["security_classes"] = sorted(
+            [*base_classes, second_class],
+            key=lambda item: item["security_class_key"],
+        )
+
+        extra_candidate = json.loads(json.dumps(base_candidate))
+        extra_issuers = extra_candidate["issuers"]
+        assert isinstance(extra_issuers, list) and len(extra_issuers) == 1
+        extra_row = extra_issuers[0]
+        assert isinstance(extra_row, dict)
+        extra_mappings = extra_row["security_mappings"]
+        assert isinstance(extra_mappings, dict)
+        extra_mappings[second_key] = {
+            "stockId": "02079K305",
+            "fileStem": "02079K305",
+            "ticker": "OTHER",
+            "companyName": "Synthetic Other",
+            "securityType": "Common Stock",
+            "securityTypeLabel": second_title,
+            "cusip": "02079K305",
+            "primary": False,
+        }
+        extra_row["security_mappings"] = dict(sorted(extra_mappings.items()))
+
+        empty_issuer = dict(base_issuer)
+        empty_issuer["accessions"] = []
+        empty_issuer["amendments"] = []
+        empty_issuer["unresolved_ambiguities"] = []
+        empty_issuer["generation_digest"] = issuer_generation_digest([], [])
+
+        accession_two = "0001373715-26-000002"
+        accession_three = "0001373715-26-000003"
+        ambiguous_accessions: list[dict[str, object]] = [
+            {
+                "accession_number": accession,
+                "parser_version": "test-v1",
+                "normalized_sha256": hashlib.sha256(accession.encode()).hexdigest(),
+            }
+            for accession in (SERVICENOW_ACCESSION, accession_two, accession_three)
+        ]
+        ambiguous_amendments = [
+            {
+                "accession_number": accession_three,
+                "amends_accession": None,
+                "confidence": "unresolved",
+                "reason_code": "ambiguous_candidates",
+                "candidates": [SERVICENOW_ACCESSION, accession_two],
+            }
+        ]
+        ambiguous_issuer = dict(base_issuer)
+        ambiguous_issuer["accessions"] = ambiguous_accessions
+        ambiguous_issuer["amendments"] = ambiguous_amendments
+        ambiguous_issuer["unresolved_ambiguities"] = [
+            {
+                "accession_number": accession_three,
+                "reason_code": "ambiguous_candidates",
+                "candidates": [SERVICENOW_ACCESSION, accession_two],
+            }
+        ]
+        ambiguous_issuer["generation_digest"] = issuer_generation_digest(
+            ambiguous_accessions,
+            ambiguous_amendments,
+        )
+
+        foreign_candidate = json.loads(json.dumps(base_candidate))
+        foreign_issuers = foreign_candidate["issuers"]
+        assert isinstance(foreign_issuers, list) and len(foreign_issuers) == 1
+        foreign_row = foreign_issuers[0]
+        assert isinstance(foreign_row, dict)
+        foreign_row["issuer_cik"] = "0001652044"
+        empty_class_issuer = dict(base_issuer)
+        empty_class_issuer["security_classes"] = []
+        empty_mapping_candidate = {
+            "contract_version": 1,
+            "issuers": [
+                {
+                    "issuer_cik": SERVICENOW_CIK,
+                    "security_mappings": {},
+                }
+            ],
+        }
+
+        cases = (
+            (
+                "empty accessions",
+                empty_issuer,
+                base_candidate,
+                InsiderApprovalScopeError,
+            ),
+            (
+                "empty security classes",
+                empty_class_issuer,
+                empty_mapping_candidate,
+                InsiderStorageError,
+            ),
+            (
+                "unresolved ambiguity",
+                ambiguous_issuer,
+                base_candidate,
+                InsiderApprovalScopeError,
+            ),
+            (
+                "missing class mapping",
+                two_class_issuer,
+                base_candidate,
+                InsiderApprovalScopeError,
+            ),
+            (
+                "extra class mapping",
+                base_issuer,
+                extra_candidate,
+                InsiderApprovalScopeError,
+            ),
+            (
+                "foreign candidate issuer",
+                base_issuer,
+                foreign_candidate,
+                InsiderApprovalScopeError,
+            ),
+        )
+        for label, issuer_state, candidate, expected_error in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmpdir:
+                state = InsiderStateStore(Path(tmpdir))
+                state.write(
+                    "approved-issuers-v1",
+                    {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+                )
+                state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+                policy = state.write(
+                    "publication-policy-v1",
+                    {"contract_version": 1, "issuers": []},
+                )
+                rendered = policy.path.read_bytes()
+                generation_digest = issuer_state["generation_digest"]
+                assert isinstance(generation_digest, str)
+                candidate_sha256 = hashlib.sha256(
+                    canonical_insider_state_json_bytes(candidate)
+                ).hexdigest()
+
+                with self.assertRaises(expected_error):
+                    state.approve_publication_policy_for_approved_issuer(
+                        SERVICENOW_CIK,
+                        candidate,
+                        expected_current_policy_sha256=policy.sha256,
+                        expected_issuer_generation_digest=generation_digest,
+                        expected_candidate_policy_sha256=candidate_sha256,
+                    )
+                self.assertEqual(rendered, policy.path.read_bytes())
+
+    def test_publication_policy_approval_serializes_approval_revocation_after_gates(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            approver = InsiderStateStore(root)
+            contender = InsiderStateStore(root)
+            approver.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            approver.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            empty_policy = approver.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            approval_paused = threading.Event()
+            release_approval = threading.Event()
+            revocation_attempted = threading.Event()
+            original_compare = approver._compare_and_write_locked
+            original_open = contender._open_state_directory
+
+            def pause_after_gates(
+                descriptor: int,
+                target_name: str,
+                target: Path,
+                kind: str,
+                identifier: str | None,
+                validated: dict[str, object],
+                rendered: bytes,
+                expected_sha256: str | None,
+            ) -> StoredArtifact:
+                approval_paused.set()
+                if not release_approval.wait(timeout=5):
+                    raise AssertionError("approval test release timed out")
+                return original_compare(
+                    descriptor,
+                    target_name,
+                    target,
+                    kind,
+                    identifier,
+                    validated,
+                    rendered,
+                    expected_sha256,
+                )
+
+            @contextmanager
+            def signal_revocation_attempt(*, create: bool) -> Any:
+                revocation_attempted.set()
+                with original_open(create=create) as opened:
+                    yield opened
+
+            with (
+                patch.object(
+                    approver,
+                    "_compare_and_write_locked",
+                    side_effect=pause_after_gates,
+                ),
+                patch.object(
+                    contender,
+                    "_open_state_directory",
+                    side_effect=signal_revocation_attempt,
+                ),
+                ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                approval = executor.submit(
+                    approver.approve_publication_policy_for_approved_issuer,
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=empty_policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+                self.assertTrue(approval_paused.wait(timeout=5))
+                revocation = executor.submit(
+                    contender.update,
+                    "approved-issuers-v1",
+                    lambda current: {**current, "issuer_ciks": []},
+                )
+                self.assertTrue(revocation_attempted.wait(timeout=5))
+                self.assertFalse(revocation.done())
+                release_approval.set()
+                approved = approval.result(timeout=5)
+                revoked = revocation.result(timeout=5)
+
+            assert isinstance(approved, StoredArtifact)
+            self.assertTrue(approved.created)
+            self.assertEqual(
+                {"contract_version": 1, "issuer_ciks": []},
+                revoked,
+            )
+            self.assertEqual(candidate, approver.read("publication-policy-v1"))
+            self.assertEqual(
+                {"contract_version": 1, "issuer_ciks": []},
+                approver.read("approved-issuers-v1"),
+            )
+
+    def test_publication_policy_approval_serializes_issuer_generation_replacement_after_gates(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        changed_issuer = json.loads(json.dumps(issuer_state))
+        changed_accessions = changed_issuer["accessions"]
+        assert isinstance(changed_accessions, list)
+        changed_accessions.append(
+            {
+                "accession_number": "0001373715-26-000002",
+                "parser_version": "test-v1",
+                "normalized_sha256": hashlib.sha256(
+                    b"changed ServiceNow generation"
+                ).hexdigest(),
+            }
+        )
+        changed_classes = changed_issuer["security_classes"]
+        assert isinstance(changed_classes, list)
+        changed_title = "RESTRICTED STOCK"
+        changed_classes.append(
+            {
+                "security_class_key": section16_security_class_key(
+                    SERVICENOW_CIK,
+                    changed_title,
+                    is_derivative=False,
+                ),
+                "derivative": False,
+                "title": changed_title,
+            }
+        )
+        changed_issuer["security_classes"] = sorted(
+            changed_classes,
+            key=lambda item: item["security_class_key"],
+        )
+        changed_issuer = with_valid_issuer_generation_digest(changed_issuer)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            approver = InsiderStateStore(root)
+            contender = InsiderStateStore(root)
+            approver.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            issuer = approver.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            empty_policy = approver.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            approval_paused = threading.Event()
+            release_approval = threading.Event()
+            replacement_attempted = threading.Event()
+            original_compare = approver._compare_and_write_locked
+            original_open = contender._open_state_directory
+
+            def pause_after_gates(
+                descriptor: int,
+                target_name: str,
+                target: Path,
+                kind: str,
+                identifier: str | None,
+                validated: dict[str, object],
+                rendered: bytes,
+                expected_sha256: str | None,
+            ) -> StoredArtifact:
+                approval_paused.set()
+                if not release_approval.wait(timeout=5):
+                    raise AssertionError("approval test release timed out")
+                return original_compare(
+                    descriptor,
+                    target_name,
+                    target,
+                    kind,
+                    identifier,
+                    validated,
+                    rendered,
+                    expected_sha256,
+                )
+
+            @contextmanager
+            def signal_replacement_attempt(*, create: bool) -> Any:
+                replacement_attempted.set()
+                with original_open(create=create) as opened:
+                    yield opened
+
+            with (
+                patch.object(
+                    approver,
+                    "_compare_and_write_locked",
+                    side_effect=pause_after_gates,
+                ),
+                patch.object(
+                    contender,
+                    "_open_state_directory",
+                    side_effect=signal_replacement_attempt,
+                ),
+                ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                approval = executor.submit(
+                    approver.approve_publication_policy_for_approved_issuer,
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=empty_policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+                self.assertTrue(approval_paused.wait(timeout=5))
+                replacement = executor.submit(
+                    contender.write_issuer_if_approved,
+                    SERVICENOW_CIK,
+                    changed_issuer,
+                    expected_sha256=issuer.sha256,
+                )
+                self.assertTrue(replacement_attempted.wait(timeout=5))
+                self.assertFalse(replacement.done())
+                release_approval.set()
+                approved = approval.result(timeout=5)
+                replaced = replacement.result(timeout=5)
+
+            assert isinstance(approved, StoredArtifact)
+            assert isinstance(replaced, StoredArtifact)
+            self.assertTrue(approved.created)
+            self.assertTrue(replaced.created)
+            self.assertEqual(candidate, approver.read("publication-policy-v1"))
+            self.assertEqual(
+                changed_issuer,
+                approver.read(f"issuers/{SERVICENOW_CIK}"),
+            )
+
+    def test_publication_policy_approval_serializes_foreign_process_cas_and_preserves_candidate(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            approver = InsiderStateStore(root)
+            approver.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            approver.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            empty_policy = approver.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            approval_paused = threading.Event()
+            release_approval = threading.Event()
+            original_compare = approver._compare_and_write_locked
+
+            def pause_after_gates(
+                descriptor: int,
+                target_name: str,
+                target: Path,
+                kind: str,
+                identifier: str | None,
+                validated: dict[str, object],
+                rendered: bytes,
+                expected_sha256: str | None,
+            ) -> StoredArtifact:
+                approval_paused.set()
+                if not release_approval.wait(timeout=10):
+                    raise AssertionError("approval test release timed out")
+                return original_compare(
+                    descriptor,
+                    target_name,
+                    target,
+                    kind,
+                    identifier,
+                    validated,
+                    rendered,
+                    expected_sha256,
+                )
+
+            context = multiprocessing.get_context("spawn")
+            attempted = context.Event()
+            done = context.Event()
+            result_queue = context.Queue()
+            contender = context.Process(
+                target=_publication_policy_cas_worker,
+                args=(
+                    os.fspath(root),
+                    empty_policy.sha256,
+                    attempted,
+                    done,
+                    result_queue,
+                ),
+            )
+            with (
+                patch.object(
+                    approver,
+                    "_compare_and_write_locked",
+                    side_effect=pause_after_gates,
+                ),
+                ThreadPoolExecutor(max_workers=1) as executor,
+            ):
+                approval = executor.submit(
+                    approver.approve_publication_policy_for_approved_issuer,
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=empty_policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+                self.assertTrue(approval_paused.wait(timeout=10))
+                contender.start()
+                try:
+                    self.assertTrue(attempted.wait(timeout=10))
+                    self.assertFalse(done.is_set())
+                    release_approval.set()
+                    approved = approval.result(timeout=10)
+                    contender.join(timeout=10)
+                    self.assertFalse(contender.is_alive())
+                    self.assertEqual(0, contender.exitcode)
+                    result = result_queue.get(timeout=5)
+                finally:
+                    release_approval.set()
+                    if contender.is_alive():
+                        contender.kill()
+                        contender.join(timeout=5)
+
+            assert isinstance(approved, StoredArtifact)
+            self.assertTrue(approved.created)
+            self.assertEqual("InsiderStateRevisionError", result[0])
+            self.assertEqual(candidate, approver.read("publication-policy-v1"))
+
+    def test_publication_policy_approval_keyboard_interrupt_before_write_preserves_original_and_releases_lock(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = InsiderStateStore(Path(tmpdir))
+            state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            empty_policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            rendered = empty_policy.path.read_bytes()
+
+            with (
+                patch.object(
+                    state,
+                    "_compare_and_write_locked",
+                    side_effect=KeyboardInterrupt(),
+                ),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=empty_policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+
+            self.assertEqual(rendered, empty_policy.path.read_bytes())
+            stored = state.approve_publication_policy_for_approved_issuer(
+                SERVICENOW_CIK,
+                candidate,
+                expected_current_policy_sha256=empty_policy.sha256,
+                expected_issuer_generation_digest=generation_digest,
+                expected_candidate_policy_sha256=candidate_sha256,
+            )
+            self.assertTrue(stored.created)
+            self.assertEqual(candidate_sha256, stored.sha256)
+
+    def test_publication_policy_approval_post_commit_interruption_requires_reconciliation(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = InsiderStateStore(Path(tmpdir))
+            state.write(
+                "approved-issuers-v1",
+                {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+            )
+            state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+            empty_policy = state.write(
+                "publication-policy-v1",
+                {"contract_version": 1, "issuers": []},
+            )
+            original_write = state._write_locked
+
+            def interrupt_after_commit(
+                descriptor: int,
+                target_name: str,
+                target: Path,
+                kind: str,
+                identifier: str | None,
+                payload: object,
+            ) -> StoredArtifact:
+                original_write(
+                    descriptor,
+                    target_name,
+                    target,
+                    kind,
+                    identifier,
+                    payload,
+                )
+                raise KeyboardInterrupt()
+
+            with (
+                patch.object(
+                    state,
+                    "_write_locked",
+                    side_effect=interrupt_after_commit,
+                ),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=empty_policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+
+            rendered = empty_policy.path.read_bytes()
+            self.assertEqual(candidate, state.read("publication-policy-v1"))
+            with self.assertRaises(InsiderStateRevisionError):
+                state.approve_publication_policy_for_approved_issuer(
+                    SERVICENOW_CIK,
+                    candidate,
+                    expected_current_policy_sha256=empty_policy.sha256,
+                    expected_issuer_generation_digest=generation_digest,
+                    expected_candidate_policy_sha256=candidate_sha256,
+                )
+            reconciled = state.approve_publication_policy_for_approved_issuer(
+                SERVICENOW_CIK,
+                candidate,
+                expected_current_policy_sha256=candidate_sha256,
+                expected_issuer_generation_digest=generation_digest,
+                expected_candidate_policy_sha256=candidate_sha256,
+            )
+            self.assertFalse(reconciled.created)
+            self.assertEqual(candidate_sha256, reconciled.sha256)
+            self.assertEqual(rendered, reconciled.path.read_bytes())
+
+    def test_publication_policy_approval_rejects_foreign_partial_or_nonempty_policy(
+        self,
+    ) -> None:
+        issuer_state = servicenow_issuer_state_payload()
+        generation_digest = issuer_state["generation_digest"]
+        assert isinstance(generation_digest, str)
+        candidate = servicenow_publication_policy_candidate()
+        candidate_sha256 = hashlib.sha256(
+            canonical_insider_state_json_bytes(candidate)
+        ).hexdigest()
+        other_mapping = {
+            "stockId": "02079K305",
+            "fileStem": "02079K305",
+            "ticker": "OTHER",
+            "companyName": "Synthetic Other",
+            "securityType": "Common Stock",
+            "securityTypeLabel": "COMMON STOCK",
+            "cusip": "02079K305",
+            "primary": True,
+        }
+        foreign_row = {
+            "issuer_cik": "0001652044",
+            "security_mappings": {"f" * 64: other_mapping},
+        }
+        different_servicenow = {
+            "issuer_cik": SERVICENOW_CIK,
+            "security_mappings": {SERVICENOW_CLASS_KEY: other_mapping},
+        }
+        candidate_issuers = candidate["issuers"]
+        assert isinstance(candidate_issuers, list)
+        assert len(candidate_issuers) == 1
+        candidate_row = candidate_issuers[0]
+        assert isinstance(candidate_row, dict)
+        current_policies = (
+            {"contract_version": 1, "issuers": [foreign_row]},
+            {"contract_version": 1, "issuers": [different_servicenow]},
+            {
+                "contract_version": 1,
+                "issuers": [candidate_row, foreign_row],
+            },
+        )
+
+        for current_policy in current_policies:
+            with self.subTest(current_policy=current_policy), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                state = InsiderStateStore(root)
+                state.write(
+                    "approved-issuers-v1",
+                    {"contract_version": 1, "issuer_ciks": [SERVICENOW_CIK]},
+                )
+                state.write_issuer_if_approved(SERVICENOW_CIK, issuer_state)
+                current = state.write("publication-policy-v1", current_policy)
+                rendered = current.path.read_bytes()
+
+                with self.assertRaises(InsiderApprovalScopeError):
+                    state.approve_publication_policy_for_approved_issuer(
+                        SERVICENOW_CIK,
+                        candidate,
+                        expected_current_policy_sha256=current.sha256,
+                        expected_issuer_generation_digest=generation_digest,
+                        expected_candidate_policy_sha256=candidate_sha256,
+                    )
+
+                self.assertEqual(rendered, current.path.read_bytes())
+
     def test_backfill_state_write_and_update_require_current_durable_approval(
         self,
     ) -> None:
@@ -3924,6 +4995,8 @@ class InsiderPrivateStateTests(unittest.TestCase):
             issuer_path.write_bytes(canonical_insider_state_json_bytes(legacy))
             issuer_path.chmod(0o600)
 
+            with self.assertRaisesRegex(InsiderStorageError, "schema keys"):
+                state.read_canonical("issuers/0000000001")
             self.assertEqual(canonical, state.read("issuers/0000000001"))
             self.assertEqual(
                 (

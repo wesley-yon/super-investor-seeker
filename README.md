@@ -97,8 +97,9 @@ publish a replacement snapshot only when content changes, and deploy that
 exact dataset to Pages. Critical schedules run away from the top of the hour;
 a twice-monthly empty commit on the dedicated `automation-keepalive` branch
 keeps GitHub from disabling inactive public-repository schedules without
-changing `main` or triggering deployments. The latest two validated snapshots
-are retained for rollback.
+changing `main` or triggering deployments. Validated private releases, drafts,
+and dataset tags are preserved for explicit manual reconciliation; automatic
+release/tag retention cleanup is disabled.
 
 Section 16 maintenance and public materialization have separate opt-in
 boundaries. Scheduled insider ingestion is disabled unless its dedicated
@@ -120,14 +121,23 @@ state, but the public materializer still rejects it because there is no reviewed
 issuer corpus to publish.
 
 The fixed-scope `.github/workflows/approve-servicenow-insider-ingestion.yml`
-is the sole hosted approval path for ServiceNow issuer CIK `0001373715`. It
-requires an exact private dataset ID and explicit confirmation, then invokes
-`scripts/approve_insider_issuer.py` through a compare-and-swap update and
-publishes a validated private-only snapshot. The workflow keeps
+is the sole hosted private-ingestion approval path for ServiceNow issuer CIK
+`0001373715`. It requires an exact private dataset ID and explicit confirmation,
+then invokes `scripts/approve_insider_issuer.py` through a compare-and-swap
+update and publishes a validated private-only snapshot. The workflow keeps
 `publication-policy-v1` unchanged, verifies that the public artifact is
 unchanged, and has no Pages deployment or public-materialization step. This
 approval permits only a later bounded private ingestion run; it does not make
 ServiceNow data public.
+
+Publication authority is separate: the fixed-scope
+`.github/workflows/approve-servicenow-insider-publication.yml` approves only an
+exact reviewed mapping candidate through the protected
+`insider-publication-approval` Environment. It is private-only and cannot fetch
+SEC data, materialize public payloads, or deploy Pages. The later public
+materialization gate remains manual and default-off; follow the
+[ServiceNow insider launch runbook](docs/servicenow-insider-launch.md) for the
+required authorization, identity binding, and recovery sequence.
 
 Incremental v1 checkpoints carry their durable issuer scope only in queued
 accessions. A completed empty incremental checkpoint remains a valid ingestion

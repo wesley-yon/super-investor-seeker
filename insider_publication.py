@@ -644,6 +644,22 @@ def _validate_security_metadata(value: object) -> dict[str, object]:
     }
 
 
+def validate_public_security_metadata(value: object) -> dict[str, object]:
+    """Validate and return one exact public security-metadata record."""
+
+    metadata = _validate_security_metadata(value)
+    return {
+        "stockId": metadata["id"],
+        "fileStem": metadata["fileStem"],
+        "ticker": metadata["ticker"],
+        "companyName": metadata["companyName"],
+        "securityType": metadata["securityType"],
+        "securityTypeLabel": metadata["securityTypeLabel"],
+        "cusip": metadata["cusip"],
+        "primary": metadata["primary"],
+    }
+
+
 def _validate_security_mappings(
     mappings: object,
     state: dict[str, object],
@@ -6126,5 +6142,6 @@ __all__ = [
     "read_validated_insider_public_snapshot_fd",
     "validate_insider_public_tree",
     "validate_optional_insider_public_tree",
+    "validate_public_security_metadata",
     "write_insider_publication",
 ]

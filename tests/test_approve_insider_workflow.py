@@ -57,6 +57,14 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
         self.assertIn("permission-contents: write", workflow)
         self.assertIn("BASE_PUBLIC_TREE_SHA256:", workflow)
         self.assertIn(
+            "BASE_RELEASE_ID: ${{ steps.restore_snapshot.outputs.release_id }}",
+            workflow,
+        )
+        self.assertIn(
+            "BASE_RELEASE_IDENTITY_SHA256: ${{ steps.restore_snapshot.outputs.release_identity_sha256 }}",
+            workflow,
+        )
+        self.assertIn(
             "BASE_RELEASE_TAG: ${{ steps.restore_snapshot.outputs.release_tag }}",
             workflow,
         )
@@ -345,8 +353,8 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
                         "$DATASET_ID" "$archive_path" "$manifest_path" \
                         "$ARCHIVE_SHA256" "$MANIFEST_SHA256"
                     elif [ "$1" = scripts/data_snapshot.py ] && [ "$2" = resolve ]; then
-                      printf '{"release_tag":"%s","repository":"%s","dataset_id":"%s","archive_sha256":"%s","manifest_sha256":"%s","command":"resolve","ok":true}\\n' \
-                        "$BASE_RELEASE_TAG" "$DATA_REPOSITORY" "$BASE_DATASET_ID" "$BASE_ARCHIVE_SHA256" "$BASE_MANIFEST_SHA256"
+                      printf '{"release_id":%s,"release_identity_sha256":"%s","release_tag":"%s","repository":"%s","dataset_id":"%s","archive_sha256":"%s","manifest_sha256":"%s","command":"resolve","ok":true}\\n' \
+                        "$BASE_RELEASE_ID" "$BASE_RELEASE_IDENTITY_SHA256" "$BASE_RELEASE_TAG" "$DATA_REPOSITORY" "$BASE_DATASET_ID" "$BASE_ARCHIVE_SHA256" "$BASE_MANIFEST_SHA256"
                     elif [ "$1" = scripts/build_pages_artifact.py ]; then
                       printf '{"tree_sha256":"%s"}\\n' "$PUBLIC_TREE_SHA256"
                     elif [ "$1" = scripts/github_cli_retry.py ]; then
@@ -386,6 +394,8 @@ class ServiceNowApprovalWorkflowTests(unittest.TestCase):
                 "MANIFEST_SHA256": "6" * 64,
                 "PUBLIC_TREE_SHA256": public_tree_sha256,
                 "BASE_DATASET_ID": "0" * 64,
+                "BASE_RELEASE_ID": "123",
+                "BASE_RELEASE_IDENTITY_SHA256": "7" * 64,
                 "BASE_RELEASE_TAG": "dataset-base",
                 "BASE_ARCHIVE_SHA256": "4" * 64,
                 "BASE_MANIFEST_SHA256": "5" * 64,

@@ -2043,6 +2043,20 @@ def _validate_issuer(payload: object, issuer_cik: str) -> dict[str, object]:
     return result
 
 
+def validate_issuer_state_payload(payload: object) -> dict[str, object]:
+    """Validate one complete canonical issuer-state payload without I/O."""
+
+    if type(payload) is not dict or type(payload.get("issuer_cik")) is not str:
+        raise _state_error("issuer CIK")
+    return _validate_issuer(payload, payload["issuer_cik"])
+
+
+def validate_publication_policy_payload(payload: object) -> dict[str, object]:
+    """Validate one complete publication-policy payload without I/O."""
+
+    return _validate_publication_policy(payload)
+
+
 def _validate_quarantine(payload: object, *, accession: str | None, quarter: str | None) -> dict[str, object]:
     required = {
         "contract_version", "stage", "error_class", "reason_code", "retry_count",
@@ -2369,7 +2383,13 @@ class InsiderStateStore:
                 os.close(descriptor)
 
     def _read_locked(
-        self, descriptor: int, target_name: str, kind: str, identifier: str | None
+        self,
+        descriptor: int,
+        target_name: str,
+        kind: str,
+        identifier: str | None,
+        *,
+        allow_legacy_issuer: bool = True,
     ) -> dict[str, object]:
         try:
             rendered = _read_regular_file(
@@ -2378,7 +2398,7 @@ class InsiderStateStore:
             parsed = _strict_json_bytes(rendered)
             candidate = (
                 _migrate_legacy_issuer_state(parsed)
-                if kind == "issuer"
+                if kind == "issuer" and allow_legacy_issuer
                 else parsed
             )
             validated = _validate_state_payload(kind, identifier, candidate)
@@ -2561,6 +2581,145 @@ class InsiderStateStore:
             finally:
                 if parent_descriptor != descriptor:
                     os.close(parent_descriptor)
+
+    def approve_publication_policy_for_approved_issuer(
+        self,
+        issuer_cik: str,
+        candidate_policy: object,
+        *,
+        expected_current_policy_sha256: str,
+        expected_issuer_generation_digest: str,
+        expected_candidate_policy_sha256: str,
+    ) -> StoredArtifact:
+        """Approve one exact single-issuer policy under one state-root lock."""
+
+        for digest, label in (
+            (expected_current_policy_sha256, "expected policy SHA-256"),
+            (expected_issuer_generation_digest, "expected issuer generation digest"),
+            (expected_candidate_policy_sha256, "expected candidate policy SHA-256"),
+        ):
+            if type(digest) is not str or not _SHA256_RE.fullmatch(digest):
+                raise _state_error(label)
+        issuer = _state_cik(issuer_cik, "issuer CIK")
+        validated = _validate_state_payload(
+            "publication_policy",
+            None,
+            candidate_policy,
+        )
+        rendered = canonical_insider_state_json_bytes(validated)
+        if len(rendered) > MAX_INSIDER_STATE_BYTES:
+            raise _state_error("size limit")
+        candidate_sha256 = hashlib.sha256(rendered).hexdigest()
+        if candidate_sha256 != expected_candidate_policy_sha256:
+            raise InsiderStateRevisionError("private state revision is stale")
+
+        issuer_rows = validated["issuers"]
+        if not isinstance(issuer_rows, list) or len(issuer_rows) != 1:
+            raise InsiderApprovalScopeError(
+                "publication policy is outside the approved issuer scope"
+            )
+        candidate_issuer = issuer_rows[0]
+        assert isinstance(candidate_issuer, dict)
+        if candidate_issuer["issuer_cik"] != issuer:
+            raise InsiderApprovalScopeError(
+                "publication policy is outside the approved issuer scope"
+            )
+        candidate_mappings = candidate_issuer["security_mappings"]
+        assert isinstance(candidate_mappings, dict)
+
+        with self._open_state_directory(create=False) as (descriptor, root):
+            approved = self._read_locked(
+                descriptor,
+                "approved-issuers-v1.json",
+                "approved",
+                None,
+            )
+            approved_values = approved["issuer_ciks"]
+            assert isinstance(approved_values, list)
+            if issuer not in approved_values:
+                raise InsiderApprovalScopeError(
+                    "publication policy is outside the approved issuer scope"
+                )
+
+            issuer_descriptor = -1
+            try:
+                issuer_descriptor, _ = _open_child_directory(
+                    descriptor,
+                    "issuers",
+                    create=False,
+                    restricted=True,
+                )
+                issuer_state = self._read_locked(
+                    issuer_descriptor,
+                    f"{issuer}.json",
+                    "issuer",
+                    issuer,
+                    allow_legacy_issuer=False,
+                )
+            finally:
+                if issuer_descriptor >= 0:
+                    os.close(issuer_descriptor)
+
+            if (
+                issuer_state["generation_digest"]
+                != expected_issuer_generation_digest
+            ):
+                raise InsiderStateRevisionError("private state revision is stale")
+            accessions = issuer_state["accessions"]
+            ambiguities = issuer_state["unresolved_ambiguities"]
+            security_classes = issuer_state["security_classes"]
+            assert isinstance(accessions, list)
+            assert isinstance(ambiguities, list)
+            assert isinstance(security_classes, list)
+            if not accessions or ambiguities:
+                raise InsiderApprovalScopeError(
+                    "publication policy is outside the approved issuer scope"
+                )
+            current_class_keys = {
+                security_class["security_class_key"]
+                for security_class in security_classes
+                if isinstance(security_class, dict)
+            }
+            if set(candidate_mappings) != current_class_keys:
+                raise InsiderApprovalScopeError(
+                    "publication policy is outside the approved issuer scope"
+                )
+
+            current = self._read_locked(
+                descriptor,
+                "publication-policy-v1.json",
+                "publication_policy",
+                None,
+            )
+            current_bytes = canonical_insider_state_json_bytes(current)
+            current_sha256 = hashlib.sha256(current_bytes).hexdigest()
+            if current_sha256 != expected_current_policy_sha256:
+                raise InsiderStateRevisionError("private state revision is stale")
+            target = root / "publication-policy-v1.json"
+            if current_bytes == rendered:
+                return StoredArtifact(
+                    path=target,
+                    sha256=current_sha256,
+                    byte_count=len(current_bytes),
+                    created=False,
+                )
+            empty_policy_bytes = canonical_insider_state_json_bytes(
+                {"contract_version": PUBLICATION_POLICY_STATE_CONTRACT_VERSION, "issuers": []}
+            )
+            if current_bytes != empty_policy_bytes:
+                raise InsiderApprovalScopeError(
+                    "publication policy transition is outside the approved scope"
+                )
+            return self._compare_and_write_locked(
+                descriptor,
+                "publication-policy-v1.json",
+                target,
+                "publication_policy",
+                None,
+                validated,
+                rendered,
+                expected_current_policy_sha256,
+            )
 
     def publish_if_issuer_approved(
         self,
@@ -3054,6 +3213,31 @@ class InsiderStateStore:
                 if parent_descriptor != descriptor:
                     os.close(parent_descriptor)
 
+    def read_canonical(self, key: str) -> dict[str, object]:
+        """Read exact canonical on-disk state without compatibility migration."""
+
+        parts, kind, identifier = _state_key_details(key)
+        with self._open_state_directory(create=False) as (descriptor, _):
+            parent_descriptor = descriptor
+            try:
+                for part in parts[:-1]:
+                    child, _ = _open_child_directory(
+                        parent_descriptor, part, create=False, restricted=True
+                    )
+                    if parent_descriptor != descriptor:
+                        os.close(parent_descriptor)
+                    parent_descriptor = child
+                return self._read_locked(
+                    parent_descriptor,
+                    parts[-1],
+                    kind,
+                    identifier,
+                    allow_legacy_issuer=False,
+                )
+            finally:
+                if parent_descriptor != descriptor:
+                    os.close(parent_descriptor)
+
     def update(
         self, key: str, transform: Callable[[dict[str, object]], object]
     ) -> dict[str, object]:
@@ -3119,4 +3303,6 @@ __all__ = [
     "canonical_insider_state_json_bytes",
     "issuer_generation_digest",
     "validate_incremental_state_payload",
+    "validate_issuer_state_payload",
+    "validate_publication_policy_payload",
 ]
