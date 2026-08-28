@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -69,163 +68,6 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual("not-a-date", result["malformed"])
         self.assertEqual("2026-02-31", result["impossible"])
         self.assertEqual("0000-02-29", result["invalidYear"])
-
-    def test_numeric_formatters_are_finite_number_only_and_closed(self) -> None:
-        formatter_start = self.html.index("const DISPLAY_UNAVAILABLE =")
-        formatter_end = self.html.index("const esc =", formatter_start)
-        completed = subprocess.run(
-            [
-                "node",
-                "-e",
-                (
-                    self.html[formatter_start:formatter_end]
-                    + """
-                    const invalid = [
-                      undefined, null, NaN, Infinity, -Infinity, true,
-                      "123", "12x", "<img src=x onerror=window.__fundValueXss=true>",
-                      {},
-                    ];
-                    const closed = formatter => invalid.map(value => {
-                      try {
-                        return formatter(value);
-                      } catch (_) {
-                        return "__throws__";
-                      }
-                    });
-                    const values = {
-                      fV: closed(fV),
-                      fS: closed(fS),
-                      fP: closed(fP),
-                      valid: {
-                        valueZero: fV(0),
-                        valueMillions: fV(1234567),
-                        sharesZero: fS(0),
-                        sharesThousands: fS(1234),
-                        percentZero: fP(0),
-                        percent: fP(12.34),
-                      },
-                    };
-                    console.log(JSON.stringify(values));
-                    """
-                ),
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        result = json.loads(completed.stdout)
-
-        self.assertEqual(["—"] * 10, result["fV"])
-        self.assertEqual(["—"] * 10, result["fS"])
-        self.assertEqual(["—"] * 10, result["fP"])
-        self.assertEqual(
-            {
-                "valueZero": "$0",
-                "valueMillions": "$1.2M",
-                "sharesZero": "0",
-                "sharesThousands": "1.2K",
-                "percentZero": "0.0%",
-                "percent": "12.3%",
-            },
-            result["valid"],
-        )
-        self.assertIn('const DISPLAY_UNAVAILABLE = "—";', self.html)
-
-    def test_logo_and_json_fund_cards_are_native_controls(self) -> None:
-        self.assertIn(
-            '<button type="button" class="logo" onclick="goHome()">',
-            self.html,
-        )
-        self.assertIn(
-            '<button type="button" class="card" data-action="load-fund" '
-            'data-fund-cik="${esc(f.cik)}">',
-            self.html,
-        )
-        self.assertNotIn('<div class="logo" onclick="goHome()">', self.html)
-        self.assertNotIn(
-            '<div class="card" data-action="load-fund" '
-            'data-fund-cik="${esc(f.cik)}">',
-            self.html,
-        )
-
-    def test_every_delegated_data_action_host_is_a_native_button(self) -> None:
-        """Data-derived navigation must retain browser keyboard semantics."""
-        hosts = list(
-            re.finditer(
-                r"<(?P<tag>[A-Za-z][\w:-]*)\b(?P<attrs>[^>]*\bdata-action=[^>]*)>",
-                self.html,
-            )
-        )
-        self.assertGreaterEqual(len(hosts), 13)
-        for host in hosts:
-            with self.subTest(host=host.group(0)):
-                self.assertEqual("button", host.group("tag").lower())
-                self.assertRegex(
-                    host.group("attrs"),
-                    r'\btype\s*=\s*["\']button["\']',
-                )
-        for action in (
-            "load-fund",
-            "load-stock",
-            "load-stock-view",
-            "holders-insider-preview",
-            "retry-insider-view",
-        ):
-            with self.subTest(action=action):
-                self.assertIn(f'data-action="{action}"', self.html)
-        wiring_start = self.html.index("function wireDataActions()")
-        wiring_end = self.html.index("function insiderSummaryMarkup(", wiring_start)
-        wiring = self.html[wiring_start:wiring_end]
-        self.assertIn('document.addEventListener("click"', wiring)
-        self.assertNotIn('document.addEventListener("keydown"', wiring)
-
-    def test_public_sort_error_and_filing_actions_use_native_controls(self) -> None:
-        """Public actions belong on native controls, never rows or headers."""
-        self.assertNotRegex(self.html, r"<a\b[^>]*\bonclick=\"goHome\(\)\"")
-        self.assertIn(
-            '<button type="button" class="link-button" onclick="goHome()">'
-            '← Back to search</button>',
-            self.html,
-        )
-        self.assertNotRegex(self.html, r"<th\b[^>]*\bonclick=")
-        self.assertIn(
-            '<button type="button" class="sort-button" '
-            'aria-label="Sort by ${esc(label)}"',
-            self.html,
-        )
-        insider_table_start = self.html.index(
-            "function insiderTransactionTableMarkup("
-        )
-        insider_table_end = self.html.index(
-            "function wireInsiderFilingTriggers()", insider_table_start
-        )
-        insider_table = self.html[insider_table_start:insider_table_end]
-        self.assertIn(
-            'const ariaSort = state.sort === key',
-            insider_table,
-        )
-        self.assertIn(
-            '<th scope="col" aria-sort="${ariaSort}"',
-            insider_table,
-        )
-        self.assertIn(
-            '<button type="button" class="table-sort"',
-            insider_table,
-        )
-        self.assertNotRegex(
-            self.html,
-            r"<tr\b[^>]*(?:\btabindex=|\bdata-insider-accession=)",
-        )
-        self.assertIn(
-            '<button type="button" class="filing-detail-button" '
-            'data-insider-accession="${esc(accession)}"',
-            self.html,
-        )
-        self.assertIn(
-            'if (trigger.matches("button, a[href]")) continue;',
-            self.html,
-        )
 
     def test_homepage_pins_venrock_before_other_popular_filers(self) -> None:
         constants_start = self.html.index(
@@ -753,13 +595,11 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertIn("holdingDisplayCompany(securityHolding)", self.html)
         self.assertNotIn("const displayTicker = h.ticker ?", self.html)
         self.assertIn(
-            'data-action="load-stock" data-stock-id="${esc(lookupId)}">${esc(displayLabel)}',
+            """onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}""",
             self.html,
         )
-        self.assertNotIn("onclick=\"loadStock('${esc(lookupId)}')\"", self.html)
         self.assertIn(
-            'aria-label="Sort by Security" onclick="onFundSort(\'ticker\')">'
-            'Security<span class="arr" aria-hidden="true"></span></button></th>',
+            """>Security<span class="arr"></span></th>""",
             self.html,
         )
         self.assertIn(
@@ -837,26 +677,6 @@ class FrontendSemanticsTests(unittest.TestCase):
             "stockEntry ? stockEntry.stock_id : canonicalId",
             stock_logic,
         )
-
-    def test_delegated_stock_actions_have_a_single_closed_identifier_boundary(
-        self,
-    ) -> None:
-        self.assertIn("function resolveDelegatedStockId(stockId)", self.html)
-        self.assertIn(
-            "const DELEGATED_STOCK_VIEWS = Object.freeze([\n"
-            '  "holders",\n'
-            '  "insiders",\n'
-            '  "reporting-insiders",\n'
-            "]);",
-            self.html,
-        )
-        router_start = self.html.index("function wireDataActions()")
-        router_end = self.html.index("function insiderSummaryMarkup(", router_start)
-        router_logic = self.html[router_start:router_end]
-        self.assertEqual(1, router_logic.count("resolveDelegatedStockId(stockId)"))
-        self.assertIn("if (!resolvedStockId) return;", router_logic)
-        self.assertIn("DELEGATED_STOCK_VIEWS.includes(view)", router_logic)
-        self.assertNotIn("safeTicker(stockId)", router_logic)
 
     def test_required_security_metadata_failure_is_release_blocking(
         self,

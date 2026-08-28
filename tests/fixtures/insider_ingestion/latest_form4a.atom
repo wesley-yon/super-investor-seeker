@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>Sanitized current Form 4/A filings</title>
-  <entry>
-    <title>4/A - Synthetic Issuer (0000000001) (Issuer)</title>
-    <updated>2026-01-16T16:40:00Z</updated>
-    <link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/1/000000000126000005/0000000001-26-000005-index.html" />
-  </entry>
-</feed>
