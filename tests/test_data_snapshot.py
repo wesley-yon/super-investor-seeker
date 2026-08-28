@@ -300,6 +300,124 @@ class DataSnapshotTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         return archive_path, manifest_path
 
+    def write_legacy_private_snapshot(self, root: Path) -> tuple[Path, Path]:
+        legacy_payload = b'{"contract_version":1,"issuer_ciks":["0001373715"]}\n'
+        members: list[tuple[tarfile.TarInfo, bytes | None]] = []
+        for name, mode in (
+            (".cache", 0o755),
+            ("data", 0o755),
+            ("data/insiders", 0o755),
+            ("data/insiders/private", 0o700),
+            ("data/insiders/private/state", 0o700),
+        ):
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.DIRTYPE
+            info.mode = mode
+            members.append((info, None))
+        for relative in data_snapshot.CACHE_FILES:
+            info = tarfile.TarInfo(relative.as_posix())
+            info.type = tarfile.REGTYPE
+            info.mode = 0o644
+            info.size = 1
+            members.append((info, b"x"))
+        legacy = tarfile.TarInfo(
+            "data/insiders/private/state/approved-issuers-v1.json"
+        )
+        legacy.type = tarfile.REGTYPE
+        legacy.mode = 0o600
+        legacy.size = len(legacy_payload)
+        members.append((legacy, legacy_payload))
+        members.sort(key=lambda item: item[0].name)
+
+        digest = hashlib.sha256()
+        file_count = 0
+        content_bytes = 0
+        for info, content in members:
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            info.mtime = 0
+            data_snapshot._digest_header(
+                digest,
+                name=info.name,
+                is_dir=info.isdir(),
+                size=info.size,
+            )
+            if content is not None:
+                digest.update(content)
+                file_count += 1
+                content_bytes += len(content)
+
+        dataset_sha = digest.hexdigest()
+        archive_name, manifest_name = data_snapshot._manifest_names(dataset_sha)
+        archive_path = root / archive_name
+        with archive_path.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as zipped:
+                with tarfile.open(
+                    fileobj=zipped,
+                    mode="w",
+                    format=tarfile.USTAR_FORMAT,
+                ) as archive:
+                    for info, content in members:
+                        archive.addfile(
+                            info,
+                            None if content is None else io.BytesIO(content),
+                        )
+
+        manifest = {
+            "archive": {
+                "bytes": archive_path.stat().st_size,
+                "filename": archive_name,
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+            },
+            "contract_version": 1,
+            "created_at": CREATED_AT,
+            "dataset": {
+                "bytes": content_bytes,
+                "file_count": file_count,
+                "sha256": dataset_sha,
+            },
+            "dataset_id": dataset_sha,
+            "source_sha": SOURCE_SHA,
+        }
+        manifest_path = root / manifest_name
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return archive_path, manifest_path
+
+    def test_verify_restores_legacy_private_modes_for_sanitation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            archive, manifest = self.write_legacy_private_snapshot(root)
+            restored = root / "restored"
+
+            data_snapshot.verify_snapshot(
+                archive_path=archive,
+                manifest_path=manifest,
+                max_archive_bytes=1_000_000,
+                extract_root=restored,
+            )
+
+            legacy = restored / "data/insiders/private/state/approved-issuers-v1.json"
+            self.assertEqual(
+                '{"contract_version":1,"issuer_ciks":["0001373715"]}\n',
+                legacy.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                0o700,
+                (restored / "data/insiders/private").stat().st_mode & 0o777,
+            )
+            self.assertEqual(0o600, legacy.stat().st_mode & 0o777)
+            repacked = self.pack(restored, root / "repacked")
+            sanitized = root / "sanitized"
+            data_snapshot.verify_snapshot(
+                archive_path=Path(repacked["archive_path"]),
+                manifest_path=Path(repacked["manifest_path"]),
+                max_archive_bytes=1_000_000,
+                extract_root=sanitized,
+            )
+            self.assertFalse((sanitized / "data/insiders").exists())
+
     def test_verify_rejects_traversal_symlink_and_unexpected_members(self) -> None:
         cases = []
         traversal = tarfile.TarInfo("data/../outside")

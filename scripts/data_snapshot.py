@@ -66,6 +66,7 @@ CACHE_FILES = (
     Path(".cache/sec_fund_names.json"),
 )
 RETIRED_DATA_SUBTREES = frozenset({Path("data/insiders")})
+RETIRED_PRIVATE_DATA_PREFIX = "data/insiders/private"
 
 
 class SnapshotError(ValueError):
@@ -244,6 +245,16 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _archive_mode(name: str, *, is_dir: bool) -> int:
+    is_retired_private_data = (
+        name == RETIRED_PRIVATE_DATA_PREFIX
+        or name.startswith(f"{RETIRED_PRIVATE_DATA_PREFIX}/")
+    )
+    if is_retired_private_data:
+        return 0o700 if is_dir else 0o600
+    return 0o755 if is_dir else 0o644
+
+
 def _tar_info(entry: SourceEntry) -> tarfile.TarInfo:
     info = tarfile.TarInfo(entry.name)
     info.uid = 0
@@ -253,11 +264,11 @@ def _tar_info(entry: SourceEntry) -> tarfile.TarInfo:
     info.mtime = 0
     if entry.is_dir:
         info.type = tarfile.DIRTYPE
-        info.mode = 0o755
+        info.mode = _archive_mode(entry.name, is_dir=True)
         info.size = 0
     else:
         info.type = tarfile.REGTYPE
-        info.mode = 0o644
+        info.mode = _archive_mode(entry.name, is_dir=False)
         info.size = entry.size
     return info
 
@@ -503,7 +514,10 @@ def _verify_archive_contents(
                     raise SnapshotError(
                         f"archive member has invalid size: {member.name}"
                     )
-                expected_mode = 0o755 if member.isdir() else 0o644
+                expected_mode = _archive_mode(
+                    member.name,
+                    is_dir=member.isdir(),
+                )
                 if (
                     member.uid != 0
                     or member.gid != 0
@@ -527,7 +541,7 @@ def _verify_archive_contents(
                     if extract_root is not None:
                         destination = extract_root.joinpath(*member.name.split("/"))
                         destination.mkdir()
-                        destination.chmod(0o755)
+                        destination.chmod(expected_mode)
                     continue
 
                 file_count += 1
@@ -554,7 +568,7 @@ def _verify_archive_contents(
                     destination = extract_root.joinpath(*member.name.split("/"))
                     with source, destination.open("xb") as output:
                         _copy_exact(source, output, digest, member.size)
-                    destination.chmod(0o644)
+                    destination.chmod(expected_mode)
                     os.utime(destination, (0, 0))
     except SnapshotError:
         raise
