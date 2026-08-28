@@ -16,28 +16,22 @@ jobs:
       ${{ github.event_name != 'pull_request' ||
           github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@v5
         with:
           # The privacy gate below audits every reachable commit, not only the
           # current code-only tree.
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
-      - name: Set up Node
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version: '22'
-          cache: npm
-
       - name: Install dependencies
-        run: pip install --require-hashes -r requirements-dev.lock
+        run: pip install -r requirements-dev.txt
 
       - name: Lint correctness hazards
         run: ruff check .
@@ -68,24 +62,6 @@ jobs:
 
       - name: Test compressed site loader
         run: node --test tests/test_site_data_loader.mjs
-
-      - name: Install pinned visual-test dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Run deterministic visual and interaction suite
-        run: npm run test:visual
-
-      - name: Upload Playwright diagnostics
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: playwright-test-results-${{ runner.os }}
-          path: test-results/playwright/
-          if-no-files-found: ignore
-          retention-days: 7
 
       - name: Run data-integrity regression tests
         run: python -m unittest discover -s tests -v

@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import subprocess
@@ -12,12 +11,6 @@ MAINTENANCE_WORKFLOWS = (
     ".github/workflows/update-data.yml",
     ".github/workflows/refresh-cusip-registry.yml",
 )
-PRIVATE_STATE_WORKFLOWS = (
-    ".github/workflows/approve-servicenow-insider-ingestion.yml",
-    ".github/workflows/approve-servicenow-insider-publication.yml",
-    ".github/workflows/initialize-empty-private-insider-authority.yml",
-)
-PUBLISHING_WORKFLOWS = MAINTENANCE_WORKFLOWS + PRIVATE_STATE_WORKFLOWS
 PUBLISHER_SCRIPT = "scripts/publish_private_snapshot.sh"
 GH_RETRY_SCRIPT = "scripts/github_cli_retry.py"
 
@@ -80,13 +73,7 @@ class WorkflowResilienceTests(unittest.TestCase):
                     'release_tag="dataset-new"',
                     'expected_latest_release_tag="dataset-old"',
                     'DATA_REPOSITORY="owner/private-data"',
-                    "owned_draft=false",
                     "sleep_before_retry() { return 0; }",
-                    "verify_current_main() { return 0; }",
-                    "verify_base_snapshot_current() { return 0; }",
-                    "verify_owned_draft_current() { return 0; }",
-                    "verify_remote_snapshot() { return 0; }",
-                    'abort_with_owned_draft_cleanup() { echo "::error::$1"; exit 1; }',
                     r"""
 gh_read_retry() {
   if [ "$1" = release ] && [ "$2" = view ]; then
@@ -164,7 +151,6 @@ gh_mutate_once() {
                     'DATA_REPOSITORY="owner/private-data"',
                     'marker_path="/tmp/pages-deployment.json"',
                     "sleep_before_retry() { return 0; }",
-                    "verify_target_snapshot_current() { return 0; }",
                     r"""
 marker_matches_remote() {
   local status
@@ -238,7 +224,6 @@ gh_mutate_once() {
                     'EXPECTED_PREVIOUS_LATEST_RELEASE_TAG="dataset-old"',
                     'DATA_REPOSITORY="owner/private-data"',
                     "sleep_before_retry() { return 0; }",
-                    "verify_target_snapshot_current() { return 0; }",
                     r"""
 gh_read_retry() {
   next_sequence_value "$LATEST_SEQUENCE" "$COUNTER_DIR/latest"
@@ -287,7 +272,7 @@ gh_mutate_once() {
             '          release_json=$(gh_read_retry api "/repos/$DATA_REPOSITORY/releases/tags/$EXPECTED_RELEASE_TAG")'
         )
         block_end = finalization.index(
-            "\n          # GitHub exposes no conditional/versioned delete", block_start
+            "\n          releases_json=$(\n", block_start
         )
         block_source = textwrap.dedent(finalization[block_start:block_end])
 
@@ -360,7 +345,6 @@ gh_mutate_once() {
 }
 wait_for_marker_match() { return 0; }
 sleep_before_retry() { return 0; }
-verify_target_snapshot_current() { return 0; }
 observe_latest_release() { return 99; }
 mapfile() {
   local value
@@ -393,6 +377,162 @@ mapfile() {
             )
             mutation_count = int(mutation_counter.read_text(encoding="utf-8").strip())
         return result, mutation_count
+
+    def _run_orphan_tag_sweep(
+        self,
+        *,
+        release_pages: str,
+        ref_pages: str,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        finalization = self._finalization_shell()
+        comment_start = finalization.index(
+            "# A prior run can be interrupted after deleting a release"
+        )
+        block_start = finalization.index("          retained_json=$(\n", comment_start)
+        block_end = finalization.index(
+            "          # Fail closed if cleanup", block_start
+        )
+        block_source = textwrap.dedent(finalization[block_start:block_end])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            deletion_log = Path(tmpdir) / "deletions"
+            deletion_log.write_text("", encoding="utf-8")
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    'DATA_REPOSITORY="owner/private-data"',
+                    'EXPECTED_RELEASE_TAG="dataset-active"',
+                    'fallback_tag="dataset-fallback"',
+                    r"""
+gh_read_retry() {
+  case "$*" in
+    *"/releases?per_page=100"*) printf '%s\n' "$RELEASE_PAGES" ;;
+    *"/git/matching-refs/tags/dataset-"*) printf '%s\n' "$REF_PAGES" ;;
+    *) return 99 ;;
+  esac
+}
+release_state() {
+  printf 'missing\n'
+}
+mapfile() {
+  if [ "${1:-}" = -t ]; then
+    shift
+  fi
+  local array_name=$1
+  local line
+  eval "$array_name=()"
+  while IFS= read -r line; do
+    eval "$array_name+=(\"\$line\")"
+  done
+}
+reconcile_tag_deletion() {
+  printf '%s\n' "$1" >> "$DELETION_LOG"
+}
+""",
+                    block_source,
+                )
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "DELETION_LOG": str(deletion_log),
+                    "REF_PAGES": ref_pages,
+                    "RELEASE_PAGES": release_pages,
+                }
+            )
+            result = subprocess.run(
+                ["bash"],
+                cwd=ROOT,
+                env=env,
+                input=script,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            deleted_tags = deletion_log.read_text(encoding="utf-8").splitlines()
+        return result, deleted_tags
+
+    def _run_release_tag_reconciliation(
+        self,
+        *,
+        tag_sequence: str,
+        mutation_sequence: str,
+    ) -> tuple[subprocess.CompletedProcess[str], int, int]:
+        finalization = self._finalization_shell()
+        function_start = finalization.index("          wait_for_release_missing() {")
+        function_end = finalization.index(
+            "          marker_matches_remote() {", function_start
+        )
+        function_source = textwrap.dedent(
+            finalization[function_start:function_end]
+        )
+        loop_start = finalization.index(
+            '          for release_tag in "${delete_tags[@]}"; do'
+        )
+        loop_end = finalization.index(
+            "\n\n          # A prior run can be interrupted", loop_start
+        )
+        loop_source = textwrap.dedent(finalization[loop_start:loop_end])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            counters = Path(tmpdir)
+            for name in ("tag", "tag_mutation", "release_mutation"):
+                (counters / name).write_text("0\n", encoding="utf-8")
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    SHELL_SEQUENCE_HELPER,
+                    "readonly TRANSIENT_MUTATION_EXIT_CODE=75",
+                    'DATA_REPOSITORY="owner/private-data"',
+                    'delete_tags=("dataset-stale")',
+                    "sleep_before_retry() { return 0; }",
+                    r"""
+release_state() {
+  printf 'missing\n'
+}
+tag_ref_state() {
+  next_sequence_value "$TAG_SEQUENCE" "$COUNTER_DIR/tag"
+}
+gh_delete_once() {
+  local count
+  count=$(<"$COUNTER_DIR/release_mutation")
+  printf '%s\n' "$((count + 1))" > "$COUNTER_DIR/release_mutation"
+  return 0
+}
+gh_mutate_once() {
+  local status
+  status=$(next_sequence_value "$MUTATION_SEQUENCE" "$COUNTER_DIR/tag_mutation")
+  return "$status"
+}
+""",
+                    function_source,
+                    loop_source,
+                )
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "COUNTER_DIR": tmpdir,
+                    "MUTATION_SEQUENCE": mutation_sequence,
+                    "TAG_SEQUENCE": tag_sequence,
+                }
+            )
+            result = subprocess.run(
+                ["bash"],
+                cwd=ROOT,
+                env=env,
+                input=script,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            release_mutation_count = int(
+                (counters / "release_mutation").read_text(encoding="utf-8").strip()
+            )
+            tag_mutation_count = int(
+                (counters / "tag_mutation").read_text(encoding="utf-8").strip()
+            )
+        return result, release_mutation_count, tag_mutation_count
 
     def test_lxml_dependency_requires_patched_release(self):
         requirement = next(
@@ -436,285 +576,6 @@ mapfile() {
         self.assertIn('mode=(--cik "$FILING_CIK")', workflow)
         self.assertIn('echo "targeted_cik=$targeted_cik" >> "$GITHUB_OUTPUT"', workflow)
         self.assertIn("steps.pipeline.outputs.targeted_cik != 'true'", workflow)
-
-    def test_manual_insider_inputs_are_explicit_and_default_off(self):
-        workflow = read(".github/workflows/update-data.yml")
-        dispatch = workflow.split("  workflow_dispatch:", 1)[1].split(
-            "\nconcurrency:", 1
-        )[0]
-
-        mode = dispatch.split("      insider_mode:", 1)[1].split(
-            "\n      insider_issuer_cik:", 1
-        )[0]
-        self.assertIn("default: 'off'", mode)
-        self.assertIn("type: choice", mode)
-        for choice in ("off", "incremental", "backfill", "reparse"):
-            self.assertIn(f"- {choice}", mode)
-
-        for field, default, input_type in (
-            ("insider_issuer_cik", "''", "string"),
-            ("insider_quarter", "''", "string"),
-            ("insider_max_accessions", "25", "number"),
-            ("insider_deadline_seconds", "600", "number"),
-        ):
-            with self.subTest(field=field):
-                field_block = dispatch.split(f"      {field}:", 1)[1]
-                self.assertIn(f"default: {default}", field_block)
-                self.assertIn(f"type: {input_type}", field_block)
-
-    def test_public_insider_materialization_is_manual_explicit_and_default_off(self):
-        workflow = read(".github/workflows/update-data.yml")
-        dispatch = workflow.split("  workflow_dispatch:", 1)[1].split(
-            "\nconcurrency:", 1
-        )[0]
-
-        publish = dispatch.split("      publish_insider_publication:", 1)[1].split(
-            "\n      insider_publication_as_of:", 1
-        )[0]
-        self.assertIn("required: false", publish)
-        self.assertIn("default: false", publish)
-        self.assertIn("type: boolean", publish)
-        for field, default in (
-            ("insider_publication_as_of", "''"),
-            ("insider_publication_latest_successful_sync_at", "'none'"),
-        ):
-            with self.subTest(field=field):
-                field_block = dispatch.split(f"      {field}:", 1)[1]
-                self.assertIn("required: false", field_block)
-                self.assertIn(f"default: {default}", field_block)
-                self.assertIn("type: string", field_block)
-
-        resolver = workflow.split(
-            "- name: Resolve bounded insider maintenance plan", 1
-        )[1].split("\n      - name:", 1)[0]
-        self.assertIn(
-            "REQUESTED_PUBLISH: ${{ inputs.publish_insider_publication || 'false' }}",
-            resolver,
-        )
-        self.assertIn(
-            "REQUESTED_PUBLICATION_AS_OF: ${{ inputs.insider_publication_as_of || '' }}",
-            resolver,
-        )
-        self.assertIn(
-            "REQUESTED_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT: ${{ inputs.insider_publication_latest_successful_sync_at || 'none' }}",
-            resolver,
-        )
-        self.assertIn("publish=false", resolver)
-        dispatch_branch = resolver.split(
-            'elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then', 1
-        )[1].split("\n          fi", 1)[0]
-        self.assertIn('publish="$REQUESTED_PUBLISH"', dispatch_branch)
-        schedule_branch = resolver.split('if [ "$EVENT_NAME" = "schedule" ]; then', 1)[
-            1
-        ].split('elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then', 1)[0]
-        self.assertNotIn("REQUESTED_PUBLISH", schedule_branch)
-        self.assertIn(
-            'if [ "$publish" = "true" ] && [ "$mode" = "off" ]; then', resolver
-        )
-        self.assertIn(
-            "Public insider publication requires a maintenance mode", resolver
-        )
-        for output in (
-            "publish",
-            "publication_as_of",
-            "publication_latest_successful_sync_at",
-        ):
-            self.assertIn(f'echo "{output}=', resolver)
-
-        materialize = workflow.split(
-            "- name: Materialize approved public insider publication", 1
-        )[1].split("\n      - name:", 1)[0]
-        self.assertIn(
-            "if: ${{ steps.insider_plan.outputs.publish == 'true' }}",
-            materialize,
-        )
-        self.assertIn("timeout-minutes: 15", materialize)
-        for environment_name in (
-            "INSIDER_MODE",
-            "INSIDER_ISSUER_CIK",
-            "INSIDER_QUARTER",
-            "INSIDER_MAX_ACCESSIONS",
-            "INSIDER_PUBLICATION_AS_OF",
-            "INSIDER_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT",
-        ):
-            self.assertIn(f"{environment_name}:", materialize)
-        self.assertIn("python scripts/publish_insider_activity.py", materialize)
-        self.assertIn('--maintenance-mode "$INSIDER_MODE"', materialize)
-        self.assertIn('--maintenance-issuer-cik "$INSIDER_ISSUER_CIK"', materialize)
-        self.assertIn(
-            '--maintenance-max-accessions "$INSIDER_MAX_ACCESSIONS"', materialize
-        )
-        self.assertIn('--as-of "$INSIDER_PUBLICATION_AS_OF"', materialize)
-        self.assertIn(
-            '--latest-successful-sync-at "$INSIDER_PUBLICATION_LATEST_SUCCESSFUL_SYNC_AT"',
-            materialize,
-        )
-        self.assertIn('--maintenance-quarter "$INSIDER_QUARTER"', materialize)
-        self.assertNotIn("SEC_USER_AGENT", materialize)
-        self.assertNotIn("OPENFIGI_API_KEY", materialize)
-
-        self.assertLess(
-            workflow.index("- name: Validate private insider checkpoint state"),
-            workflow.index("- name: Materialize approved public insider publication"),
-        )
-        self.assertLess(
-            workflow.index("- name: Materialize approved public insider publication"),
-            workflow.index("- name: Validate generated data"),
-        )
-
-    def test_insider_plan_is_bounded_and_scheduled_execution_is_opt_in(self):
-        workflow = read(".github/workflows/update-data.yml")
-        resolver = workflow.split(
-            "- name: Resolve bounded insider maintenance plan", 1
-        )[1].split("\n      - name:", 1)[0]
-
-        self.assertIn(
-            "SCHEDULED_ENABLED: ${{ vars.ENABLE_SCHEDULED_INSIDER_INGESTION }}",
-            resolver,
-        )
-        self.assertIn(
-            "SCHEDULED_ISSUER_CIK: ${{ vars.SCHEDULED_INSIDER_ISSUER_CIK }}",
-            resolver,
-        )
-        self.assertIn('[ "$EVENT_NAME" = "schedule" ]', resolver)
-        self.assertIn('[ "$SCHEDULED_ENABLED" = "true" ]', resolver)
-        self.assertNotIn('[ -n "$SCHEDULED_ENABLED" ]', resolver)
-        self.assertIn("mode=off", resolver)
-        self.assertIn("mode=incremental", resolver)
-        self.assertIn("Backfill and reparse are manual-only", resolver)
-        self.assertIn('[[ ! "$issuer_cik" =~ ^[0-9]{1,10}$ ]]', resolver)
-        self.assertIn('[[ "$issuer_cik" =~ ^0+$ ]]', resolver)
-        self.assertIn('[[ ! "$max_accessions" =~ ^[1-9][0-9]*$ ]]', resolver)
-        self.assertIn('"$max_accessions" -gt 100', resolver)
-        self.assertIn('[[ ! "$deadline_seconds" =~ ^[1-9][0-9]*$ ]]', resolver)
-        self.assertIn('"$deadline_seconds" -lt 60', resolver)
-        self.assertIn('"$deadline_seconds" -gt 840', resolver)
-        self.assertIn('[[ ! "$quarter" =~ ^[0-9]{4}Q[1-4]$ ]]', resolver)
-        self.assertIn('if [ -n "$quarter" ]; then', resolver)
-        for output in (
-            "mode",
-            "issuer_cik",
-            "quarter",
-            "max_accessions",
-            "deadline_seconds",
-        ):
-            self.assertIn(f'echo "{output}=', resolver)
-
-    def test_bounded_insider_step_is_sequential_and_checkpoint_aware(self):
-        workflow = read(".github/workflows/update-data.yml")
-        preflight = workflow.split(
-            "- name: Resolve validated insider resume state", 1
-        )[1].split("\n      - name:", 1)[0]
-        insider = workflow.split("- name: Run bounded insider maintenance", 1)[
-            1
-        ].split("- name: Validate private insider checkpoint state", 1)[0]
-        validation = workflow.split(
-            "- name: Validate private insider checkpoint state", 1
-        )[1].split("\n      - name:", 1)[0]
-
-        self.assertIn("InsiderStateStore", preflight)
-        self.assertIn("resolve_incremental_checkpoint_action", preflight)
-        self.assertIn('state_store.read("incremental-v1")', preflight)
-        self.assertIn('state_store.read(f"backfill/{quarter}")', preflight)
-        self.assertIn('state_store.read("reparse-v1")', preflight)
-        self.assertIn("INSIDER_PARSER_VERSION", preflight)
-        self.assertIn('{"running", "incomplete"}', preflight)
-        self.assertIn("existing backfill checkpoint is not resumable", preflight)
-        self.assertIn("existing reparse checkpoint is not resumable", preflight)
-        self.assertNotIn("json.load", preflight)
-        self.assertNotIn("Path.exists", preflight)
-
-        self.assertIn(
-            "if: ${{ steps.insider_plan.outputs.mode != 'off' }}",
-            insider,
-        )
-        self.assertIn("timeout-minutes: 15", insider)
-        self.assertIn("SEC_MAX_REQUESTS_PER_SECOND: '5'", insider)
-        self.assertIn("pipeline.require_declared_sec_user_agent()", insider)
-        self.assertIn("python scripts/refresh_recent_insider_filings.py", insider)
-        self.assertIn("python scripts/backfill_insider_transactions.py", insider)
-        self.assertIn("python scripts/reparse_insider_filings.py", insider)
-        self.assertIn('if [ "$INSIDER_ACTION" = "resume" ]; then', insider)
-        incremental_branch = insider.split("incremental)", 1)[1].split(";;", 1)[0]
-        self.assertIn("set +e", incremental_branch)
-        self.assertIn("incremental_status=$?", incremental_branch)
-        self.assertIn('if [ "$incremental_status" -eq 75 ]; then', incremental_branch)
-        self.assertIn('elif [ "$incremental_status" -ne 0 ]; then', incremental_branch)
-        self.assertIn('if [ "$reparse_status" -eq 75 ]; then', insider)
-        self.assertIn('elif [ "$reparse_status" -ne 0 ]; then', insider)
-        self.assertNotIn("reparse-telemetry-before.json", insider)
-        self.assertNotIn("--all", insider)
-        self.assertNotIn("--refetch", insider)
-        self.assertNotIn("continue-on-error", insider)
-        self.assertNotIn("strategy:", insider)
-        self.assertNotIn("xargs -P", insider)
-
-        self.assertIn('state_store.read("incremental-v1")', validation)
-        self.assertIn("validate_incremental_checkpoint_scope", validation)
-        incremental_validation = validation.split(
-            'if mode == "incremental":', 1
-        )[1].split('elif mode == "backfill":', 1)[0]
-        self.assertIn(
-            'expected_statuses = {"running", "incomplete"} if cooperative_checkpoint else {"completed"}',
-            incremental_validation,
-        )
-        self.assertIn(
-            'checkpoint["status"] not in expected_statuses',
-            incremental_validation,
-        )
-        self.assertIn('state_store.read(f"backfill/{quarter}")', validation)
-        self.assertIn('state_store.read("reparse-v1")', validation)
-        self.assertIn('state_store.read("telemetry-v1")', validation)
-        self.assertIn("cooperative_checkpoint", validation)
-        self.assertIn("reparse checkpoint did not validate", validation)
-
-        ordered_steps = (
-            "- name: Restore latest validated private snapshot",
-            "- name: Run pipeline",
-            "- name: Refresh recently accepted 13F filings",
-            "- name: Regenerate registry-backed site data",
-            "- name: Resolve bounded insider maintenance plan",
-            "- name: Resolve validated insider resume state",
-            "- name: Run bounded insider maintenance",
-            "- name: Validate private insider checkpoint state",
-            "- name: Materialize approved public insider publication",
-            "- name: Validate generated data",
-            "- name: Run full Python regression suite",
-            "- name: Publish validated private snapshot",
-        )
-        offsets = tuple(workflow.index(step) for step in ordered_steps)
-        self.assertEqual(tuple(sorted(offsets)), offsets)
-
-    def test_private_only_snapshot_preserves_active_pages_target(self):
-        workflow = read(".github/workflows/update-data.yml")
-        publisher = read(PUBLISHER_SCRIPT)
-
-        baseline = workflow.split(
-            "- name: Capture restored public artifact identity", 1
-        )[1].split("\n      - name:", 1)[0]
-        self.assertIn("python scripts/build_pages_artifact.py", baseline)
-        self.assertIn('echo "tree_sha256=$base_public_tree_sha256"', baseline)
-        self.assertLess(
-            workflow.index("- name: Capture restored public artifact identity"),
-            workflow.index("- name: Run pipeline"),
-        )
-        publish = workflow.split("- name: Publish validated private snapshot", 1)[
-            1
-        ].split("\n  deploy-pages:", 1)[0]
-        self.assertIn(
-            "BASE_PUBLIC_TREE_SHA256: ${{ steps.base_public.outputs.tree_sha256 }}",
-            publish,
-        )
-
-        for fragment in (
-            'if [ -n "${BASE_PUBLIC_TREE_SHA256:-}" ]; then',
-            "python scripts/build_pages_artifact.py",
-            'if [ "$current_public_tree_sha256" = "$BASE_PUBLIC_TREE_SHA256" ]; then',
-            "--latest=false",
-            'echo "site_changed=false"',
-        ):
-            self.assertIn(fragment, publisher)
-        self.assertNotIn("data/insiders", baseline)
 
     def test_keepalive_is_twice_monthly_empty_and_strictly_off_main(self):
         workflow = read(".github/workflows/keepalive.yml")
@@ -779,7 +640,7 @@ mapfile() {
         workflow = read(".github/workflows/deploy-pages.yml")
         resolve = workflow.split("  resolve:", 1)[1].split("\n  build:", 1)[0]
         target_checkouts = resolve.split(
-            "- name: Checkout trusted GitHub retry and snapshot identity helpers", 1
+            "- name: Checkout trusted GitHub retry helper", 1
         )[0]
         checkouts = re.findall(
             r"(?ms)^      - name: Checkout .*?(?=^      - name: |\Z)",
@@ -795,10 +656,7 @@ mapfile() {
                 self.assertIn("scripts/pages_deploy_needed.sh", checkout)
 
     def test_every_private_data_job_uses_the_scoped_github_app(self):
-        expected_action = (
-            "uses: actions/create-github-app-token@"
-            "bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3"
-        )
+        expected_action = "uses: actions/create-github-app-token@v3"
         expected_repository = "repositories: super-investor-seeker-data"
         for path, minimum in (
             (".github/workflows/update-data.yml", 1),
@@ -836,43 +694,6 @@ mapfile() {
                 )
                 self.assertNotIn("steps.data-app-token.outputs.token", publish)
 
-    def test_private_publisher_workflows_pin_owner_and_checkout_credentials(self):
-        workflow_paths = MAINTENANCE_WORKFLOWS + (".github/workflows/deploy-pages.yml",)
-        for path in workflow_paths:
-            with self.subTest(path=path):
-                workflow = read(path)
-                self.assertIn(
-                    "DATA_REPOSITORY: wesley-yon/super-investor-seeker-data",
-                    workflow,
-                )
-                self.assertNotIn("${{ github.repository_owner }}", workflow)
-
-                lines = workflow.splitlines()
-                checkout_count = 0
-                for index, line in enumerate(lines):
-                    if "uses: actions/checkout@" not in line:
-                        continue
-                    checkout_count += 1
-                    uses_indent = len(line) - len(line.lstrip())
-                    step_indent = uses_indent - 2
-                    block = [line]
-                    for candidate in lines[index + 1 :]:
-                        candidate_indent = len(candidate) - len(candidate.lstrip())
-                        if (
-                            candidate_indent == step_indent
-                            and candidate.lstrip().startswith("- name:")
-                        ):
-                            break
-                        if candidate.strip() and candidate_indent < step_indent:
-                            break
-                        block.append(candidate)
-                    self.assertIn(
-                        "persist-credentials: false",
-                        "\n".join(block),
-                        f"{path}:{index + 1} persists checkout credentials",
-                    )
-                self.assertGreater(checkout_count, 0)
-
     def test_maintenance_workflows_use_one_shared_snapshot_publisher(self):
         for path in MAINTENANCE_WORKFLOWS:
             with self.subTest(path=path):
@@ -899,7 +720,7 @@ mapfile() {
         resolve = workflow.split("\n  resolve:", 1)[1].split("\n  build:", 1)[0]
 
         trusted_helper_checkout = resolve.split(
-            "- name: Checkout trusted GitHub retry and snapshot identity helpers", 1
+            "- name: Checkout trusted GitHub retry helper", 1
         )[1].split("\n      - name:", 1)[0]
         self.assertIn(
             "uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0",
@@ -908,11 +729,9 @@ mapfile() {
         self.assertIn("repository: ${{ job.workflow_repository }}", trusted_helper_checkout)
         self.assertIn("ref: ${{ job.workflow_sha }}", trusted_helper_checkout)
         self.assertIn("path: .workflow-tools", trusted_helper_checkout)
-        self.assertIn("sparse-checkout: |", trusted_helper_checkout)
-        self.assertIn("scripts/data_snapshot.py", trusted_helper_checkout)
-        self.assertIn(GH_RETRY_SCRIPT, trusted_helper_checkout)
+        self.assertIn(f"sparse-checkout: {GH_RETRY_SCRIPT}", trusted_helper_checkout)
         target_checkouts = resolve.split(
-            "- name: Checkout trusted GitHub retry and snapshot identity helpers", 1
+            "- name: Checkout trusted GitHub retry helper", 1
         )[0]
         self.assertEqual(3, target_checkouts.count(f"{GH_RETRY_SCRIPT}\n"))
         self.assertIn(
@@ -1180,30 +999,65 @@ mapfile() {
         self.assertNotIn("reached-cleanup=true", result.stdout)
         self.assertEqual(0, mutation_count)
 
-    def test_pages_finalizer_never_deletes_private_releases_or_dataset_tags(self):
-        finalization = self._finalization_shell()
-
-        for forbidden in (
-            "gh_mutate_once release delete",
-            'gh_mutate_once api --method DELETE \\\n                "/repos/$DATA_REPOSITORY/releases/',
-            'gh_mutate_once api --method DELETE \\\n                "/repos/$DATA_REPOSITORY/git/refs/tags/',
-        ):
-            with self.subTest(forbidden=forbidden):
-                self.assertNotIn(forbidden, finalization)
-        self.assertIn(
-            "Automatic private snapshot retention cleanup is disabled",
-            finalization,
+    def test_orphan_sweep_recovers_crash_between_release_and_tag_deletion(self):
+        result, deleted_tags = self._run_orphan_tag_sweep(
+            release_pages=(
+                '[[{"tag_name":"dataset-active"},'
+                '{"tag_name":"dataset-fallback"}]]'
+            ),
+            ref_pages=(
+                '[[{"ref":"refs/tags/dataset-active"},'
+                '{"ref":"refs/tags/dataset-fallback"},'
+                '{"ref":"refs/tags/dataset-orphan"}]]'
+            ),
         )
 
-    def test_failed_private_publication_preserves_draft_for_manual_reconciliation(self):
-        publisher = read(PUBLISHER_SCRIPT)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(["dataset-orphan"], deleted_tags)
 
-        self.assertNotIn("cleanup_owned_draft() {", publisher)
-        self.assertNotIn('gh_mutate_once release delete "$release_tag"', publisher)
-        self.assertIn(
-            "Owned unpublished snapshot draft requires manual reconciliation",
-            publisher,
+    def test_orphan_sweep_fails_closed_if_active_release_is_missing(self):
+        result, deleted_tags = self._run_orphan_tag_sweep(
+            release_pages='[[{"tag_name":"dataset-fallback"}]]',
+            ref_pages=(
+                '[[{"ref":"refs/tags/dataset-active"},'
+                '{"ref":"refs/tags/dataset-fallback"}]]'
+            ),
         )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Refusing to delete protected snapshot tag", result.stdout)
+        self.assertEqual([], deleted_tags)
+
+    def test_orphan_sweep_fails_closed_if_fallback_release_is_missing(self):
+        result, deleted_tags = self._run_orphan_tag_sweep(
+            release_pages='[[{"tag_name":"dataset-active"}]]',
+            ref_pages=(
+                '[[{"ref":"refs/tags/dataset-active"},'
+                '{"ref":"refs/tags/dataset-fallback"}]]'
+            ),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Refusing to delete protected snapshot tag", result.stdout)
+        self.assertEqual([], deleted_tags)
+
+    def test_release_cleanup_reconciles_tag_after_release_is_already_missing(self):
+        for mutation_status in ("0", "75"):
+            with self.subTest(mutation_status=mutation_status):
+                result, release_mutations, tag_mutations = (
+                    self._run_release_tag_reconciliation(
+                        tag_sequence="present,missing",
+                        mutation_sequence=mutation_status,
+                    )
+                )
+
+                self.assertEqual(
+                    0,
+                    result.returncode,
+                    result.stdout + result.stderr,
+                )
+                self.assertEqual(0, release_mutations)
+                self.assertEqual(1, tag_mutations)
 
     def test_github_cli_retries_are_bounded_and_replay_safe(self):
         publisher = read(PUBLISHER_SCRIPT)
@@ -1220,12 +1074,12 @@ mapfile() {
                 script,
             )
             self.assertIn(f'python {GH_RETRY_SCRIPT} -- "$@"', script)
+            self.assertIn("release_state()", script)
             self.assertNotIn("gh_read_retry release create", script)
             self.assertNotIn("gh_read_retry release upload", script)
             self.assertNotIn("gh_read_retry release edit", script)
             self.assertNotIn("gh_read_retry release delete", script)
 
-        self.assertIn("release_state()", publisher)
         self.assertIn('gh_mutate_once release create "$release_tag"', publisher)
         self.assertIn("wait_for_draft_release()", publisher)
         self.assertIn('wait_for_draft_release "$release_tag"', publisher)
@@ -1245,10 +1099,11 @@ mapfile() {
             publisher,
         )
 
-        self.assertIn("sparse-checkout: |", finalization)
-        self.assertIn("scripts/data_snapshot.py", finalization)
-        self.assertIn(GH_RETRY_SCRIPT, finalization)
-        self.assertNotIn("--allow-release-not-found", finalization)
+        self.assertIn(f"sparse-checkout: {GH_RETRY_SCRIPT}", finalization)
+        self.assertIn(
+            f'python {GH_RETRY_SCRIPT} --allow-release-not-found -- "$@"',
+            finalization,
+        )
         self.assertIn("marker_matches_remote()", finalization)
         self.assertIn("wait_for_marker_match()", finalization)
         self.assertIn(
@@ -1259,13 +1114,33 @@ mapfile() {
         self.assertIn(
             'gh_mutate_once release edit "$EXPECTED_RELEASE_TAG"', finalization
         )
-        self.assertNotIn("gh_mutate_once release delete", publisher)
-        self.assertNotIn("gh_mutate_once release delete", finalization)
-        self.assertNotIn("gh_mutate_once api --method DELETE", finalization)
+        deletion = finalization.split(
+            'for release_tag in "${delete_tags[@]}"', 1
+        )[1].split("# Fail closed if cleanup", 1)[0]
+        self.assertIn('gh_delete_once release delete "$release_tag"', deletion)
+        self.assertIn('release_state "$release_tag"', deletion)
+        self.assertIn("wait_for_release_missing()", finalization)
+        self.assertIn('wait_for_release_missing "$release_tag"', deletion)
+        self.assertIn("Stale release deletion could not be reconciled", deletion)
+        self.assertIn('tag_ref_state "$tag"', finalization)
+        self.assertIn("wait_for_tag_missing()", finalization)
+        self.assertIn('wait_for_tag_missing "$tag"', finalization)
+        self.assertIn("reconcile_tag_deletion()", finalization)
+        self.assertIn('reconcile_tag_deletion "$release_tag"', deletion)
+        self.assertIn("gh_mutate_once api --method DELETE", finalization)
         self.assertIn(
-            "Automatic private snapshot retention cleanup is disabled",
+            '"/repos/$DATA_REPOSITORY/git/refs/tags/$tag"', finalization
+        )
+        self.assertIn("Stale tag deletion could not be reconciled", deletion)
+        self.assertIn(
+            '"/repos/$DATA_REPOSITORY/git/matching-refs/tags/dataset-"',
             finalization,
         )
+        self.assertIn('for orphan_tag in "${orphan_tags[@]}"', finalization)
+        self.assertIn("Refusing to delete protected snapshot tag", finalization)
+        self.assertIn('release_state "$orphan_tag"', finalization)
+        self.assertIn('reconcile_tag_deletion "$orphan_tag"', finalization)
+        self.assertIn("Orphan tag deletion could not be reconciled", finalization)
 
         for script in (publisher, finalization):
             lines = script.splitlines()
@@ -1306,591 +1181,6 @@ mapfile() {
                 self.assertIn('--root "$GITHUB_WORKSPACE"', workflow)
                 self.assertIn("--replace", workflow)
 
-    def test_publisher_requires_exact_restored_release_freshness_before_mutations(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        self.assertIn("verify_base_snapshot_current() {", publisher)
-        self.assertIn("python scripts/data_snapshot.py resolve", publisher)
-        self.assertIn(
-            'if [ "$current_base_release_id" != "$BASE_RELEASE_ID" ] ||', publisher
-        )
-        self.assertIn(
-            '[ "$current_base_release_identity_sha256" != "$BASE_RELEASE_IDENTITY_SHA256" ] ||', publisher
-        )
-        self.assertIn(
-            'if [ "$current_base_dataset_id" != "$BASE_DATASET_ID" ] ||', publisher
-        )
-        self.assertIn(
-            '[ "$current_base_archive_sha256" != "$BASE_ARCHIVE_SHA256" ] ||',
-            publisher,
-        )
-        self.assertIn(
-            '[ "$current_base_manifest_sha256" != "$BASE_MANIFEST_SHA256" ]; then',
-            publisher,
-        )
-
-        for path in PUBLISHING_WORKFLOWS:
-            with self.subTest(path=path):
-                workflow = read(path)
-                publish = workflow.split(
-                    "run: bash scripts/publish_private_snapshot.sh", 1
-                )[0]
-                self.assertIn(
-                    "BASE_RELEASE_ID: ${{ steps.restore_snapshot.outputs.release_id }}",
-                    publish,
-                )
-                self.assertIn(
-                    "BASE_RELEASE_IDENTITY_SHA256: ${{ steps.restore_snapshot.outputs.release_identity_sha256 }}",
-                    publish,
-                )
-                self.assertIn(
-                    "BASE_RELEASE_TAG: ${{ steps.restore_snapshot.outputs.release_tag }}",
-                    publish,
-                )
-                self.assertIn(
-                    "BASE_ARCHIVE_SHA256: ${{ steps.restore_snapshot.outputs.archive_sha256 }}",
-                    publish,
-                )
-                self.assertIn(
-                    "BASE_MANIFEST_SHA256: ${{ steps.restore_snapshot.outputs.manifest_sha256 }}",
-                    publish,
-                )
-
-        for mutation in (
-            'gh_mutate_once release create "$release_tag"',
-            'gh_mutate_once release upload "$release_tag"',
-            'gh_mutate_once release edit "$release_tag"',
-        ):
-            mutation_at = publisher.index(mutation)
-            loop_at = publisher.rfind("for attempt in 0 1 2; do", 0, mutation_at)
-            base_guard_at = publisher.rfind(
-                "verify_base_snapshot_current", 0, mutation_at
-            )
-            self.assertGreater(base_guard_at, loop_at)
-            self.assertLess(base_guard_at, mutation_at)
-
-    def test_pages_finalizer_requires_exact_snapshot_identity_before_mutations(self):
-        pages = read(".github/workflows/deploy-pages.yml")
-        finalization = self._finalization_shell()
-
-        for output_name in ("archive_sha256", "manifest_sha256"):
-            self.assertIn(
-                f"{output_name}: ${{{{ steps.target.outputs.{output_name} }}}}",
-                pages,
-            )
-            self.assertIn(
-                f"EXPECTED_{output_name.upper()}: "
-                f"${{{{ needs.resolve.outputs.{output_name} }}}}",
-                finalization,
-            )
-        self.assertIn("verify_target_snapshot_current() {", finalization)
-        self.assertIn("python scripts/data_snapshot.py resolve", finalization)
-
-        for mutation in (
-            'gh_mutate_once release upload "$EXPECTED_RELEASE_TAG"',
-            'gh_mutate_once release edit "$EXPECTED_RELEASE_TAG"',
-        ):
-            mutation_at = finalization.index(mutation)
-            loop_at = finalization.rfind("for attempt in 0 1 2; do", 0, mutation_at)
-            identity_guard_at = finalization.rfind(
-                "verify_target_snapshot_current", loop_at, mutation_at
-            )
-            self.assertGreater(identity_guard_at, loop_at)
-            self.assertLess(identity_guard_at, mutation_at)
-
-    def test_same_tag_pages_finalizer_asset_replacement_blocks_before_mutation(self):
-        finalization = self._finalization_shell()
-        function_start = finalization.index(
-            "          verify_target_snapshot_current() {"
-        )
-        function_end = finalization.index(
-            "          marker_matches_remote() {", function_start
-        )
-        function_source = textwrap.dedent(finalization[function_start:function_end])
-        expected = {
-            "dataset_id": "1" * 64,
-            "archive_sha256": "2" * 64,
-            "manifest_sha256": "3" * 64,
-        }
-
-        for changed_field in expected:
-            with (
-                self.subTest(changed_field=changed_field),
-                tempfile.TemporaryDirectory() as tmpdir,
-            ):
-                current = dict(expected)
-                current[changed_field] = "9" * 64
-                mutation_log = Path(tmpdir) / "mutation.log"
-                current_json = json.dumps(
-                    {
-                        **current,
-                        "release_tag": "dataset-target",
-                        "repository": "owner/private-data",
-                    },
-                    sort_keys=True,
-                )
-                script = "\n".join(
-                    (
-                        "set -euo pipefail",
-                        'DATA_REPOSITORY="owner/private-data"',
-                        'EXPECTED_RELEASE_TAG="dataset-target"',
-                        f'EXPECTED_DATASET_ID="{expected["dataset_id"]}"',
-                        f'EXPECTED_ARCHIVE_SHA256="{expected["archive_sha256"]}"',
-                        f'EXPECTED_MANIFEST_SHA256="{expected["manifest_sha256"]}"',
-                        'python() { printf "%s\\n" "$CURRENT_JSON"; }',
-                        function_source,
-                        "verify_target_snapshot_current",
-                        'printf "mutation\\n" > "$MUTATION_LOG"',
-                    )
-                )
-                result = subprocess.run(
-                    ["bash"],
-                    cwd=ROOT,
-                    env={
-                        **os.environ,
-                        "CURRENT_JSON": current_json,
-                        "MUTATION_LOG": str(mutation_log),
-                    },
-                    input=script,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-
-                self.assertNotEqual(0, result.returncode)
-                self.assertIn(
-                    "no longer matches the resolved target identity",
-                    result.stdout,
-                )
-                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
-
-        for mutation in (
-            'gh_mutate_once release upload "$EXPECTED_RELEASE_TAG"',
-            'gh_mutate_once release edit "$EXPECTED_RELEASE_TAG"',
-        ):
-            with (
-                self.subTest(mutation_boundary=mutation),
-                tempfile.TemporaryDirectory() as tmpdir,
-            ):
-                mutation_at = finalization.index(mutation)
-                loop_at = finalization.rfind("for attempt in 0 1 2; do", 0, mutation_at)
-                guard_at = finalization.rfind(
-                    "if ! verify_target_snapshot_current; then", loop_at, mutation_at
-                )
-                self.assertGreater(guard_at, loop_at)
-                guard_end = finalization.index("fi\n", guard_at) + len("fi\n")
-                guard_source = textwrap.dedent(finalization[guard_at:guard_end])
-                mutation_log = Path(tmpdir) / "mutation.log"
-                script = "\n".join(
-                    (
-                        "set -euo pipefail",
-                        "verify_target_snapshot_current() { return 1; }",
-                        'gh_mutate_once() { printf "mutation\\n" > "$MUTATION_LOG"; }',
-                        guard_source,
-                        "gh_mutate_once forbidden-finalizer-mutation",
-                    )
-                )
-                result = subprocess.run(
-                    ["bash"],
-                    cwd=ROOT,
-                    env={**os.environ, "MUTATION_LOG": str(mutation_log)},
-                    input=script,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-
-                self.assertNotEqual(0, result.returncode)
-                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
-
-    def test_same_tag_remote_asset_replacement_blocks_before_mutation(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        function_start = publisher.index("verify_base_snapshot_current() {")
-        function_end = publisher.index("\ncode_sha=", function_start)
-        function_source = publisher[function_start:function_end]
-        expected = {
-            "dataset_id": "1" * 64,
-            "archive_sha256": "2" * 64,
-            "manifest_sha256": "3" * 64,
-        }
-
-        for changed_field in expected:
-            with (
-                self.subTest(changed_field=changed_field),
-                tempfile.TemporaryDirectory() as tmpdir,
-            ):
-                current = dict(expected)
-                current[changed_field] = "9" * 64
-                mutation_log = Path(tmpdir) / "mutation.log"
-                current_json = json.dumps(
-                    {
-                        **current,
-                        "release_id": 123,
-                        "release_identity_sha256": "4" * 64,
-                        "release_tag": "dataset-base",
-                        "repository": "owner/private-data",
-                    },
-                    sort_keys=True,
-                )
-                script = "\n".join(
-                    (
-                        "set -euo pipefail",
-                        'DATA_REPOSITORY="owner/private-data"',
-                        'BASE_RELEASE_ID="123"',
-                        'BASE_RELEASE_IDENTITY_SHA256="4444444444444444444444444444444444444444444444444444444444444444"',
-                        'BASE_RELEASE_TAG="dataset-base"',
-                        f'BASE_DATASET_ID="{expected["dataset_id"]}"',
-                        f'BASE_ARCHIVE_SHA256="{expected["archive_sha256"]}"',
-                        f'BASE_MANIFEST_SHA256="{expected["manifest_sha256"]}"',
-                        f"python() {{ printf '%s\\n' {json.dumps(current_json)}; }}",
-                        function_source,
-                        "verify_base_snapshot_current",
-                        'printf "mutation\\n" > "$MUTATION_LOG"',
-                    )
-                )
-                result = subprocess.run(
-                    ["bash"],
-                    cwd=ROOT,
-                    env={**os.environ, "MUTATION_LOG": str(mutation_log)},
-                    input=script,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-
-                self.assertNotEqual(0, result.returncode)
-                self.assertIn(
-                    "no longer matches the restored base identity",
-                    result.stdout,
-                )
-                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
-
-    def test_upload_rejects_replaced_or_nonempty_owned_draft_before_mutation(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        function_start = publisher.index("verify_owned_draft_current() {")
-        function_end = publisher.index(
-            "\n}\n\nexpected_latest_release_tag=", function_start
-        ) + len("\n}")
-        function_source = publisher[function_start:function_end]
-        base_release = {
-            "id": 101,
-            "tag_name": "dataset-target",
-            "name": "dataset-target",
-            "body": "owned notes",
-            "draft": True,
-            "prerelease": False,
-            "assets": [],
-        }
-        unsafe_releases = (
-            {**base_release, "id": 202},
-            {**base_release, "draft": False},
-            {
-                **base_release,
-                "assets": [{"id": 301, "name": "foreign.bin", "state": "uploaded"}],
-            },
-        )
-
-        for current_release in unsafe_releases:
-            with (
-                self.subTest(current_release=current_release),
-                tempfile.TemporaryDirectory() as tmpdir,
-            ):
-                mutation_log = Path(tmpdir) / "mutation.log"
-                script = "\n".join(
-                    (
-                        "set -euo pipefail",
-                        'owned_release_id="101"',
-                        'release_tag="dataset-target"',
-                        'release_title="dataset-target"',
-                        'release_notes="owned notes"',
-                        'archive_name="snapshot.tar.zst"',
-                        'manifest_name="snapshot.manifest.json"',
-                        'release_record() { printf "%s\\n" "$CURRENT_RELEASE_JSON"; }',
-                        function_source,
-                        "verify_owned_draft_current empty",
-                        'printf "mutation\\n" > "$MUTATION_LOG"',
-                    )
-                )
-                result = subprocess.run(
-                    ["bash"],
-                    cwd=ROOT,
-                    env={
-                        **os.environ,
-                        "CURRENT_RELEASE_JSON": json.dumps(current_release),
-                        "MUTATION_LOG": str(mutation_log),
-                    },
-                    input=script,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-
-                self.assertNotEqual(0, result.returncode)
-                self.assertIn("exact owned snapshot draft", result.stdout)
-                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
-
-        upload_start = publisher.index("snapshot_verified=false")
-        upload_end = publisher.index(
-            'if [ "$snapshot_verified" != true ]; then', upload_start
-        )
-        upload = publisher[upload_start:upload_end]
-        mutation_at = upload.index('gh_mutate_once release upload "$release_tag"')
-        ownership_guard_at = upload.rfind(
-            "if ! verify_owned_draft_current empty; then", 0, mutation_at
-        )
-        base_guard_at = upload.rfind(
-            "if ! verify_current_main || ! verify_base_snapshot_current; then",
-            0,
-            mutation_at,
-        )
-        self.assertGreater(ownership_guard_at, base_guard_at)
-        self.assertLess(ownership_guard_at, mutation_at)
-        upload_command = upload[mutation_at : upload.index("\n\n", mutation_at)]
-        self.assertNotIn("--clobber", upload_command)
-
-    def test_publication_rechecks_owned_target_bytes_immediately_before_edit(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        publication_start = publisher.index("publication_verified=false")
-        mutation_at = publisher.index(
-            'gh_mutate_once release edit "$release_tag"', publication_start
-        )
-        guard_text = (
-            "if ! verify_owned_draft_current complete ||\n"
-            "     ! verify_remote_snapshot; then"
-        )
-        guard_at = publisher.rfind(guard_text, publication_start, mutation_at)
-        self.assertGreater(guard_at, publication_start)
-        self.assertLess(guard_at, mutation_at)
-        guard_end = publisher.index("  fi\n", guard_at) + len("  fi\n")
-        guard_source = textwrap.dedent(publisher[guard_at:guard_end])
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mutation_log = Path(tmpdir) / "mutation.log"
-            script = "\n".join(
-                (
-                    "set -euo pipefail",
-                    "verify_owned_draft_current() { return 0; }",
-                    'verify_remote_snapshot() { [ "$REMOTE_STATE" = exact ]; }',
-                    'abort_with_owned_draft_cleanup() { printf "%s\\n" "$1"; exit 1; }',
-                    'gh_mutate_once() { printf "mutation\\n" > "$MUTATION_LOG"; }',
-                    guard_source,
-                    "gh_mutate_once forbidden-publication-edit",
-                )
-            )
-            result = subprocess.run(
-                ["bash"],
-                cwd=ROOT,
-                env={
-                    **os.environ,
-                    "REMOTE_STATE": "replaced",
-                    "MUTATION_LOG": str(mutation_log),
-                },
-                input=script,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("changed before snapshot publication", result.stdout)
-            self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
-
-    def test_uploaded_target_round_trip_requires_exact_local_asset_hashes(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        function_start = publisher.index("verify_remote_snapshot() {")
-        function_end = publisher.index("\nwait_for_remote_snapshot() {", function_start)
-        function_source = publisher[function_start:function_end]
-        expected_dataset_id = "1" * 64
-        expected_source_sha = "a" * 40
-        expected_archive_sha256 = "2" * 64
-        expected_manifest_sha256 = "3" * 64
-        replaced_archive_sha256 = "8" * 64
-        replaced_manifest_sha256 = "9" * 64
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            script = "\n".join(
-                (
-                    "set -euo pipefail",
-                    'release_tag="dataset-target"',
-                    'DATA_REPOSITORY="owner/private-data"',
-                    'archive_name="snapshot.tar.zst"',
-                    'manifest_name="snapshot.manifest.json"',
-                    f'dataset_id="{expected_dataset_id}"',
-                    f'code_sha="{expected_source_sha}"',
-                    f'archive_sha256="{expected_archive_sha256}"',
-                    f'manifest_sha256="{expected_manifest_sha256}"',
-                    r"""
-gh_read_retry() {
-  local candidate_dir=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--dir" ]; then
-      candidate_dir=$2
-      break
-    fi
-    shift
-  done
-  : > "$candidate_dir/$archive_name"
-  printf '{"dataset_id":"%s","source_sha":"%s"}\n' \
-    "$dataset_id" "$code_sha" > "$candidate_dir/$manifest_name"
-}
-""",
-                    r"""
-python() {
-  printf '{"archive_sha256":"%s","dataset_id":"%s","manifest_sha256":"%s","source_sha":"%s","verified":true}\n' \
-    "$REPLACED_ARCHIVE_SHA256" "$dataset_id" \
-    "$REPLACED_MANIFEST_SHA256" "$code_sha"
-}
-""",
-                    function_source,
-                    "verify_remote_snapshot",
-                )
-            )
-            result = subprocess.run(
-                ["bash"],
-                cwd=ROOT,
-                env={
-                    **os.environ,
-                    "RUNNER_TEMP": tmpdir,
-                    "REPLACED_ARCHIVE_SHA256": replaced_archive_sha256,
-                    "REPLACED_MANIFEST_SHA256": replaced_manifest_sha256,
-                },
-                input=script,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertIn("exact local target assets", result.stdout)
-
-        pack_validation = publisher.split("pack_json=$(", 1)[1].split(
-            'if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then', 1
-        )[0]
-        self.assertIn(
-            "manifest_sha256=$(jq -er '.manifest_sha256' <<<\"$pack_json\")",
-            pack_validation,
-        )
-        self.assertIn('[[ ! "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]', pack_validation)
-
-    def test_newer_private_snapshot_blocks_each_target_mutation_boundary(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        for mutation in (
-            'gh_mutate_once release create "$release_tag"',
-            'gh_mutate_once release upload "$release_tag"',
-            'gh_mutate_once release edit "$release_tag"',
-        ):
-            with (
-                self.subTest(mutation=mutation),
-                tempfile.TemporaryDirectory() as tmpdir,
-            ):
-                mutation_at = publisher.index(mutation)
-                loop_at = publisher.rfind("for attempt in 0 1 2; do", 0, mutation_at)
-                guard_at = publisher.rfind(
-                    "  if ! verify_current_main || ! verify_base_snapshot_current; then",
-                    loop_at,
-                    mutation_at,
-                )
-                self.assertGreater(guard_at, loop_at)
-                guard_end = publisher.index("  fi\n", guard_at) + len("  fi\n")
-                guard = textwrap.dedent(publisher[guard_at:guard_end])
-                mutation_log = Path(tmpdir) / "mutation.log"
-                cleanup_log = Path(tmpdir) / "cleanup.log"
-                script = "\n".join(
-                    (
-                        "set -euo pipefail",
-                        "verify_current_main() { return 0; }",
-                        'verify_base_snapshot_current() { echo "newer snapshot"; return 1; }',
-                        'abort_with_owned_draft_cleanup() { printf "%s\\n" "$1" > "$CLEANUP_LOG"; exit 1; }',
-                        'gh_mutate_once() { printf "%s\\n" "$*" > "$MUTATION_LOG"; }',
-                        guard,
-                        "gh_mutate_once forbidden-target-mutation",
-                    )
-                )
-                result = subprocess.run(
-                    ["bash"],
-                    cwd=ROOT,
-                    env={
-                        **os.environ,
-                        "MUTATION_LOG": str(mutation_log),
-                        "CLEANUP_LOG": str(cleanup_log),
-                    },
-                    input=script,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-
-                self.assertNotEqual(0, result.returncode)
-                self.assertIn("newer snapshot", result.stdout)
-                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
-                self.assertTrue(cleanup_log.is_file(), result.stdout + result.stderr)
-
-    def test_release_record_treats_an_absent_tag_as_valid_null(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        function_start = publisher.index("release_record() {")
-        function_end = publisher.index("release_state() {", function_start)
-        function_source = publisher[function_start:function_end]
-        script = "\n".join(
-            (
-                "set -euo pipefail",
-                'DATA_REPOSITORY="owner/private-data"',
-                'gh_read_retry() { printf "%s\\n" "[]"; }',
-                function_source,
-                'release_record "dataset-missing"',
-            )
-        )
-
-        result = subprocess.run(
-            ["bash"],
-            cwd=ROOT,
-            input=script,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertEqual("null", result.stdout.strip())
-
-    def test_owned_draft_abort_never_deletes_and_requires_manual_reconciliation(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        function_start = publisher.index("abort_with_owned_draft_cleanup() {")
-        function_end = publisher.index("expected_latest_release_tag=", function_start)
-        function_source = publisher[function_start:function_end]
-
-        for owned_draft in ("true", "false"):
-            with (
-                self.subTest(owned_draft=owned_draft),
-                tempfile.TemporaryDirectory() as tmpdir,
-            ):
-                mutation_log = Path(tmpdir) / "mutation.log"
-                script = "\n".join(
-                    (
-                        "set -euo pipefail",
-                        f"owned_draft={owned_draft}",
-                        'gh_mutate_once() { printf "%s\\n" "$*" > "$MUTATION_LOG"; }',
-                        function_source,
-                        'abort_with_owned_draft_cleanup "forced reconciliation"',
-                    )
-                )
-                result = subprocess.run(
-                    ["bash"],
-                    cwd=ROOT,
-                    env={**os.environ, "MUTATION_LOG": str(mutation_log)},
-                    input=script,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-
-                self.assertNotEqual(0, result.returncode)
-                self.assertFalse(mutation_log.exists(), result.stdout + result.stderr)
-                self.assertIn("forced reconciliation", result.stdout)
-                if owned_draft == "true":
-                    self.assertIn(
-                        "Owned unpublished snapshot draft requires manual reconciliation",
-                        result.stdout,
-                    )
-
     def test_publishers_are_atomic_private_releases_not_git_commits(self):
         required_fragments = (
             "python scripts/data_snapshot.py pack",
@@ -1928,29 +1218,6 @@ python() {
                 self.assertIn("permissions:\n  contents: read", workflow)
                 self.assertNotRegex(workflow, r"(?m)^  contents: write$")
 
-    def test_publisher_restricts_0644_downloaded_archive_before_verify(self):
-        publisher = read(PUBLISHER_SCRIPT)
-        round_trip = publisher.split(
-            "verify_remote_snapshot() {", 1
-        )[1].split("\nsnapshot_verified=false", 1)[0]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            downloaded_archive = Path(tmpdir) / "downloaded.tar.gz"
-            downloaded_archive.write_bytes(b"release asset")
-            downloaded_archive.chmod(0o644)
-            self.assertEqual(0o644, downloaded_archive.stat().st_mode & 0o777)
-
-        chmod = 'chmod 600 "$candidate_dir/$archive_name"'
-        chmod_guard = (
-            'if ! chmod 600 "$candidate_dir/$archive_name"; then\n'
-            '    rm -rf "$candidate_dir"\n'
-            "    return 1\n"
-            "  fi"
-        )
-        verify = "python scripts/data_snapshot.py verify"
-        self.assertIn(chmod_guard, round_trip)
-        self.assertLess(round_trip.index(chmod), round_trip.index(verify))
-
     def test_publishers_output_exact_deployment_identity(self):
         publisher = read(PUBLISHER_SCRIPT)
         for path in MAINTENANCE_WORKFLOWS:
@@ -1982,10 +1249,8 @@ python() {
         publisher = read(PUBLISHER_SCRIPT)
         fetch = "git fetch --no-tags origin main:refs/remotes/origin/main"
         self.assertIn(fetch, publisher)
-        self.assertIn("verify_current_main() {", publisher)
-        self.assertIn("current_main_sha=$(git rev-parse origin/main)", publisher)
         self.assertIn(
-            'if [ "$code_sha" != "$current_main_sha" ]; then',
+            'if [ "$code_sha" != "$(git rev-parse origin/main)" ]; then',
             publisher,
         )
         self.assertIn("aborting stale publication", publisher)
@@ -2079,58 +1344,17 @@ python() {
             build.index("run: python validate_data.py"),
             build.index("python scripts/build_pages_artifact.py"),
         )
-        self.assertIn(
-            "pip install --require-hashes -r requirements.lock",
-            build,
-        )
+        self.assertIn("pip install -r requirements.txt", build)
         self.assertIn("- name: Audit the public artifact allowlist", build)
         self.assertIn("include-hidden-files: true", build)
         for public_file in (
             "data/funds-index.json",
             "data/index.json",
             "data/security_labels.json",
-            "data/insiders/public/manifest.json",
+            "data/funds/*.json.gz",
+            "data/stocks/*.json.gz",
         ):
             self.assertIn(public_file, build)
-        self.assertNotIn("data/funds/*.json.gz", build)
-        self.assertNotIn("data/stocks/*.json.gz", build)
-        self.assertNotIn("data/insiders/public/securities/*.json.gz", build)
-        self.assertNotIn("data/insiders/public/filings/*.json.gz", build)
-        self.assertIn(
-            "^data/funds/[0-9]{1,10}\\.json\\.gz$",
-            build,
-        )
-        self.assertIn(
-            "^data/stocks/[A-Z0-9][A-Z0-9._-]{0,159}\\.json\\.gz$",
-            build,
-        )
-        self.assertIn(
-            "^data/insiders/public/securities/[A-Z0-9][A-Z0-9._-]{0,159}\\.json\\.gz$",
-            build,
-        )
-        self.assertIn(
-            "^data/insiders/public/filings/[0-9]{10}-[0-9]{2}-[0-9]{6}\\.json\\.gz$",
-            build,
-        )
-        self.assertIn(
-            'done < <(find "$ARTIFACT_DIR" -mindepth 1 -print0)',
-            build,
-        )
-        self.assertIn('if [ -L "$path" ]; then', build)
-        self.assertIn('elif [ -d "$path" ]; then', build)
-        self.assertIn('elif [ -f "$path" ]; then', build)
-        for public_directory in (
-            "data",
-            "data/funds",
-            "data/stocks",
-            "data/insiders",
-            "data/insiders/public",
-            "data/insiders/public/securities",
-            "data/insiders/public/filings",
-        ):
-            self.assertIn(public_directory, build)
-        self.assertIn("Unsupported public Pages entry type", build)
-        self.assertIn("Required public Pages entry is missing", build)
         for private_file in (
             "cusip_registry.json",
             "pipeline_state.json",
@@ -2191,7 +1415,7 @@ python() {
         self.assertIn('if [ "$http_status" = 403 ]', helper)
         self.assertIn("cf-mitigated:", helper)
 
-    def test_finalization_self_heals_marker_and_preserves_private_history(self):
+    def test_finalization_self_heals_marker_and_keeps_active_plus_fallback(self):
         workflow = read(".github/workflows/deploy-pages.yml")
         deploy = workflow.split("\n  deploy:", 1)[1].split(
             "\n  finalize-private-snapshots:", 1
@@ -2229,13 +1453,13 @@ python() {
         )
         self.assertIn('gh_mutate_once release upload "$EXPECTED_RELEASE_TAG"', finalization)
         self.assertIn("Private Pages deployment marker did not round-trip exactly", finalization)
-        self.assertIn(
-            "Automatic private snapshot retention cleanup is disabled",
-            finalization,
-        )
-        self.assertIn("prior releases, drafts, and dataset tags", finalization)
-        self.assertNotIn("gh_mutate_once release delete", finalization)
-        self.assertNotIn("gh_mutate_once api --method DELETE", finalization)
+        self.assertIn("date -u -d '24 hours ago'", finalization)
+        self.assertIn("and .created_at < $stale_draft_cutoff", finalization)
+        self.assertIn('and .tag_name != $active', finalization)
+        self.assertIn('and ($fallback == "" or .tag_name != $fallback)', finalization)
+        self.assertIn("gh_delete_once release delete", finalization)
+        self.assertIn("--cleanup-tag", finalization)
+        self.assertIn("active release and one fallback", finalization)
 
         self.assertNotIn("actions/artifacts/$artifact_id", finalization)
 
@@ -2248,36 +1472,14 @@ python() {
         self.assertIn("needs: [resolve, build, deploy]", cleanup)
         self.assertIn("if: ${{ always() }}", cleanup)
         self.assertIn("actions: write", cleanup)
-        self.assertIn("Checkout trusted GitHub retry helper for cleanup", cleanup)
-        self.assertIn("repository: ${{ job.workflow_repository }}", cleanup)
-        self.assertIn("ref: ${{ job.workflow_sha }}", cleanup)
-        self.assertIn("sparse-checkout: scripts/github_cli_retry.py", cleanup)
-        self.assertIn("persist-credentials: false", cleanup)
-        self.assertIn("RUN_ID: ${{ github.run_id }}", cleanup)
-        self.assertIn('if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]', cleanup)
-        run_artifacts_endpoint = (
-            '"/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/'
-            'artifacts?name=github-pages&per_page=100"'
-        )
-        self.assertIn(run_artifacts_endpoint, cleanup)
+        self.assertIn("artifacts_json=$(", cleanup)
+        self.assertIn("gh api --paginate --slurp", cleanup)
+        self.assertNotIn("mapfile -t pages_artifact_ids < <(", cleanup)
         self.assertIn(
-            'gh_read_retry api --paginate --slurp "$RUN_ARTIFACTS_ENDPOINT"',
-            cleanup,
+            'select(.name == "github-pages" and .expired == false)', cleanup
         )
-        self.assertNotIn(
-            '"/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"',
-            cleanup,
-        )
-        self.assertIn("(.workflow_run.id == $run_id)", cleanup)
-        self.assertIn('(.name == "github-pages")', cleanup)
-        self.assertIn('(.expired | type) == "boolean"', cleanup)
-        self.assertIn("gh_delete_once()", cleanup)
-        self.assertEqual(1, cleanup.count("gh_delete_once api --method DELETE"))
-        self.assertNotIn("\n            gh api --method DELETE", cleanup)
-        self.assertIn("|| delete_status=$?", cleanup)
-        self.assertIn("Deletion outcome is uncertain; reconciling by readback", cleanup)
-        self.assertIn("for attempt in 0 1 2; do", cleanup)
-        self.assertIn("readonly -a READBACK_DELAYS_SECONDS=(1 3)", cleanup)
+        self.assertIn("actions/artifacts/$artifact_id", cleanup)
+        self.assertIn("--method DELETE", cleanup)
         self.assertIn(
             "Public Pages artifacts remain downloadable after cleanup",
             cleanup,
@@ -2338,7 +1540,6 @@ python() {
 
     def test_ci_privacy_guard_covers_current_history_and_test_residue(self):
         workflow = read(".github/workflows/test.yml")
-        gitignore = read(".gitignore")
 
         self.assertRegex(workflow, r"(?m)^  push:\s*$")
         self.assertNotIn("branches: [main]", workflow)
@@ -2356,7 +1557,6 @@ python() {
         self.assertIn("Tests left private generated data", workflow)
         self.assertNotIn("git status --porcelain", workflow)
         self.assertNotIn("git diff --exit-code -- data/", workflow)
-        self.assertRegex(gitignore, r"(?m)^data/$")
 
 
 if __name__ == "__main__":
