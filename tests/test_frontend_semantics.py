@@ -69,7 +69,7 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual("2026-02-31", result["impossible"])
         self.assertEqual("0000-02-29", result["invalidYear"])
 
-    def test_homepage_pins_venrock_before_other_popular_filers(self) -> None:
+    def test_homepage_pins_adar1_before_other_popular_filers(self) -> None:
         constants_start = self.html.index(
             "const PINNED_POPULAR_FUND_CIKS ="
         )
@@ -88,14 +88,14 @@ class FrontendSemanticsTests(unittest.TestCase):
                     self.html[constants_start:constants_end]
                     + "\nlet idx = {funds: ["
                     + '{cik: 1067983, name: "BERKSHIRE HATHAWAY INC"},'
-                    + '{cik: 1615982, name: "Renamed SEC Filer"},'
+                    + '{cik: 1940272, name: "Renamed SEC Filer"},'
                     + '{cik: 1336528, name: "Pershing Square Capital"}'
                     + "]};\n"
                     + self.html[lookup_start:lookup_end]
                     + "\nconst present = getPopularFunds().map(f => f.cik);"
                     + "\n_popularFundsCache = null;"
                     + "\nidx = {funds: idx.funds.filter("
-                    + "f => f.cik !== 1615982)};"
+                    + "f => f.cik !== 1940272)};"
                     + "\nconst absent = getPopularFunds().map(f => f.cik);"
                     + "\nconsole.log(JSON.stringify({present, absent}));"
                 ),
@@ -107,7 +107,7 @@ class FrontendSemanticsTests(unittest.TestCase):
         )
         result = json.loads(completed.stdout)
 
-        self.assertEqual([1615982, 1067983, 1336528], result["present"])
+        self.assertEqual([1940272, 1067983, 1336528], result["present"])
         self.assertEqual([1067983, 1336528], result["absent"])
 
     def test_fund_search_identity_always_includes_the_authoritative_cik(
