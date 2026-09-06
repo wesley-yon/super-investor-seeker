@@ -355,10 +355,11 @@ jobs:
         # Existing verified mappings remain available when an SEC publication
         # is temporarily late, while new or conflicting evidence fails closed.
         # This incremental path is bounded separately from the one-time legacy
-        # rebuild. Its 60-minute cap leaves at least an hour of the six-hour
-        # job for validation, publication, setup variance, and inner timeout
-        # grace when the ordinary ingest paths reach their cooperative limits.
-        timeout-minutes: 60
+        # rebuild. Match the weekly 90-minute allowance for the full retained
+        # corpus. The 210-minute ingest and 15-minute recent-feed bounds leave
+        # 45 minutes of the six-hour job for setup, validation and publication
+        # (about 41 minutes after both inner cancellation grace periods).
+        timeout-minutes: 90
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
         run: |

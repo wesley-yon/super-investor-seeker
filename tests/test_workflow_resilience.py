@@ -1621,7 +1621,7 @@ gh_mutate_once() {
             "Remove cached Form 13F working set before validation",
             legacy,
         )
-        self.assertIn("timeout-minutes: 60", regenerate)
+        self.assertIn("timeout-minutes: 90", regenerate)
         weekly = read(".github/workflows/refresh-cusip-registry.yml")
         weekly_job = weekly.split("  rebuild_security_master:", 1)[1].split(
             "\n  deploy-pages:", 1
