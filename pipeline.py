@@ -995,10 +995,30 @@ def normalize_filer_identity_name(value: str | None) -> str:
     """Normalize punctuation/case only for authoritative name comparisons."""
     return "".join(re.findall(r"[A-Z0-9]+", str(value or "").upper()))
 
+def _parse_filing_xml(xml_bytes: bytes) -> etree._Element:
+    """Parse filing data without resolving entities or loading external DTDs."""
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        load_dtd=False,
+        no_network=True,
+        recover=False,
+        huge_tree=False,
+    )
+    tree = etree.fromstring(xml_bytes, parser=parser)
+    # Reject the entire document instead of silently omitting unresolved values.
+    # Inspect parsed document metadata so alternate XML encodings cannot bypass
+    # this check. Entity expansion and external DTD loading are disabled above.
+    if tree.getroottree().docinfo.doctype:
+        raise etree.XMLSyntaxError(
+            "DTD declarations are not allowed in SEC filings", 0, 0, 0,
+        )
+    return tree
+
+
 def parse_primary_document(xml_bytes: bytes, form_type: str | None = None) -> dict:
     """Parse composition metadata from one filing's primary SEC document."""
     try:
-        tree = etree.fromstring(xml_bytes)
+        tree = _parse_filing_xml(xml_bytes)
     except etree.XMLSyntaxError as exc:
         raise FilingParseError("primary document is not valid XML") from exc
 
@@ -1096,7 +1116,7 @@ def parse_primary_document(xml_bytes: bytes, form_type: str | None = None) -> di
 
 def _information_table_totals(xml_bytes: bytes) -> tuple[int, int]:
     try:
-        tree = etree.fromstring(xml_bytes)
+        tree = _parse_filing_xml(xml_bytes)
     except etree.XMLSyntaxError as exc:
         raise FilingParseError("information table is not valid XML") from exc
     rows = 0
@@ -3377,7 +3397,7 @@ def parse_information_table(
 
     Returns None if the XML doesn't appear to be an information table."""
     try:
-        tree = etree.fromstring(xml_bytes)
+        tree = _parse_filing_xml(xml_bytes)
     except etree.XMLSyntaxError:
         return None
 

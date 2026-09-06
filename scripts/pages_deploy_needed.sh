@@ -5,6 +5,7 @@ artifact_paths=(
   .nojekyll
   CNAME
   index.html
+  app.js
   site-data-loader.js
   scripts/build_pages_artifact.py
   scripts/data_snapshot.py

@@ -709,7 +709,7 @@ class GeneratedDataContractTests(unittest.TestCase):
             )
 
     def test_frontend_version_and_fail_closed_guard_match_python(self) -> None:
-        html = (ROOT / "index.html").read_text()
+        html = (ROOT / "app.js").read_text()
         version = re.search(
             r"const DATA_CONTRACT_VERSION\s*=\s*(\d+);",
             html,
@@ -970,7 +970,7 @@ class GeneratedDataContractTests(unittest.TestCase):
     def test_frontend_rejects_prior_integer_contract_before_routing(
         self,
     ) -> None:
-        html = (ROOT / "index.html").read_text()
+        html = (ROOT / "app.js").read_text()
         start = html.index("const DATA_CONTRACT_VERSION")
         end = html.index("// ---------- formatters ----------", start)
         contract_logic = html[start:end]
@@ -1265,7 +1265,7 @@ class GeneratedDataContractTests(unittest.TestCase):
     def test_frontend_maintenance_remains_sticky_across_detail_races(
         self,
     ) -> None:
-        html = (ROOT / "index.html").read_text()
+        html = (ROOT / "app.js").read_text()
 
         def section(start: str, end: str) -> str:
             start_pos = html.index(start)
@@ -1342,7 +1342,7 @@ class GeneratedDataContractTests(unittest.TestCase):
             'echo "migration_only=$migration_only" >> "$GITHUB_OUTPUT"',
             workflow,
         )
-        self.assertIn("actions/create-github-app-token@v3", workflow)
+        self.assertRegex(workflow, r"actions/create-github-app-token@[0-9a-f]{40}")
         self.assertIn("python scripts/data_snapshot.py pull", workflow)
         self.assertIn("bash scripts/publish_private_snapshot.sh", workflow)
         self.assertIn("python scripts/data_snapshot.py pack", publisher)
@@ -1431,6 +1431,7 @@ class GeneratedDataContractTests(unittest.TestCase):
         ).read_text()
         for required_path in (
             "index.html",
+            "app.js",
             "site-data-loader.js",
             "scripts/build_pages_artifact.py",
             "scripts/data_snapshot.py",
@@ -1463,9 +1464,9 @@ class GeneratedDataContractTests(unittest.TestCase):
         self.assertIn('--dataset-id "$EXPECTED_DATASET_ID"', deployment)
         self.assertIn("Audit the public artifact allowlist", deployment)
         self.assertIn("-f build_type=workflow", deployment)
-        self.assertIn("actions/configure-pages@v6", deployment)
-        self.assertIn("actions/upload-pages-artifact@v5", deployment)
-        self.assertIn("actions/deploy-pages@v5", deployment)
+        self.assertRegex(deployment, r"actions/configure-pages@[0-9a-f]{40}")
+        self.assertRegex(deployment, r"actions/upload-pages-artifact@[0-9a-f]{40}")
+        self.assertRegex(deployment, r"actions/deploy-pages@[0-9a-f]{40}")
         self.assertIn("id-token: write", deployment)
         self.assertIn(
             '[ "$observed_code_sha" = "$EXPECTED_CODE_SHA" ]',

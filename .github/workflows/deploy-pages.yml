@@ -32,6 +32,7 @@ on:
       - '.nojekyll'
       - 'CNAME'
       - 'index.html'
+      - 'app.js'
       - 'site-data-loader.js'
       - 'scripts/build_pages_artifact.py'
       - 'scripts/data_snapshot.py'
@@ -50,6 +51,8 @@ env:
 
 jobs:
   resolve:
+    if: github.ref == 'refs/heads/main'
+    environment: private-data
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -66,8 +69,9 @@ jobs:
     steps:
       - name: Checkout explicitly requested code target
         if: inputs.code_sha != ''
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ inputs.code_sha }}
           fetch-depth: 1
           filter: blob:none
@@ -78,8 +82,9 @@ jobs:
 
       - name: Checkout push code target
         if: inputs.code_sha == '' && github.event_name == 'push'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
           fetch-depth: 1
           filter: blob:none
@@ -90,8 +95,9 @@ jobs:
 
       - name: Checkout live main recovery target
         if: inputs.code_sha == '' && github.event_name != 'push'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: main
           fetch-depth: 1
           filter: blob:none
@@ -117,7 +123,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -232,7 +238,8 @@ jobs:
 
   build:
     needs: resolve
-    if: needs.resolve.outputs.deploy_needed == 'true'
+    if: github.ref == 'refs/heads/main' && needs.resolve.outputs.deploy_needed == 'true'
+    environment: private-data
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -240,8 +247,9 @@ jobs:
       pages: write
     steps:
       - name: Checkout exact public code
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve.outputs.code_sha }}
           fetch-depth: 1
 
@@ -259,7 +267,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -268,7 +276,7 @@ jobs:
           permission-contents: read
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
 
@@ -307,7 +315,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Test compressed site loader
-        run: node --test tests/test_site_data_loader.mjs
+        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs
 
       - name: Build bounded public Pages artifact
         env:
@@ -338,7 +346,7 @@ jobs:
           while IFS= read -r -d '' path; do
             relative=${path#"$ARTIFACT_DIR"/}
             case "$relative" in
-              .nojekyll|CNAME|index.html|site-data-loader.js|deployment-manifest.json|data/funds-index.json|data/index.json|data/security_labels.json|data/funds/*.json.gz|data/stocks/*.json.gz)
+              .nojekyll|CNAME|index.html|app.js|site-data-loader.js|deployment-manifest.json|data/funds-index.json|data/index.json|data/security_labels.json|data/funds/*.json.gz|data/stocks/*.json.gz)
                 ;;
               *)
                 echo "::error::Unexpected public Pages file: $relative"
@@ -380,10 +388,10 @@ jobs:
           fi
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
       - name: Upload bounded Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: ${{ env.ARTIFACT_DIR }}
           include-hidden-files: true
@@ -391,7 +399,8 @@ jobs:
   deploy:
     needs: [resolve, build]
     if: >-
-      ${{ needs.resolve.outputs.deploy_needed == 'true' &&
+      ${{ github.ref == 'refs/heads/main' &&
+          needs.resolve.outputs.deploy_needed == 'true' &&
           needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -407,8 +416,9 @@ jobs:
       page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout live main for stale-deploy guard
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: main
           fetch-depth: 1
           filter: blob:none
@@ -417,7 +427,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -477,7 +487,7 @@ jobs:
 
       - name: Deploy exact validated artifact
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
         with:
           timeout: 600000
 
@@ -546,9 +556,10 @@ jobs:
           exit 1
 
   finalize-private-snapshots:
+    environment: private-data
     needs: [resolve, deploy]
     if: >-
-      ${{ always() &&
+      ${{ always() && github.ref == 'refs/heads/main' &&
           needs.resolve.result == 'success' &&
           (needs.resolve.outputs.deploy_needed == 'false' ||
            needs.deploy.result == 'success') }}
@@ -576,7 +587,7 @@ jobs:
 
       - name: Authenticate to the private data repository
         id: data-app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
@@ -1129,7 +1140,7 @@ jobs:
     # Cleanup must also run when artifact upload succeeds but deployment or
     # live verification fails. Workflow concurrency prevents this job from
     # deleting an artifact belonging to another in-flight Pages run.
-    if: ${{ always() }}
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

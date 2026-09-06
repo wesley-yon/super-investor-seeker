@@ -23,6 +23,7 @@ STATIC_FILES = (
     Path(".nojekyll"),
     Path("CNAME"),
     Path("index.html"),
+    Path("app.js"),
     Path("site-data-loader.js"),
 )
 INDEX_FILES = (
@@ -183,19 +184,26 @@ def build_artifact(
         r"""<script\b[^>]*\bsrc=["']site-data-loader\.js["'][^>]*>""",
         html,
     )
-    application_offset = html.find("const DATA_CONTRACT_VERSION")
+    application_tag = re.search(
+        r"""<script\b[^>]*\bsrc=["']app\.js["'][^>]*>""",
+        html,
+    )
     if loader_tag is None:
         raise ValueError(
             "index.html must load site-data-loader.js before Pages packaging"
         )
     if (
-        application_offset < 0
-        or loader_tag.start() > application_offset
+        application_tag is None
+        or loader_tag.start() > application_tag.start()
         or re.search(r"\b(?:async|defer)\b", loader_tag.group(0), re.IGNORECASE)
+        or re.search(r"\b(?:async|defer)\b", application_tag.group(0), re.IGNORECASE)
     ):
         raise ValueError(
             "site-data-loader.js must load synchronously before the application"
         )
+
+    if "const DATA_CONTRACT_VERSION" not in (source_root / "app.js").read_text(encoding="utf-8"):
+        raise ValueError("app.js must contain the application data-contract guard")
 
     output_root.mkdir(parents=True, exist_ok=True)
     static_source_bytes = 0

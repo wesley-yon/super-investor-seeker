@@ -10,7 +10,7 @@ ownership analysis.
 
 This is a WhaleWisdom-style product — not limited to a curated list of investors, but covering every 13F filer.
 
-**UI implementation:** The live site and canonical design live in `index.html`.
+**UI implementation:** The live markup and canonical design live in `index.html`; application behavior lives in `app.js`.
 Any future UI rework must preserve the rules in the Design section below.
 
 ---
@@ -413,11 +413,17 @@ of an integrity-checked partial SQLite generation on resume, and preserves a
 
 ---
 
-## Website (`index.html`)
+## Website (`index.html` and `app.js`)
+
+The HTML policy blocks inline event handlers, objects, base-URL changes, and form
+submissions. Full script restrictions are prepared in `cloudflare/csp-worker.mjs`
+for a response-header CSP compatible with Cloudflare Bot Fight Mode nonces. The
+Worker is optional owner deployment; see `CSP-OWNER-SETUP.md` for staged rollout
+and `SECURITY-OWNER-SETUP.md` for required GitHub environment protection.
 
 ### Tech Stack
 
-- Single `index.html` file with inline CSS and JavaScript — no frontend compilation, npm, or framework
+- Static `index.html` with inline CSS, external `app.js`, and the compressed-data loader; no frontend compilation, npm, or framework. Native links/buttons and delegated events avoid inline JavaScript handlers.
 - Inline **SVG sparklines and miniature line/bar charts**, plus a CSS concentration donut
 - Data loaded via `fetch()` from `data/*.json` files
 - Client-side search using `funds-index.json` and the lazily loaded `index.json`
@@ -549,7 +555,7 @@ complete corpus up front.
 ### `test.yml` and schedule keepalive
 
 - CI compiles entry points, rejects generated private paths in the current tree
-  and Git history, runs the loader test, and executes the complete Python suite.
+  and Git history, runs the loader and CSP Worker tests, and executes the complete Python suite.
 - Publishing workflows repeat the regression gates against their actual code
   and restored data rather than depending on a parallel CI result.
 - A tiny, off-main heartbeat branch provides repository activity so GitHub does
@@ -569,7 +575,7 @@ Required repository configuration:
 ## GitHub Pages Configuration
 
 - Publishing source: GitHub Actions, not a branch directory.
-- Static entry points: `.nojekyll`, `CNAME`, `index.html`, and
+- Static entry points: `.nojekyll`, `CNAME`, `index.html`, `app.js`, and
   `site-data-loader.js`.
 - Public data allowlist: the three browser indexes plus individual compressed
   fund and stock payloads.

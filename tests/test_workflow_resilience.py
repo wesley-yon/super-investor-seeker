@@ -817,6 +817,7 @@ gh_mutate_once() {
 
         for public_code_path in (
             "index.html",
+            "app.js",
             "site-data-loader.js",
             "scripts/build_pages_artifact.py",
             "scripts/data_snapshot.py",
@@ -868,7 +869,7 @@ gh_mutate_once() {
                 self.assertIn("scripts/pages_deploy_needed.sh", checkout)
 
     def test_every_private_data_job_uses_the_scoped_github_app(self):
-        expected_action = "uses: actions/create-github-app-token@v3"
+        expected_action = "uses: actions/create-github-app-token@"
         expected_repository = "repositories: super-investor-seeker-data"
         for path, minimum in (
             (".github/workflows/update-data.yml", 1),
@@ -1014,7 +1015,7 @@ gh_mutate_once() {
         self.assertIn("repository: ${{ job.workflow_repository }}", finalization)
         self.assertIn("ref: ${{ job.workflow_sha }}", finalization)
         self.assertNotIn("ref: ${{ needs.resolve.outputs.code_sha }}", finalization)
-        self.assertNotIn("uses: actions/checkout@v5", finalization)
+        self.assertNotIn("ref: main", finalization)
 
     def test_confirmed_publication_mutation_is_not_replayed_while_reads_converge(
         self,
@@ -1433,8 +1434,8 @@ gh_mutate_once() {
                 # must stay process-local. Generated data and snapshot members
                 # continue to come from the authenticated private release.
                 self.assertEqual(2, workflow.count("uses: actions/cache/"))
-                self.assertIn("actions/cache/restore@v4", workflow)
-                self.assertIn("actions/cache/save@v4", workflow)
+                self.assertRegex(workflow, r"actions/cache/restore@[0-9a-f]{40}")
+                self.assertRegex(workflow, r"actions/cache/save@[0-9a-f]{40}")
                 self.assertIn(
                     ".cache/sec_13f_bulk_rebuild_checkpoint.json",
                     workflow,
@@ -1900,7 +1901,7 @@ gh_mutate_once() {
         )[1]
 
         self.assertIn("needs: [resolve, build, deploy]", cleanup)
-        self.assertIn("if: ${{ always() }}", cleanup)
+        self.assertIn("if: ${{ always() && github.ref == 'refs/heads/main' }}", cleanup)
         self.assertIn("actions: write", cleanup)
         self.assertIn("artifacts_json=$(", cleanup)
         self.assertIn("gh api --paginate --slurp", cleanup)
@@ -1973,11 +1974,10 @@ gh_mutate_once() {
 
         self.assertRegex(workflow, r"(?m)^  push:\s*$")
         self.assertNotIn("branches: [main]", workflow)
-        self.assertIn("github.event_name != 'pull_request'", workflow)
-        self.assertIn(
-            "github.event.pull_request.head.repo.full_name != github.repository",
-            workflow,
-        )
+        # The required test must execute against PR merge commits, including
+        # same-repository PRs; a skipped check is not verification.
+        self.assertRegex(workflow, r"(?m)^  pull_request:\s*$")
+        self.assertNotIn("github.event.pull_request.head.repo.full_name", workflow)
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn("git ls-files -- data/ .cache/", workflow)
         self.assertIn("git log --all --format= --name-only -- data/ .cache/", workflow)
