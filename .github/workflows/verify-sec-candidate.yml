@@ -71,7 +71,7 @@ jobs:
             --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
             python scripts/restore_sec_candidate.py \
               --repository "$DATA_REPOSITORY" --tag "$CANDIDATE_RELEASE_TAG" \
-              --expected-source-sha "$GITHUB_SHA"
+              --expected-source-sha "$GITHUB_SHA" --with-benchmark-batch
 
       - name: Check current policies and SEC runtime identity
         env:
@@ -127,6 +127,12 @@ jobs:
           set -e
           if [ "$phase_status" -ne 0 ] && [ "$phase_status" -ne 124 ]; then exit "$phase_status"; fi
 
+      - name: Apply the verified 50-fund arrival benchmark
+        run: |
+          python scripts/measure_runner_phase.py --name apply_batch \
+            --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
+            python scripts/apply_incremental_benchmark_batch.py --expected-source-sha "$GITHUB_SHA"
+
       - name: Measure incremental data regeneration
         timeout-minutes: 90
         env:
@@ -139,6 +145,12 @@ jobs:
       - name: Measure incremental generated data validation
         run: |
           python scripts/measure_runner_phase.py --name validation \
+            --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
+            python validate_data.py --incremental
+
+      - name: Measure quiet-run validation after the changed batch
+        run: |
+          python scripts/measure_runner_phase.py --name quiet_validation \
             --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
             python validate_data.py --incremental
 

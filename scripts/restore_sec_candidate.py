@@ -7,6 +7,7 @@ the production latest-dataset or Pages flows. This helper only performs GETs.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -44,7 +45,8 @@ def validate_candidate(repository, tag, repository_info, release):
             raise snapshot.SnapshotError("Candidate asset name is not a plain filename")
 
 
-def restore_candidate(*, repository: str, tag: str, root: Path, expected_source_sha: str):
+def restore_candidate(*, repository: str, tag: str, root: Path, expected_source_sha: str,
+                      with_benchmark_batch: bool = False):
     if not snapshot.REPOSITORY_RE.fullmatch(repository):
         raise snapshot.SnapshotError("Invalid candidate repository")
     if not re.fullmatch(r"candidate-sec-[A-Za-z0-9._-]+", tag):
@@ -76,9 +78,10 @@ def restore_candidate(*, repository: str, tag: str, root: Path, expected_source_
             raise snapshot.SnapshotError("Candidate snapshot does not match the tested code SHA")
         archive_asset = snapshot._find_asset(assets, name=manifest["archive"]["filename"])
         names = [item.get("name") for item in assets if isinstance(item, dict)]
-        if len(assets) != 2 or len(set(names)) != 2 or set(names) != {
-            manifest_asset["name"], archive_asset["name"]
-        }:
+        expected_names = {manifest_asset["name"], archive_asset["name"]}
+        if with_benchmark_batch:
+            expected_names.add('incremental-benchmark-batch.json.gz')
+        if len(assets) != len(expected_names) or set(names) != expected_names:
             raise snapshot.SnapshotError("Candidate must contain exactly its archive and manifest")
         if archive_asset["size"] != manifest["archive"]["bytes"]:
             raise snapshot.SnapshotError("Candidate asset size differs from its manifest")
@@ -89,6 +92,16 @@ def restore_candidate(*, repository: str, tag: str, root: Path, expected_source_
         summary = snapshot.verify_snapshot(archive_path=archive_path, manifest_path=manifest_path,
                                            extract_root=payload)
         snapshot._replace_payload(root, payload, contract_version=summary["contract_version"])
+        if with_benchmark_batch:
+            batch_asset = snapshot._find_asset(assets, name='incremental-benchmark-batch.json.gz')
+            batch_path = root / '.cache' / batch_asset['name']
+            digest = batch_asset.get('digest', '')
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+                raise snapshot.SnapshotError('Benchmark asset has no GitHub checksum')
+            snapshot._download_asset(asset=batch_asset, destination=batch_path, token=token,
+                                     max_bytes=64 * 1024 * 1024)
+            if 'sha256:' + hashlib.sha256(batch_path.read_bytes()).hexdigest() != digest:
+                raise snapshot.SnapshotError('Benchmark asset checksum mismatch')
     summary.pop("extract_root", None)
     summary.update({"candidate_release": tag, "code_sha": expected_source_sha,
                     "repository_private": True, "production_publication": False})
@@ -101,9 +114,11 @@ def main():
     parser.add_argument("--tag", required=True)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--expected-source-sha", required=True)
+    parser.add_argument("--with-benchmark-batch", action="store_true")
     args = parser.parse_args()
     print(json.dumps(restore_candidate(repository=args.repository, tag=args.tag, root=args.root,
-                                       expected_source_sha=args.expected_source_sha), sort_keys=True))
+                                       expected_source_sha=args.expected_source_sha,
+                                       with_benchmark_batch=args.with_benchmark_batch), sort_keys=True))
 
 
 if __name__ == "__main__":

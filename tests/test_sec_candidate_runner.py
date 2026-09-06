@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,29 @@ class CandidateRunnerTests(unittest.TestCase):
                 with self.assertRaisesRegex(snapshot.SnapshotError, 'without data or caches'):
                     candidate.restore_candidate(repository=repo, tag=tag, root=target,
                                                 expected_source_sha='a' * 40)
+
+                batch = base / 'incremental-benchmark-batch.json.gz'
+                batch.write_bytes(b'private compressed benchmark fixture')
+                by_name[batch.name] = batch
+                release['assets'].append({'name': batch.name, 'size': batch.stat().st_size,
+                                          'url': f'https://api.github.com/repos/{repo}/releases/assets/2',
+                                          'digest': 'sha256:' + hashlib.sha256(batch.read_bytes()).hexdigest()})
+                strict = base / 'strict'
+                strict.mkdir()
+                with self.assertRaisesRegex(snapshot.SnapshotError, 'exactly'):
+                    candidate.restore_candidate(repository=repo, tag=tag, root=strict, expected_source_sha='a' * 40)
+                self.assertFalse((strict / 'data').exists())
+                benchmark = base / 'benchmark'
+                benchmark.mkdir()
+                candidate.restore_candidate(repository=repo, tag=tag, root=benchmark,
+                                            expected_source_sha='a' * 40, with_benchmark_batch=True)
+                self.assertEqual(batch.read_bytes(), (benchmark / '.cache' / batch.name).read_bytes())
+                release['assets'][-1]['digest'] = 'sha256:' + 'b' * 64
+                rejected_batch = base / 'rejected-batch'
+                rejected_batch.mkdir()
+                with self.assertRaisesRegex(snapshot.SnapshotError, 'checksum mismatch'):
+                    candidate.restore_candidate(repository=repo, tag=tag, root=rejected_batch,
+                                                expected_source_sha='a' * 40, with_benchmark_batch=True)
 
     def test_phase_measurement_preserves_nonzero_status_and_no_environment(self):
         with tempfile.TemporaryDirectory() as directory:
