@@ -6060,5 +6060,93 @@ class FetcherTests(unittest.TestCase):
         self.assertEqual(1, session.get.call_count)
 
 
+class FundAndIssuerValidationRegressionTests(unittest.TestCase):
+    def fund_state(self):
+        state = source_state(
+            rows=[ftd_record(day, symbol="BOXX", cusip="02072L565",
+                             description="EA SER TR ALPHA ARCHITECT 1-3")
+                  for day in ("2026-08-01", "2026-08-04")],
+            official_rows=[official_record(cusip="02072L565", issuer="EA SERIES TRUST",
+                                           description="ALPHA ARCH 1-3")],
+        )
+        state["sources"][master.SEC_FUND_TICKERS_URL] = {
+            "url": master.SEC_FUND_TICKERS_URL, "kind": "sec_fund_tickers",
+            "sha256": "d" * 64, "accepted_at": "2026-08-20T12:00:00Z",
+            "symbols": ["BOXX"], "symbol_titles": {}, "symbol_exchanges": {},
+            "symbol_count": 1,
+            "fund_records": [{"symbol": "BOXX", "cik": "0001592900",
+                              "series_id": "S000078123", "class_id": "C000241234"}],
+        }
+        return state
+
+    def build(self, state):
+        return master.rebuild_security_master(state, [{
+            "cusip": "02072L565", "instrument_type": "EQUITY",
+            "reported_issuer": "EA SERIES TRUST", "reported_class": "ALPHA ARCH 1-3",
+        }])
+
+    def test_titleless_fund_uses_unique_current_class_and_exact_ftd(self):
+        built = self.build(self.fund_state())
+        row = built["records"]["02072L565|EQUITY"]
+        self.assertEqual(row["ticker"], "BOXX")
+        self.assertEqual(row["ticker_source"], "sec_ftd")
+        self.assertEqual(row["symbol_validation_titles"], [])
+        self.assertEqual(row["symbol_validation_fund_identity"]["class_id"], "C000241234")
+        master._validate_security_master(built)
+        row["symbol_validation_fund_identity"]["sha256"] = "e" * 64
+        with self.assertRaises(master.SecurityMasterError):
+            master._validate_security_master(built)
+
+    def test_missing_or_ambiguous_fund_class_cannot_resolve(self):
+        for mutation in ("missing", "ambiguous"):
+            with self.subTest(mutation=mutation):
+                state = self.fund_state()
+                records = state["sources"][master.SEC_FUND_TICKERS_URL]["fund_records"]
+                if mutation == "missing":
+                    records.clear()
+                    with self.assertRaises(master.SecurityMasterError):
+                        self.build(state)
+                    continue
+                else:
+                    records.append({**records[0], "class_id": "C000241235"})
+                self.assertIsNone(self.build(state)["records"]["02072L565|EQUITY"]["ticker"])
+
+    def test_fund_metadata_cannot_override_conflicting_ftd_issuer(self):
+        state = self.fund_state()
+        for source in state["sources"].values():
+            if source["kind"] == "sec_ftd_archive":
+                source["records"] = master.compact_ftd_records([
+                    ftd_record(day, symbol="BOXX", cusip="02072L565", description="UNRELATED TRUST FUND")
+                    for day in ("2026-08-01", "2026-08-04")
+                ])
+        self.assertIsNone(self.build(state)["records"]["02072L565|EQUITY"]["ticker"])
+
+    def test_known_class_suffixes_normalize_without_fuzzy_issuer_matching(self):
+        for issuer, description in [
+            ("CYTOKINETICS INC", "CYTOKINETICS INC COM STK NEW ("),
+            ("INSMED INC", "INSMED INC-NEW"),
+            ("UNIQURE NV", "UNIQURE N V ORD SHS (NLD)"),
+            ("PHARVARIS N V", "PHARVARIS N V REGISTERED ORDIA"),
+            ("CLOUDASTRUCTURE INC COM CL A", "CLOUDASTRUCTURE INC COM CL A N"),
+        ]:
+            with self.subTest(issuer=issuer):
+                self.assertTrue(master._issuer_compatible(issuer, description))
+                self.assertFalse(master._issuer_compatible("OTHER PHARMA INC", description))
+
+    def test_iwm_fund_brand_and_option_identity_stay_separate(self):
+        self.assertIsNone(master._fund_issuer_conflict(
+            ["ISHARES TR"], ["ISHARES RUSSELL 2000 ETF"], ["ISHARES TR"]
+        ))
+        state = self.fund_state()
+        built = master.rebuild_security_master(state, [
+            {"cusip": "02072L565", "instrument_type": kind,
+             "reported_issuer": "EA SERIES TRUST", "reported_class": "ALPHA ARCH 1-3"}
+            for kind in ("EQUITY", "PUT", "NOTE")
+        ])
+        self.assertEqual(built["records"]["02072L565|EQUITY"]["ticker"], "BOXX")
+        for kind in ("PUT", "NOTE"):
+            self.assertIsNone(built["records"][f"02072L565|{kind}"]["ticker"])
+
+
 if __name__ == "__main__":
     unittest.main()

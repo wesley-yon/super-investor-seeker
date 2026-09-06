@@ -244,7 +244,14 @@ only when official evidence meets a fail-closed mapping rule.
    missing or unequal proof fails closed. Every later quarterly bundle through
    2009 Q2 must cover all three calendar months, and every text member in a
    quarterly bundle is parsed.
-3. SEC company-ticker and fund-series files validate current symbols. Structured
+3. SEC company-ticker and fund-series files validate current symbols. For
+   titleless fund metadata, a unique current SEC CIK/series/class identity
+   corroborates the repeated exact FTD CUSIP-symbol pair. The checksummed fund
+   identity is retained in `symbol_validation_fund_identity`; an active official
+   13F issuer must agree with filer identity and its trust brand must occur in
+   each recent FTD description. Missing or competing fund identities cannot
+   supply this proof. Company-name normalization handles recognized trailing
+   share descriptions without fuzzy issuer matching. Structured
    Schedules 13D/G prove an exact CUSIP-to-CIK/class relationship, and a
    periodic filing's same-class inline XBRL context can complete the bridge to a
    symbol and exchange. Repeated 13F filer descriptions may classify an

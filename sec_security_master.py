@@ -3728,6 +3728,64 @@ def _validate_master_symbol_intervals(
         )
 
 
+def _valid_fund_identity(proof: object) -> bool:
+    return isinstance(proof, Mapping) and all(
+        isinstance(proof.get(field), str) and re.fullmatch(pattern, proof[field])
+        for field, pattern in {
+            "cik": r"[0-9]{10}",
+            "series_id": r"S[0-9]{9}",
+            "class_id": r"C[0-9]{9}",
+            "sha256": r"[0-9a-f]{64}",
+        }.items()
+    ) and int(proof["cik"]) > 0 and proof.get("url") == SEC_FUND_TICKERS_URL
+
+
+def _fund_validation_identities(state: Mapping[str, Any]) -> dict[str, dict]:
+    """A current unique SEC series/class corroborates an exact FTD symbol."""
+    source = state.get("sources", {}).get(SEC_FUND_TICKERS_URL, {})
+    if source.get("kind") != "sec_fund_tickers":
+        return {}
+    candidates: dict[str, list[dict]] = defaultdict(list)
+    symbols = set(source.get("symbols", []))
+    for row in source.get("fund_records", []):
+        symbol = row.get("symbol")
+        proof = {field: row.get(field) for field in ("cik", "series_id", "class_id")}
+        proof.update(symbol=symbol, url=SEC_FUND_TICKERS_URL, sha256=source.get("sha256"))
+        if symbol in symbols:
+            candidates[symbol].append(proof)
+    return {
+        symbol: rows[0] for symbol, rows in candidates.items()
+        if len({json.dumps(row, sort_keys=True) for row in rows}) == 1
+        and _valid_fund_identity(rows[0])
+    }
+
+
+def _fund_issuer_conflict(
+    reported_issuers: list[str],
+    ftd_descriptions: list[str],
+    official_issuers: list[str],
+) -> str | None:
+    # FTD descriptions name the product; 13F issuer fields name its trust.
+    # Require the exact official CUSIP's trust brand in every FTD description.
+    # The unique current series/class plus repeated exact FTD CUSIP remains
+    # the symbol proof; no symbol is inferred from these names.
+    def brand(value: str) -> list[str]:
+        return [token for token in re.findall(r"[A-Z0-9]+", value.upper())
+                if token not in {"TR", "TRUST", "SER", "SERIES", "THE"}]
+    if len(official_issuers) != 1 or not brand(official_issuers[0]):
+        return "fund_lacks_official_issuer_identity"
+    expected = brand(official_issuers[0])
+    if not ftd_descriptions or any(
+        not set(expected).issubset(brand(description))
+        for description in ftd_descriptions
+    ):
+        return "issuer_conflict_with_ftd_description"
+    return _issuer_conflict_reason(
+        reported_issuers=reported_issuers, ftd_descriptions=[],
+        sec_titles=[], official_issuers=official_issuers,
+    )
+
+
 def _validate_ftd_resolution_proof(
     entry: Mapping[str, Any],
     *,
@@ -3740,6 +3798,15 @@ def _validate_ftd_resolution_proof(
     confirmation_dates = entry.get("confirmation_dates")
     validation_sources = entry.get("symbol_validation_sources")
     validation_titles = entry.get("symbol_validation_titles")
+    fund_proof = entry.get("symbol_validation_fund_identity")
+    fund_validated = _valid_fund_identity(fund_proof) and fund_proof.get("symbol") == ticker and any(
+        source.get("kind") == "sec_fund_tickers"
+        and source.get("url") == fund_proof["url"]
+        and source.get("sha256") == fund_proof["sha256"]
+        for source in master.get("sources", [])
+    ) and "sec_fund_tickers" in (validation_sources or [])
+    if fund_proof is not None and not fund_validated:
+        raise SecurityMasterError(f"invalid SEC fund identity proof: {key}")
     minimum_dates = master.get("policy", {}).get(
         "min_confirmation_dates",
         DEFAULT_MIN_CONFIRMATION_DATES,
@@ -3760,7 +3827,7 @@ def _validate_ftd_resolution_proof(
         or any(kind not in _VALIDATION_SOURCE_KINDS for kind in validation_sources)
         or not set(validation_sources).issubset(source_kinds)
         or not isinstance(validation_titles, list)
-        or not validation_titles
+        or (not validation_titles and not fund_validated)
         or validation_titles != sorted(set(validation_titles))
         or any(
             not isinstance(title, str)
@@ -6468,7 +6535,7 @@ _ISSUER_SUFFIXES = frozenset({
 })
 
 
-def _issuer_proof_key(value: object | None) -> str:
+def _issuer_proof_key(value: object | None, *, normalize_class: bool = True) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(character for character in text if not unicodedata.combining(character))
     text = text.upper().replace("&", " AND ")
@@ -6477,6 +6544,16 @@ def _issuer_proof_key(value: object | None) -> str:
     # suffix; the issuer portion remains an exact, deterministic comparison.
     text = _ISSUER_SEMICOLON_CLASS_RE.sub("", text).strip()
     text = _ISSUER_TRAILING_CLASS_RE.sub("", text).strip()
+    if normalize_class:
+        # Strip only a recognized trailing share description. FTD fixed-width
+        # fields commonly end mid-parenthesis or include par value and country.
+        text = re.sub(
+            r"\s+(?:COM(?:MON)?(?:\s+(?:STK|STOCK))?|ORD(?:INARY)?(?:\s+SHS?)?|SHS?)"
+            r"(?:\s+(?:NEW|STK|STOCK|PAR|NPV)\b.*|\s+(?:USD|EUR|GBP|\$).*|\s*\(.*)?$",
+            "", text,
+        ).strip()
+        text = re.sub(r"(?<=INC)-NEW$", "", text)
+        text = re.sub(r"\bN[ .]*V\.?$", "NV", text)
     tokens = re.findall(r"[A-Z0-9]+", text)
     if tokens and tokens[0] == "THE":
         tokens = tokens[1:]
@@ -6485,9 +6562,15 @@ def _issuer_proof_key(value: object | None) -> str:
     return " ".join(tokens)
 
 
-def _issuer_compatible(left: object | None, right: object | None) -> bool:
-    left_key = _issuer_proof_key(left)
-    right_key = _issuer_proof_key(right)
+def _issuer_compatible(
+    left: object | None, right: object | None, *, normalize_class: bool = True
+) -> bool:
+    # Preserve previously admitted exact/prefix matches. Class normalization
+    # is an additional route, never a reason to withdraw an existing match.
+    if normalize_class and _issuer_compatible(left, right, normalize_class=False):
+        return True
+    left_key = _issuer_proof_key(left, normalize_class=normalize_class)
+    right_key = _issuer_proof_key(right, normalize_class=normalize_class)
     if not left_key or not right_key:
         return False
     if left_key == right_key:
@@ -6769,12 +6852,17 @@ def _validate_ftd_master_identity(
         for description in item.get("descriptions", [])
         if isinstance(description, str) and description
     })
-    issuer_conflict = _issuer_conflict_reason(
-        reported_issuers=reported_issuers,
-        ftd_descriptions=recent_descriptions,
-        sec_titles=list(entry.get("symbol_validation_titles", [])),
-        official_issuers=official_issuers,
-    )
+    if entry.get("symbol_validation_fund_identity"):
+        issuer_conflict = _fund_issuer_conflict(
+            reported_issuers, recent_descriptions, official_issuers,
+        )
+    else:
+        issuer_conflict = _issuer_conflict_reason(
+            reported_issuers=reported_issuers,
+            ftd_descriptions=recent_descriptions,
+            sec_titles=list(entry.get("symbol_validation_titles", [])),
+            official_issuers=official_issuers,
+        )
     if issuer_conflict:
         raise SecurityMasterError(
             f"resolved FTD proof conflicts with as-filed issuer evidence "
@@ -6956,6 +7044,7 @@ def rebuild_security_master(
         validation_exchanges,
     ) = _validation_symbol_metadata(state)
     official_index, official_source = _official_13f_index(state)
+    fund_identities = _fund_validation_identities(state)
     records: dict[str, dict[str, Any]] = {}
     quarantine: dict[str, dict[str, str]] = {}
     status_counts = {status: 0 for status in sorted(VALID_MAPPING_STATUSES)}
@@ -7206,6 +7295,11 @@ def rebuild_security_master(
                     ):
                         entry["security_label"] = recent_descriptions[0]
                         entry["security_label_source"] = "sec_ftd"
+                    fund_identity = fund_identities.get(candidate)
+                    if fund_identity and not validation_titles.get(candidate):
+                        entry["symbol_validation_fund_identity"] = fund_identity
+                    else:
+                        fund_identity = None
                     if len(candidate_dates) < min_confirmation_dates:
                         entry["resolution_reason"] = (
                             "insufficient_distinct_ftd_settlement_dates"
@@ -7214,16 +7308,21 @@ def rebuild_security_master(
                         entry["resolution_reason"] = (
                             "symbol_absent_from_current_sec_validation_inputs"
                         )
-                    elif not validation_titles.get(candidate):
+                    elif not validation_titles.get(candidate) and not fund_identity:
                         entry["resolution_reason"] = (
                             "symbol_lacks_current_sec_issuer_metadata"
                         )
                     elif (
-                        issuer_conflict := _issuer_conflict_reason(
-                            reported_issuers=reported_issuers,
-                            ftd_descriptions=recent_descriptions,
-                            sec_titles=validation_titles.get(candidate, []),
-                            official_issuers=official_issuers,
+                        issuer_conflict := (
+                            _fund_issuer_conflict(
+                                reported_issuers, recent_descriptions, official_issuers
+                            )
+                            if fund_identity else _issuer_conflict_reason(
+                                reported_issuers=reported_issuers,
+                                ftd_descriptions=recent_descriptions,
+                                sec_titles=validation_titles.get(candidate, []),
+                                official_issuers=official_issuers,
+                            )
                         )
                     ):
                         entry["mapping_status"] = "ambiguous"
