@@ -135,6 +135,52 @@ class CandidateRunnerTests(unittest.TestCase):
                     process.kill()
                     process.communicate(timeout=5)
 
+    def test_hard_kill_retains_last_complete_measurement_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ready = root / 'child.pid'
+            helper = Path(__file__).resolve().parents[1] / 'scripts/measure_runner_phase.py'
+            child = ('import os,pathlib,time;'
+                     f'pathlib.Path({str(ready)!r}).write_text(str(os.getpid()));'
+                     'time.sleep(20)')
+            process = subprocess.Popen(
+                [sys.executable, str(helper), '--name', 'hard_kill', '--root', str(root),
+                 '--report-dir', str(root / 'metrics'), '--', sys.executable, '-c', child],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            child_pid = None
+            report_path = root / 'metrics/hard_kill.json'
+            try:
+                deadline = time.monotonic() + 5
+                while not (ready.exists() and report_path.exists()) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists() and report_path.exists())
+                child_pid = int(ready.read_text())
+                before = report_path.read_bytes()
+                report = json.loads(before)
+                self.assertFalse(report['completed'])
+                self.assertIsNone(report['exit_code'])
+                self.assertGreater(report['minimum_free_bytes'], 0)
+                process.kill()
+                os.killpg(child_pid, signal.SIGTERM)
+                process.communicate(timeout=5)
+                self.assertEqual(process.returncode, -signal.SIGKILL)
+                retained = json.loads(report_path.read_bytes())
+                self.assertFalse(retained['completed'])
+                self.assertIsNone(retained['exit_code'])
+                self.assertGreaterEqual(retained['elapsed_seconds'], report['elapsed_seconds'])
+            finally:
+                if child_pid is None and ready.exists():
+                    child_pid = int(ready.read_text())
+                if child_pid is not None:
+                    try:
+                        os.killpg(child_pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
+
 
 if __name__ == '__main__':
     unittest.main()

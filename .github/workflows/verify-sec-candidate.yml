@@ -13,7 +13,7 @@ concurrency:
 
 env:
   DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
-  CANDIDATE_RELEASE_TAG: candidate-sec-20260906-02
+  CANDIDATE_RELEASE_TAG: candidate-sec-20260906-03
 
 jobs:
   verify:
@@ -140,7 +140,7 @@ jobs:
         run: |
           python scripts/measure_runner_phase.py --name regeneration \
             --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
-            python pipeline.py --regenerate-only --refresh-security-master
+            python scripts/run_profiled_pipeline.py --regenerate-only --refresh-security-master
 
       - name: Measure full generated data validation
         run: |
@@ -174,12 +174,13 @@ jobs:
           print('SEC_CANDIDATE_METRICS=' + json.dumps(rows, sort_keys=True))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               summary.write('Private SEC candidate verification; production publishing disabled.\n\n')
-              summary.write('| Phase | Seconds | Exit | Peak process PSS GiB (sampled) | Minimum free disk GiB |\n')
+              summary.write('| Phase | Seconds | Exit (unfinished if killed) | Peak process PSS GiB (sampled) | Minimum free disk GiB |\n')
               summary.write('|---|---:|---:|---:|---:|\n')
               for row in rows:
                   if 'phase' not in row:
                       continue
                   pss = row['peak_sampled_process_group_pss_bytes']
                   pss_text = 'unavailable' if pss is None else f'{pss / 2**30:.2f}'
-                  summary.write(f"| {row['phase']} | {row['elapsed_seconds']:.1f} | {row['exit_code']} | {pss_text} | {row['minimum_free_bytes'] / 2**30:.2f} |\n")
+                  exit_text = row['exit_code'] if row.get('completed', True) else 'unfinished'
+                  summary.write(f"| {row['phase']} | {row['elapsed_seconds']:.1f} | {exit_text} | {pss_text} | {row['minimum_free_bytes'] / 2**30:.2f} |\n")
           PY

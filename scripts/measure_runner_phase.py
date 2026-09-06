@@ -91,6 +91,45 @@ def measure(command: list[str], *, name: str, root: Path, report_dir: Path,
                 pass
     previous_handlers = {number: signal.signal(number, forward_signal)
                          for number in (signal.SIGINT, signal.SIGTERM)}
+    def checkpoint(status):
+        nonlocal minimum_free
+        ending = shutil.disk_usage(root)
+        minimum_free = min(minimum_free, ending.free)
+        oom_after = kernel_oom_kills()
+        maximum_child_rss = None
+        if status is not None:
+            maximum_child_rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+            if sys.platform != 'darwin':
+                maximum_child_rss *= 1024
+        report = {
+            'phase': name, 'exit_code': status, 'completed': status is not None,
+            'elapsed_seconds': round(time.monotonic() - started, 3),
+            'sampling_interval_seconds': interval_seconds,
+            'peak_sampled_process_group_rss_bytes': peak_rss,
+            'peak_sampled_process_group_pss_bytes': peak_pss,
+            'maximum_single_child_rss_bytes': maximum_child_rss,
+            'cgroup_memory_peak_before_bytes': cgroup_before,
+            'cgroup_memory_peak_after_bytes': read_number(peak_path),
+            'kernel_oom_kills_before': oom_before,
+            'kernel_oom_kills_after': oom_after,
+            'kernel_oom_kills_during_phase': (
+                max(0, oom_after - oom_before)
+                if oom_before is not None and oom_after is not None else None
+            ),
+            'filesystem_total_bytes': before.total,
+            'starting_free_bytes': before.free, 'minimum_free_bytes': minimum_free,
+            'ending_free_bytes': ending.free,
+            'peak_additional_disk_bytes': max(0, before.free - minimum_free),
+            'logical_cpu_count': os.cpu_count(),
+        }
+        # A hosted step timeout may SIGKILL the entire shell before finally
+        # runs. Keep the most recent complete sample independently of shutdown.
+        temporary = report_dir / f'.{name}.json.tmp'
+        temporary.write_text(json.dumps(report, indent=2) + '\n')
+        temporary.replace(report_dir / f'{name}.json')
+        return report
+
+    last_progress = started
     try:
         while True:
             minimum_free = min(minimum_free, shutil.disk_usage(root).free)
@@ -99,40 +138,16 @@ def measure(command: list[str], *, name: str, root: Path, report_dir: Path,
             if pss is not None:
                 peak_pss = max(peak_pss or 0, pss)
             status = process.poll()
+            report = checkpoint(status)
             if status is not None:
                 break
+            if time.monotonic() - last_progress >= 60:
+                print(json.dumps(report, sort_keys=True), flush=True)
+                last_progress = time.monotonic()
             time.sleep(interval_seconds)
     finally:
         for number, handler in previous_handlers.items():
             signal.signal(number, handler)
-    ending = shutil.disk_usage(root)
-    oom_after = kernel_oom_kills()
-    minimum_free = min(minimum_free, ending.free)
-    maximum_child_rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    if sys.platform != 'darwin':
-        maximum_child_rss *= 1024
-    report = {
-        'phase': name, 'exit_code': status,
-        'elapsed_seconds': round(time.monotonic() - started, 3),
-        'sampling_interval_seconds': interval_seconds,
-        'peak_sampled_process_group_rss_bytes': peak_rss,
-        'peak_sampled_process_group_pss_bytes': peak_pss,
-        'maximum_single_child_rss_bytes': maximum_child_rss,
-        'cgroup_memory_peak_before_bytes': cgroup_before,
-        'cgroup_memory_peak_after_bytes': read_number(peak_path),
-        'kernel_oom_kills_before': oom_before,
-        'kernel_oom_kills_after': oom_after,
-        'kernel_oom_kills_during_phase': (
-            max(0, oom_after - oom_before)
-            if oom_before is not None and oom_after is not None else None
-        ),
-        'filesystem_total_bytes': before.total,
-        'starting_free_bytes': before.free, 'minimum_free_bytes': minimum_free,
-        'ending_free_bytes': ending.free,
-        'peak_additional_disk_bytes': max(0, before.free - minimum_free),
-        'logical_cpu_count': os.cpu_count(),
-    }
-    (report_dir / f'{name}.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, sort_keys=True), flush=True)
     return report
 
