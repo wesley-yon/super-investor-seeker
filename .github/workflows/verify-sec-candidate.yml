@@ -13,7 +13,7 @@ concurrency:
 
 env:
   DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
-  CANDIDATE_RELEASE_TAG: candidate-sec-20260906-03
+  CANDIDATE_RELEASE_TAG: candidate-sec-20260906-04
 
 jobs:
   verify:
@@ -140,7 +140,7 @@ jobs:
         run: |
           python scripts/measure_runner_phase.py --name regeneration \
             --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
-            python scripts/run_profiled_pipeline.py --regenerate-only --refresh-security-master
+            python pipeline.py --regenerate-only --refresh-security-master
 
       - name: Measure full generated data validation
         run: |
