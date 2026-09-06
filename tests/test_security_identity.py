@@ -877,9 +877,6 @@ class RegistryPublicationGateTests(unittest.TestCase):
                 self.assertEqual(0, pipeline.main())
 
         rebuild_outputs.assert_called_once_with(
-            full_refresh=True,
-            company_ticker_data={},
-            refresh_official_fund_names=False,
             preserve_position_economics=True,
             apply_quantity_policy=False,
         )
@@ -932,7 +929,7 @@ class RegistryPublicationGateTests(unittest.TestCase):
         canonicalize = mock.Mock()
         with mock.patch.multiple(
             pipeline,
-            build_cusip_registry=mock.Mock(return_value={}),
+            build_cusip_registry=mock.Mock(return_value=pipeline.CusipRegistry()),
             write_security_labels=mock.Mock(),
             validate_cusip_registry=mock.Mock(
                 return_value=["ticker provenance mismatch"]

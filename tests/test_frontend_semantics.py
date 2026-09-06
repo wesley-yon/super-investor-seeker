@@ -18,15 +18,168 @@ class FrontendSemanticsTests(unittest.TestCase):
         end = cls.html.index("// ---------- sparkline", start)
         cls.logic = cls.html[start:end]
 
-    def run_javascript(self, body: str) -> object:
+    def run_javascript(self, body: str, *, application: bool = False) -> object:
+        logic = self.logic
+        if application:
+            logic = self.html.split("<script>", 1)[1].split("</script>", 1)[0]
+            init_start = logic.index("// ---------- init ----------")
+            init_end = logic.index("// ---------- URL routing ----------")
+            logic = logic[:init_start] + logic[init_end:]
         completed = subprocess.run(
-            ["node", "-e", f"{self.logic}\n{body}"],
+            ["node", "-e", f"{logic}\n{body}"],
             cwd=ROOT,
             check=True,
             capture_output=True,
             text=True,
         )
         return json.loads(completed.stdout)
+
+    def test_shared_security_text_map_rejects_invalid_sources_and_raw_ids(self) -> None:
+        result = self.run_javascript("""
+            const normalized = normalizeSecurityTextMap({
+              " ab1234567 ": "  Example   Security ",
+              "AB1234568": "ab1234568",
+              "AB1234569": 0,
+              "": "Missing identity",
+            });
+            console.log(JSON.stringify({
+              normalized,
+              nullPrototype: Object.getPrototypeOf(normalized) === null,
+              invalid: [undefined, null, false, 42, "bad", []]
+                .map(source => Object.keys(normalizeSecurityTextMap(source))),
+            }));
+        """)
+        self.assertEqual({"AB1234567": "Example Security"}, result["normalized"])
+        self.assertTrue(result["nullPrototype"])
+        self.assertEqual([[]] * 6, result["invalid"])
+
+    def test_index_fetches_preserve_fallback_fail_closed_and_retry_behavior(self) -> None:
+        result = self.run_javascript("""
+            (async () => {
+              let mode = "missing-bootstrap";
+              const requests = [];
+              global.fetch = async (url, options) => {
+                requests.push({url, options});
+                if (mode === "missing-bootstrap" && url.includes("funds-index")) {
+                  return {ok: false, status: 404};
+                }
+                if (mode === "unavailable-search") return {ok: false, status: 503};
+                return {ok: true, json: async () => ({
+                  data_contract_version: mode === "incompatible"
+                    ? DATA_CONTRACT_VERSION - 1 : DATA_CONTRACT_VERSION,
+                  funds: [{cik: 1, name: "Example Fund", q: [20261]}],
+                  tickers: [{stock_id: "037833100", ticker: "AAPL", cusip: "037833100"}],
+                })};
+              };
+              const fallback = await fetchBootstrapIndex();
+              const fallbackPaths = requests.splice(0).map(row => row.url);
+              mode = "incompatible";
+              let blocked = false;
+              try { await fetchBootstrapIndex(); }
+              catch (error) { blocked = error instanceof DataContractMismatchError; }
+              const incompatiblePaths = requests.splice(0).map(row => row.url);
+              idx = {funds: [], tickers: []};
+              mode = "unavailable-search";
+              await ensureSearchIndex().catch(() => {});
+              const retryable = searchIndexPromise === null && searchIndexError.message === "HTTP 503";
+              mode = "ready";
+              const tickers = await ensureSearchIndex();
+              console.log(JSON.stringify({
+                fallbackPaths, incompatiblePaths, blocked, retryable,
+                fallbackFund: fallback.funds[0].cik,
+                tickers: tickers.map(row => row.ticker),
+                retryPaths: requests.map(row => row.url),
+                requestOptions: requests.map(row => row.options),
+              }));
+            })();
+        """, application=True)
+        self.assertEqual(["data/funds-index.json", "data/index.json"], result["fallbackPaths"])
+        self.assertEqual(["data/funds-index.json"], result["incompatiblePaths"])
+        self.assertTrue(result["blocked"])
+        self.assertTrue(result["retryable"])
+        self.assertEqual(1, result["fallbackFund"])
+        self.assertEqual(["AAPL"], result["tickers"])
+        self.assertEqual(["data/index.json"] * 2, result["retryPaths"])
+        self.assertEqual([{"cache": "no-cache"}] * 2, result["requestOptions"])
+
+    def test_detail_cache_keeps_successes_and_reports_http_and_json_failures(self) -> None:
+        result = self.run_javascript("""
+            (async () => {
+              const errors = [], requests = [];
+              showLoadingMessage = () => {};
+              showLoadError = (title, path) => errors.push({title, path});
+              global.fetch = async url => {
+                requests.push(url);
+                return url.includes("missing") ? {ok: false, status: 404}
+                  : {ok: true, json: async () => {
+                      if (url.includes("invalid")) throw new SyntaxError("bad JSON");
+                      return {cik: 1};
+                    }};
+              };
+              const cache = new LRUCache(2);
+              const options = {cache, cacheKey: 1, url: "data/funds/1.json",
+                loadingMessage: "Loading", errorTitle: "Cannot load", logLabel: "fund"};
+              const first = await loadCachedJson(options);
+              const second = await loadCachedJson(options);
+              const missing = await loadCachedJson({...options, cacheKey: 2, url: "data/funds/missing.json"});
+              const invalid = await loadCachedJson({...options, cacheKey: 3, url: "data/funds/invalid.json"});
+              console.log(JSON.stringify({
+                cached: first === second, requests, errors, missing, invalid,
+                failuresNotCached: cache.get(2) === undefined && cache.get(3) === undefined,
+              }));
+            })();
+        """, application=True)
+        self.assertTrue(result["cached"])
+        self.assertTrue(result["failuresNotCached"])
+        self.assertIsNone(result["missing"])
+        self.assertIsNone(result["invalid"])
+        self.assertEqual([
+            "data/funds/1.json", "data/funds/missing.json", "data/funds/invalid.json",
+        ], result["requests"])
+        self.assertEqual([
+            {"title": "Cannot load", "path": "data/funds/missing.json"},
+            {"title": "Cannot load", "path": "data/funds/invalid.json"},
+        ], result["errors"])
+
+    def test_shared_identity_cells_preserve_routing_and_escape_labels(self) -> None:
+        result = self.run_javascript("""
+            securityKinds = {"000000001": "BOND"};
+            const holding = {cusip: "000000001", ticker: "NOTE", put_call: "CALL",
+              issuer: 'Example <script> & "quoted"'};
+            console.log(JSON.stringify({
+              current: holdingIdentityCells(holding, "var(--sf)"),
+              exited: holdingIdentityCells(holding),
+              missing: holdingIdentityCells({issuer: "Missing Identity"}),
+              holder: holderFundCell({cik: 7, name: 'Fund <img> & "quoted"'}),
+            }));
+        """, application=True)
+        self.assertEqual(result["exited"], result["current"].replace("background:var(--sf);", ""))
+        self.assertIn("loadStock('000000001|NOTE')", result["exited"])
+        self.assertIn("&lt;", result["exited"])
+        self.assertNotIn("<script>", result["exited"])
+        self.assertNotIn("onclick", result["missing"])
+        self.assertIn("loadFund(7)", result["holder"])
+        self.assertNotIn("<img>", result["holder"])
+
+    def test_badges_preserve_nonfinite_changes_and_sort_column_defaults(self) -> None:
+        result = self.run_javascript("""
+            const states = [null, {t:"NEW"}, {t:"EXIT"}, {t:"UP",p:1.25},
+              {t:"DOWN",p:2}, {t:"UP",p:Infinity}, {t:"DOWN",p:"3"}, {t:"SAME"}];
+            const sort = {col: "value", dir: "desc"};
+            const toggles = ["value", "value", "name", "name", "shares"].map(col => {
+              toggleSort(sort, col);
+              return {...sort};
+            });
+            console.log(JSON.stringify({
+              badges: states.map(state => badge(state).replace(/<[^>]+>/g, "")), toggles,
+            }));
+        """, application=True)
+        self.assertEqual(["—", "NEW", "EXIT", "+1.3%", "-2.0%", "INCREASED", "REDUCED", "—"], result["badges"])
+        self.assertEqual([
+            {"col": "value", "dir": "asc"}, {"col": "value", "dir": "desc"},
+            {"col": "name", "dir": "asc"}, {"col": "name", "dir": "desc"},
+            {"col": "shares", "dir": "desc"},
+        ], result["toggles"])
 
     def test_display_date_preserves_legacy_month_precision(self) -> None:
         date_start = self.html.index("function displayDate(")
@@ -74,7 +227,7 @@ class FrontendSemanticsTests(unittest.TestCase):
             "const PINNED_POPULAR_FUND_CIKS ="
         )
         constants_end = self.html.index(
-            "// Top 20 by market cap", constants_start
+            "// ---------- global state ----------", constants_start
         )
         lookup_start = self.html.index("let _popularFundsCache = null;")
         lookup_end = self.html.index(
@@ -288,7 +441,7 @@ class FrontendSemanticsTests(unittest.TestCase):
     ) -> None:
         result = self.run_javascript(
             """
-            securityLabels = normalizeSecurityLabelPayload({
+            securityLabels = normalizeSecurityTextMap({
               data_contract_version: 4,
               labels: {
                 "65339F655": "NEE.PRS 7.299% CORPORATE UNITS 02/15/29",
@@ -297,7 +450,7 @@ class FrontendSemanticsTests(unittest.TestCase):
                 "464286772": "EWY",
                 "057071870": "BCOIX",
               },
-            });
+            }.labels);
             securityKinds = normalizeSecurityKindPayload({
               kinds: {
                 "65339F655": "PREFERRED",
@@ -323,7 +476,7 @@ class FrontendSemanticsTests(unittest.TestCase):
                 "921937827",
               ],
             });
-            securityProductNames = normalizeSecurityProductNamePayload({
+            securityProductNames = normalizeSecurityTextMap({
               product_names: {
                 "464286772": "ISHARES MSCI SOUTH KOREA ETF",
                 "464287655": "ISHARES RUSSELL 2000 ETF",
@@ -333,7 +486,7 @@ class FrontendSemanticsTests(unittest.TestCase):
                 "65339F655": "SHOULD NOT OVERRIDE A PREFERRED",
                 "26210CAC8": "26210CAC8",
               },
-            });
+            }.product_names);
             const unit = {
               ticker: null,
               cusip: "65339F655",
@@ -607,7 +760,7 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertIn("security-label-position", self.html)
         self.assertIn("securityKinds = normalizeSecurityKindPayload(data)", self.html)
         self.assertIn(
-            "securityProductNames = normalizeSecurityProductNamePayload(data)",
+            "securityProductNames = normalizeSecurityTextMap(data.product_names)",
             self.html,
         )
         self.assertIn(
@@ -650,7 +803,7 @@ class FrontendSemanticsTests(unittest.TestCase):
             self.html,
         )
         self.assertEqual(
-            2,
+            1,
             self.html.count('title="${esc(companyName)}"'),
         )
         self.assertEqual(
@@ -1034,13 +1187,13 @@ class FrontendSemanticsTests(unittest.TestCase):
     ) -> None:
         result = self.run_javascript(
             """
-            securityLabels = normalizeSecurityLabelPayload({
+            securityLabels = normalizeSecurityTextMap({
               labels: {
                 "74347X831": "TQQQ",
                 "74350P675": "SQQQ",
                 "143658300": "CARNIVAL CORP LTD",
               },
-            });
+            }.labels);
             securityKinds = normalizeSecurityKindPayload({
               kinds: {
                 "74347X831": "ETF",

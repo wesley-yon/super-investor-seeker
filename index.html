@@ -8,164 +8,116 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+/* Shared layout primitives; appearance is defined by the theme below. */
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#03080e;--sf:#07111b;--cd:#0b1420;--cd2:#0e1926;--bd:#1d2a3a;--bd2:#28364a;--tx:#e6edf6;--mt:#8794a8;--ac:#4e8cff;--gn:#34d399;--rd:#ff5c63;--gd:#fbbf24}
-body{background:linear-gradient(180deg,#03080e 0%,#06101a 48%,#03080e 100%);color:var(--tx);font-family:'Source Sans 3',sans-serif;min-height:100vh}
-.mono{font-family:'JetBrains Mono',monospace}
-.hdr{border-bottom:1px solid rgba(148,163,184,.14);padding:11px 36px;display:flex;align-items:center;justify-content:space-between;background:rgba(3,8,14,.9);backdrop-filter:blur(14px);flex-wrap:wrap;gap:12px;position:sticky;top:0;z-index:100}
-.logo{cursor:pointer;display:flex;align-items:baseline;gap:10px;flex-shrink:0}
-.gsearch-wrap{position:relative;flex:1 1 360px;max-width:640px;min-width:220px}
-.gsearch-input{width:100%;background:rgba(11,20,32,.85);border:1px solid var(--bd2);color:var(--tx);padding:12px 44px 12px 16px;border-radius:7px;font-size:15px;outline:none;font-family:inherit}
-.gsearch-input:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(78,140,255,0.15)}
-.gsearch-results{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--cd);border:1px solid var(--bd);border-radius:10px;max-height:60vh;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4);display:none;z-index:101}
+body{min-height:100vh}
+.hdr{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;position:sticky;top:0;z-index:100}
+.logo{cursor:pointer;display:flex;flex-shrink:0}
+.gsearch-wrap{position:relative;flex:1 1 360px;min-width:220px}
+.gsearch-input{width:100%;outline:none;font-family:inherit}
+.gsearch-results{position:absolute;left:0;right:0;max-height:60vh;overflow-y:auto;display:none;z-index:101}
 .gsearch-results.open{display:block}
-.gsearch-section{padding:6px 14px 4px;font-size:10px;font-weight:600;color:var(--mt);text-transform:uppercase;letter-spacing:.08em;border-top:1px solid var(--bd);background:var(--sf)}
+.gsearch-section{font-weight:600;text-transform:uppercase;border-top:1px solid var(--bd)}
 .gsearch-section:first-child{border-top:none}
-.gsearch-item{padding:10px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;border-top:1px solid var(--bd)}
-.gsearch-item:hover,.gsearch-item.active{background:var(--sf)}
-.gsearch-tag{display:inline-flex;align-items:center;justify-content:center;min-width:38px;padding:2px 6px;border:none;border-radius:4px;font-size:9px;font-weight:700;text-align:center;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;line-height:1;margin:0;text-transform:uppercase}
-.gsearch-tag.fund{background:rgba(78,140,255,.15);color:var(--ac)}
-.gsearch-tag.stock{background:rgba(56,189,248,.15);color:#38bdf8}
-.gsearch-tag.note{background:rgba(148,163,184,.2);color:#94a3b8}
-.gsearch-tag.pref{background:rgba(164,139,250,.15);color:#a78bfa}
-.gsearch-tag.warrant{background:rgba(244,114,182,.15);color:#f472b6}
-.gsearch-tag.call{background:rgba(52,211,153,.15);color:var(--gn)}
-.gsearch-tag.put{background:rgba(248,113,113,.15);color:var(--rd)}
-.gsearch-tag.opt{background:rgba(251,191,36,.15);color:var(--gd)}
-.ht-tag{display:inline-flex;align-items:center;justify-content:center;min-width:38px;padding:2px 6px;border:none;border-radius:4px;font-size:9px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;line-height:1;white-space:nowrap;text-transform:uppercase}
-.ht-tag.stock{background:rgba(56,189,248,.15);color:#38bdf8}
-.ht-tag.call{background:rgba(52,211,153,.15);color:var(--gn)}
-.ht-tag.put{background:rgba(248,113,113,.15);color:var(--rd)}
-.ht-tag.opt{background:rgba(251,191,36,.15);color:var(--gd)}
-.ht-tag.note{background:rgba(148,163,184,.2);color:#94a3b8}
-.ht-tag.pref{background:rgba(164,139,250,.15);color:#a78bfa}
-.ht-tag.warrant{background:rgba(244,114,182,.15);color:#f472b6}
+.gsearch-item{cursor:pointer;display:flex;align-items:center;border-top:1px solid var(--bd)}
+.gsearch-tag{display:inline-flex;align-items:center;justify-content:center;font-weight:700;text-align:center;line-height:1;margin:0;text-transform:uppercase}
+.ht-tag{display:inline-flex;align-items:center;justify-content:center;font-weight:700;line-height:1;white-space:nowrap;text-transform:uppercase}
 .gsearch-empty{padding:16px;text-align:center;color:var(--mt);font-size:13px}
-.wrap{max-width:1600px;margin:0 auto;padding:30px 36px 56px}
+.wrap{margin:0 auto}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
 .card{background:var(--cd);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;cursor:pointer;position:relative;transition:border-color .15s}
 .card:hover{border-color:var(--ac)}
-.badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
-table{width:100%;border-collapse:collapse;font-size:14px}
-th{padding:11px 14px;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mt);border-bottom:1px solid var(--bd);user-select:none;white-space:nowrap}
-td{padding:10px 14px}
+table{width:100%;border-collapse:collapse}
+th{text-transform:uppercase;border-bottom:1px solid var(--bd);user-select:none;white-space:nowrap}
 tr{border-bottom:1px solid rgba(148,163,184,.12)}
-tbody tr:hover{background:rgba(78,140,255,.07)!important}
-tbody tr:hover .col-sticky{background:#0c1724!important}
-.tbl-wrap{overflow-x:auto;border-radius:0 0 8px 8px;border-top:1px solid var(--bd);-webkit-overflow-scrolling:touch}
-.col-sticky{position:sticky;left:0;z-index:2;border-right:2px solid var(--bd)}
+.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.col-sticky{position:sticky;left:0;z-index:2}
 thead .col-sticky{z-index:3}
 @media(max-width:768px){.col-rank{display:none}
 td.col-sticky{max-width:140px!important;font-size:12px!important}
-.home-hero{min-height:55vh;display:flex;flex-direction:column;justify-content:flex-end}
+.home-hero{flex-direction:column;justify-content:flex-end}
 .home-hero .search-bar-wrap{width:100%;max-width:none}
-.search-bar-wrap{max-width:none;padding:0}}
+.search-bar-wrap{padding:0}}
 th.sort{cursor:pointer;transition:color .12s}
-th.sort:hover{color:var(--tx)}
 th.sort .arr{display:inline-block;width:10px;margin-left:3px;color:var(--mt);font-size:10px;vertical-align:baseline}
-th.sort.active{color:var(--ac)}
-th.sort.active .arr{color:var(--ac)}
-.search-bar-wrap{position:relative;max-width:680px;margin:0 auto 32px}
-.search-bar{display:flex;gap:8px;max-width:680px;width:100%;margin:0 auto 32px}
-.search-bar input{flex:1;background:var(--cd);border:2px solid var(--ac);color:var(--tx);padding:16px 20px;border-radius:12px;font-size:18px;outline:none;font-family:inherit;box-shadow:0 0 0 4px rgba(78,140,255,0.1),0 4px 20px rgba(0,0,0,0.3)}
-.search-bar input:focus{border-color:var(--ac);box-shadow:0 0 0 4px rgba(78,140,255,0.2),0 4px 20px rgba(0,0,0,0.3)}
-.back{background:rgba(11,20,32,.65);border:1px solid var(--bd2);color:var(--tx);padding:8px 18px;border-radius:7px;cursor:pointer;font-size:13px;font-family:inherit}
-.back:hover{border-color:var(--ac);color:var(--tx)}
+.search-bar{display:flex;gap:8px}
+.search-bar input{flex:1;outline:none;font-family:inherit}
+.back{cursor:pointer;font-size:13px;font-family:inherit}
 .lbl{color:var(--mt);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-bottom:14px}
-h1{font-size:28px;font-weight:700}
-h2{font-size:22px;font-weight:700}
-a{color:var(--ac);cursor:pointer;text-decoration:none}
+h1{font-size:28px}
+h2{font-size:22px}
+a{cursor:pointer;text-decoration:none}
 a:hover{text-decoration:underline}
-.info-note{background:linear-gradient(180deg,rgba(12,23,35,.94),rgba(8,17,27,.94));border:1px solid var(--bd2);border-radius:8px;padding:12px 16px;margin-bottom:24px;font-size:13px;color:var(--mt);line-height:1.6}
-.info-note strong{color:var(--tx)}
-.empty{text-align:center;padding:80px 20px;color:var(--mt)}
+.info-note{margin-bottom:24px;font-size:13px}
+.empty{text-align:center}
 .empty h1{margin-bottom:16px;color:var(--tx)}
 .empty p{font-size:15px;max-width:520px;margin:0 auto;line-height:1.6}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:8px}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--bd);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
-.fund-page{display:grid;grid-template-columns:minmax(0,1fr) 296px;gap:28px;align-items:start}
+.fund-page{display:grid;align-items:start}
 .fund-main,.fund-sidebar,.fund-panel{min-width:0}
 .fund-sidebar{align-items:start}
-.fund-title{margin-bottom:16px}
-.fund-title h1{font-size:31px;line-height:1.08;margin-bottom:8px;letter-spacing:0;overflow-wrap:anywhere}
-.fund-meta{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--mt);font-size:14px}
-.fund-meta span+span:before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--mt);margin-right:12px;vertical-align:middle;opacity:.75}
-.fund-stat-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.9fr) minmax(0,1fr) minmax(0,1fr);gap:14px;margin-bottom:18px}
-.fund-stat{min-height:84px;background:linear-gradient(140deg,rgba(14,25,38,.96),rgba(7,16,25,.96));border:1px solid var(--bd2);border-radius:8px;padding:15px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px;overflow:hidden}
-.fund-stat-label{color:var(--mt);font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
-.fund-stat-value{font-size:27px;font-weight:800;line-height:1;color:var(--tx)}
-.fund-stat .mini{flex:0 0 auto;opacity:.9}
-.mini-donut{width:48px;height:48px;border-radius:50%;background:conic-gradient(var(--ac) var(--pct),rgba(78,140,255,.16) 0);position:relative}
-.mini-donut:after{content:"";position:absolute;inset:6px;background:var(--cd);border-radius:50%}
-.fund-panel,.side-panel{background:linear-gradient(180deg,rgba(12,23,35,.96),rgba(6,15,24,.96));border:1px solid var(--bd2);border-radius:8px;overflow:hidden}
-.fund-panel-head{height:58px;padding:0 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bd);gap:16px}
-.fund-panel-title{font-size:16px;font-weight:800}
+.fund-title h1{overflow-wrap:anywhere}
+.fund-meta{display:flex;align-items:center;flex-wrap:wrap}
+.fund-meta span+span:before{content:"";display:inline-block;border-radius:50%;vertical-align:middle}
+.fund-stat-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.9fr) minmax(0,1fr) minmax(0,1fr)}
+.fund-stat{display:flex;align-items:center;justify-content:space-between;overflow:hidden}
+.fund-stat-label{text-transform:uppercase}
+.fund-stat-value{line-height:1}
+.fund-stat .mini{flex:0 0 auto}
+.mini-donut{border-radius:50%;position:relative}
+.mini-donut:after{content:"";position:absolute;border-radius:50%}
+.fund-panel,.side-panel{overflow:hidden}
+.fund-panel-head{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bd);gap:16px}
 .exit-panel{margin-top:18px}
 .panel-count{margin-left:7px;color:var(--mt);font-size:12px;font-weight:600}
-.holdings-tools{display:flex;align-items:center;gap:10px;min-width:280px}
-.holdings-search{width:260px;background:#08111c;border:1px solid var(--bd2);color:var(--tx);border-radius:7px;padding:9px 34px 9px 13px;font-family:inherit;font-size:14px;outline:none}
-.holdings-search:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(78,140,255,.12)}
-.icon-btn{width:38px;height:34px;border-radius:7px;border:1px solid var(--bd2);background:#08111c;color:var(--mt);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px}
-.icon-btn:hover{border-color:var(--ac);color:var(--tx)}
-.fund-foot{padding:11px 16px;color:var(--mt);font-size:12px;text-align:center}
+.holdings-tools{display:flex;align-items:center;gap:10px}
+.holdings-search{font-family:inherit;outline:none}
+.icon-btn{display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px}
+.fund-foot{text-align:center}
 #fundTable{min-width:920px}
 #fundTable th:nth-child(3),#fundTable td:nth-child(3){max-width:220px}
 #fundExitTable,#stockExitTable{min-width:820px}
-.side-panel{padding:20px;margin-bottom:16px}
-.side-title{font-size:16px;font-weight:800;margin-bottom:20px}
-.summary-row{display:grid;grid-template-columns:minmax(42px,auto) 1fr auto;gap:9px;align-items:baseline;font-size:14px;margin:13px 0;color:var(--mt)}
-.summary-row .ticker{color:var(--ac);font-weight:800}
-.summary-row .value{font-family:'JetBrains Mono',monospace;color:var(--tx);font-size:13px}
-.summary-label{font-size:13px;color:var(--mt);margin:18px 0 10px}
-.summary-line{height:1px;background:var(--bd);margin:16px 0}
+.summary-row{display:grid;grid-template-columns:minmax(42px,auto) 1fr auto;align-items:baseline;color:var(--mt)}
+.summary-line{height:1px}
 .summary-company{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.summary-up{color:var(--gn)!important;font-weight:800}
-.summary-down{color:var(--rd)!important;font-weight:800}
-.summary-new{color:var(--gn);font-weight:800}
 .summary-exit{color:var(--rd)!important;font-weight:800}
-.summary-list{font-size:13px;line-height:1.7}
-.fineprint{color:var(--mt);font-size:12px;line-height:1.5;padding:4px 6px}
-.stock-page{display:grid;grid-template-columns:minmax(0,1fr) 336px;gap:28px;align-items:start}
+.summary-list{font-size:13px}
+.fineprint{padding:4px 6px}
+.stock-page{display:grid;align-items:start}
 .stock-main,.stock-sidebar,.stock-panel{min-width:0}
 .stock-sidebar{align-items:start}
-.stock-title{display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px;align-items:center;margin-bottom:18px}
-.ticker-mark{font-family:'JetBrains Mono',monospace;font-size:44px;line-height:1;font-weight:800;color:var(--ac);letter-spacing:0}
-.stock-title h1{font-size:23px;line-height:1.15;margin-bottom:6px;letter-spacing:0;overflow-wrap:anywhere}
-.stock-meta{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--mt);font-size:13px}
-.stock-meta span+span:before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--mt);margin-right:12px;vertical-align:middle;opacity:.75}
-.stock-stat-grid{display:grid;grid-template-columns:.95fr 1.05fr .95fr 1.2fr;gap:14px;margin-bottom:18px}
-.stock-stat{min-height:84px;background:linear-gradient(140deg,rgba(14,25,38,.96),rgba(7,16,25,.96));border:1px solid var(--bd2);border-radius:8px;padding:15px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px;overflow:hidden}
-.stock-stat-label{color:var(--mt);font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
-.stock-stat-value{font-size:25px;font-weight:800;line-height:1;color:var(--tx)}
-.stock-stat .mini{flex:0 0 auto;opacity:.9}
+.stock-title{display:grid;grid-template-columns:auto minmax(0,1fr)}
+.ticker-mark{line-height:1}
+.stock-title h1{margin-bottom:6px;overflow-wrap:anywhere}
+.stock-meta{display:flex;align-items:center;flex-wrap:wrap}
+.stock-meta span+span:before{content:"";display:inline-block;border-radius:50%;vertical-align:middle}
+.stock-stat-grid{display:grid;grid-template-columns:.95fr 1.05fr .95fr 1.2fr}
+.stock-stat{display:flex;align-items:center;justify-content:space-between;overflow:hidden}
+.stock-stat-label{text-transform:uppercase}
+.stock-stat-value{line-height:1}
+.stock-stat .mini{flex:0 0 auto}
 .stock-largest{display:flex;align-items:center;gap:14px;min-width:0}
-.stock-icon{width:34px;height:34px;flex:0 0 34px;color:var(--mt);opacity:.9}
-.stock-largest-name{font-size:15px;font-weight:800;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.stock-largest-meta{font-family:'JetBrains Mono',monospace;color:var(--mt);font-size:12px;margin-top:4px;white-space:nowrap}
+.stock-icon{width:34px;height:34px;flex:0 0 34px;opacity:.9}
+.stock-largest-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stock-largest-meta{margin-top:4px;white-space:nowrap}
 #stockTable{min-width:1040px}
-.stock-table-footer{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;padding:13px 16px;color:var(--mt);font-size:13px;border-top:1px solid var(--bd)}
+.stock-table-footer{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;font-size:13px;border-top:1px solid var(--bd)}
 .stock-pagination{display:flex;gap:8px;align-items:center;justify-content:center}
-.page-btn{min-width:32px;height:30px;border:none;border-radius:6px;background:transparent;color:var(--tx);font-family:'JetBrains Mono',monospace;cursor:pointer}
-.page-btn:hover{background:rgba(78,140,255,.12);color:var(--ac)}
-.page-btn.active{background:var(--ac);color:#fff}
+.page-btn{background:transparent;cursor:pointer}
 .page-btn[disabled]{cursor:default;color:var(--mt);opacity:.7}
 .rows-control{justify-self:end;display:flex;align-items:center;gap:8px;white-space:nowrap}
-.rows-control select{background:#08111c;border:1px solid var(--bd2);color:var(--tx);border-radius:7px;padding:8px 28px 8px 12px;font-family:inherit}
-.stock-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;color:var(--tx);font-weight:700;margin:18px 0 9px}
+.rows-control select{font-family:inherit}
+.stock-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .stock-summary-head:first-of-type{margin-top:0}
-.summary-action{background:transparent;border:0;color:var(--ac);font:inherit;font-size:12px;cursor:pointer}
+.summary-action{background:transparent;border:0;font:inherit;cursor:pointer}
 .summary-action:hover{text-decoration:underline}
-.stock-summary-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:baseline;font-size:14px;margin:11px 0;color:var(--mt)}
+.stock-summary-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:baseline;font-size:14px}
 .stock-summary-rank{font-size:12px;color:var(--mt)}
 .stock-summary-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
-.stock-summary-name:hover{color:var(--ac)}
-.stock-summary-value{font-family:'JetBrains Mono',monospace;color:var(--tx);font-size:13px;font-weight:700}
-.fund-data-footer,.stock-data-footer{grid-column:1/-1;border-top:1px solid rgba(148,163,184,.12);padding-top:12px;margin-top:2px}
-@media(max-width:1350px){.stock-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:1200px){.stock-page{grid-template-columns:1fr}.stock-sidebar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
-@media(max-width:768px){.stock-page{gap:16px}.stock-title{grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:start;margin-bottom:12px}.ticker-mark{font-size:34px}.stock-title h1{font-size:22px;margin-bottom:4px}.stock-meta{font-size:12px;gap:4px 8px}.stock-meta span+span:before{display:none}.stock-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px}.stock-sidebar{grid-template-columns:1fr}.stock-stat{min-height:62px;padding:10px 12px;gap:8px}.stock-stat-label{font-size:10px;margin-bottom:3px}.stock-stat-value{font-size:21px}.stock-stat .mini,.stock-icon{width:28px;height:28px;max-width:72px}.stock-stat:last-child{grid-column:1/-1}.stock-largest{gap:10px}.stock-largest-name{font-size:14px}.stock-largest-meta{font-size:11px}.stock-panel .fund-panel-head{height:auto;min-height:0;padding:10px 12px;gap:10px;flex-direction:row;align-items:center}.stock-panel .fund-panel-title{font-size:15px}.stock-panel .holdings-tools{gap:8px;width:auto;flex:1}.stock-panel .holdings-search{width:100%;min-width:0;padding:8px 32px 8px 12px}.stock-table-footer{grid-template-columns:1fr;justify-items:start;padding:10px 12px}.stock-pagination{justify-content:flex-start;flex-wrap:wrap}.rows-control{justify-self:start}.fund-data-footer,.stock-data-footer{padding:10px 0 0}#stockTable{min-width:700px;font-size:13px;table-layout:fixed}#stockTable th,#stockTable td{padding:9px 10px}#stockTable th:nth-child(2),#stockTable td:nth-child(2){width:160px;max-width:160px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#stockTable th:nth-child(3),#stockTable td:nth-child(3){width:92px}#stockTable th:nth-child(4),#stockTable td:nth-child(4){width:92px}#stockTable th:nth-child(5),#stockTable td:nth-child(5){width:82px}#stockTable th:nth-child(6),#stockTable td:nth-child(6){width:94px}#stockTable th:nth-child(7),#stockTable td:nth-child(7){width:72px}#stockTable th:nth-child(8),#stockTable td:nth-child(8){width:94px}}
-@media(max-width:1100px){.fund-page{grid-template-columns:1fr}.fund-sidebar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.side-panel{margin-bottom:0}.fund-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:768px){.hdr{padding:10px 16px}.logo span:last-child{font-size:14px!important}.gsearch-wrap{order:3;flex-basis:100%;max-width:none}.back{padding:7px 12px;margin-left:auto}.wrap{padding:22px 16px 42px}.fund-title{margin-bottom:14px}.fund-title h1{font-size:25px;line-height:1.15}.fund-meta{font-size:13px;gap:6px 10px}.fund-meta span+span:before{display:none}.fund-stat-grid,.fund-sidebar{grid-template-columns:1fr}.fund-stat{min-height:78px;padding:14px}.fund-stat-value{font-size:24px}.fund-stat .mini{max-width:104px}.fund-panel-head{height:auto;align-items:stretch;flex-direction:column;padding:14px}.holdings-tools{min-width:0;width:100%}.holdings-search{width:100%;min-width:0}.summary-row{grid-template-columns:minmax(52px,auto) minmax(0,1fr) auto}#fundTable{min-width:738px;font-size:13px;table-layout:fixed}#fundTable th,#fundTable td{padding:9px 10px}#fundTable th:nth-child(2),#fundTable td:nth-child(2){width:124px;max-width:124px!important}#fundTable th:nth-child(3),#fundTable td:nth-child(3){width:150px;max-width:150px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#fundTable th:nth-child(4),#fundTable td:nth-child(4){width:90px}#fundTable th:nth-child(5),#fundTable td:nth-child(5){width:92px}#fundTable th:nth-child(6),#fundTable td:nth-child(6){width:92px}#fundTable th:nth-child(7),#fundTable td:nth-child(7){width:94px}#fundTable th:nth-child(8),#fundTable td:nth-child(8){width:78px}#fundTable th:nth-child(9),#fundTable td:nth-child(9){width:72px}#fundTable th:nth-child(10),#fundTable td:nth-child(10){width:86px}}
+.fund-data-footer,.stock-data-footer{grid-column:1/-1;border-top:1px solid rgba(148,163,184,.12)}
+@media(max-width:768px){.stock-title h1{margin-bottom:4px}.stock-stat .mini,.stock-icon{width:28px;height:28px;max-width:72px}.stock-largest{gap:10px}.stock-panel .fund-panel-head{height:auto;min-height:0}.stock-panel .fund-panel-title{font-size:15px}.stock-panel .holdings-tools{gap:8px;flex:1}.stock-panel .holdings-search{min-width:0;padding:8px 32px 8px 12px}.stock-pagination{justify-content:flex-start;flex-wrap:wrap}.fund-data-footer,.stock-data-footer{padding:10px 0 0}#stockTable{min-width:700px;font-size:13px;table-layout:fixed}#stockTable th,#stockTable td{padding:9px 10px}#stockTable th:nth-child(2),#stockTable td:nth-child(2){width:160px;max-width:160px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#stockTable th:nth-child(3),#stockTable td:nth-child(3){width:92px}#stockTable th:nth-child(4),#stockTable td:nth-child(4){width:92px}#stockTable th:nth-child(5),#stockTable td:nth-child(5){width:82px}#stockTable th:nth-child(6),#stockTable td:nth-child(6){width:94px}#stockTable th:nth-child(7),#stockTable td:nth-child(7){width:72px}#stockTable th:nth-child(8),#stockTable td:nth-child(8){width:94px}}
+@media(max-width:768px){.logo span:last-child{font-size:14px!important}.holdings-search{min-width:0}.summary-row{grid-template-columns:minmax(52px,auto) minmax(0,1fr) auto}#fundTable{min-width:738px;font-size:13px;table-layout:fixed}#fundTable th,#fundTable td{padding:9px 10px}#fundTable th:nth-child(2),#fundTable td:nth-child(2){width:124px;max-width:124px!important}#fundTable th:nth-child(3),#fundTable td:nth-child(3){width:150px;max-width:150px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#fundTable th:nth-child(4),#fundTable td:nth-child(4){width:90px}#fundTable th:nth-child(5),#fundTable td:nth-child(5){width:92px}#fundTable th:nth-child(6),#fundTable td:nth-child(6){width:92px}#fundTable th:nth-child(7),#fundTable td:nth-child(7){width:94px}#fundTable th:nth-child(8),#fundTable td:nth-child(8){width:78px}#fundTable th:nth-child(9),#fundTable td:nth-child(9){width:72px}#fundTable th:nth-child(10),#fundTable td:nth-child(10){width:86px}}
 </style>
 <style id="analysts-notebook-theme">
 /* Analyst's Notebook visual system. App behavior and DOM contracts remain unchanged. */
@@ -731,8 +683,7 @@ const FUND_PRODUCT_NAME_KINDS = new Set([
   "CLOSED-END FUND",
 ]);
 
-function normalizeSecurityLabelPayload(data) {
-  const source = data?.labels;
+function normalizeSecurityTextMap(source) {
   if (!source || typeof source !== "object" || Array.isArray(source)) {
     return Object.create(null);
   }
@@ -761,21 +712,6 @@ function normalizeSecurityKindPayload(data) {
   return normalized;
 }
 
-function normalizeSecurityProductNamePayload(data) {
-  const source = data?.product_names;
-  if (!source || typeof source !== "object" || Array.isArray(source)) {
-    return Object.create(null);
-  }
-  const normalized = Object.create(null);
-  for (const [rawCusip, rawName] of Object.entries(source)) {
-    const cusip = String(rawCusip || "").trim().toUpperCase();
-    const name = String(rawName || "").trim().replace(/\s+/g, " ");
-    if (!cusip || !name || name.toUpperCase() === cusip) continue;
-    normalized[cusip] = name;
-  }
-  return normalized;
-}
-
 function normalizeSecurityFundIdentityPayload(data) {
   const source = data?.fund_identities;
   if (!Array.isArray(source)) return new Set();
@@ -786,19 +722,21 @@ function normalizeSecurityFundIdentityPayload(data) {
   );
 }
 
+async function fetchJson(url) {
+  const response = await fetch(url, { cache: "no-cache" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 async function ensureSecurityLabels() {
   if (!securityLabelsPromise) {
-    securityLabelsPromise = fetch("data/security_labels.json", { cache: "no-cache" })
-      .then(response => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();
-      })
+    securityLabelsPromise = fetchJson("data/security_labels.json")
       .then(data => {
         assertCompatibleDataContract(data, "data/security_labels.json");
         assertRequiredSecurityMetadata(data, "data/security_labels.json");
-        securityLabels = normalizeSecurityLabelPayload(data);
+        securityLabels = normalizeSecurityTextMap(data.labels);
         securityKinds = normalizeSecurityKindPayload(data);
-        securityProductNames = normalizeSecurityProductNamePayload(data);
+        securityProductNames = normalizeSecurityTextMap(data.product_names);
         securityFundIdentities = normalizeSecurityFundIdentityPayload(data);
         return securityLabels;
       })
@@ -1767,15 +1705,11 @@ function spark(arr) {
 
 function badge(ch) {
   if (!ch) return `<span class="badge mono" style="color:var(--mt)">—</span>`;
-  const m = {
-    NEW:  ["var(--gn-soft)", "var(--gn)", "NEW"],
-    UP:   ["var(--gn-soft)", "var(--gn)", Number.isFinite(ch.p) ? `+${Math.abs(ch.p).toFixed(1)}%` : "INCREASED"],
-    DOWN: ["var(--rd-soft)", "var(--rd)", Number.isFinite(ch.p) ? `-${Math.abs(ch.p).toFixed(1)}%` : "REDUCED"],
-    EXIT: ["var(--rd-soft)", "var(--rd)", "EXIT"],
-    SAME: ["transparent",    "var(--mt)", "—"]
-  };
-  const [bg, co, tx] = m[ch.t] || m.SAME;
-  return `<span class="badge mono" style="background:${bg};color:${co}">${tx}</span>`;
+  const positive = ch.t === "NEW" || ch.t === "UP";
+  const negative = ch.t === "EXIT" || ch.t === "DOWN";
+  const bg = positive ? "var(--gn-soft)" : negative ? "var(--rd-soft)" : "transparent";
+  const color = positive ? "var(--gn)" : negative ? "var(--rd)" : "var(--mt)";
+  return `<span class="badge mono" style="background:${bg};color:${color}">${changeText(ch)}</span>`;
 }
 
 function displayDate(dateStr) {
@@ -1980,7 +1914,7 @@ function holdersIcon() {
   </svg>`;
 }
 
-function summaryEvent(label, row, emptyText, change = false) {
+function summaryEvent(label, row, emptyText) {
   if (!row) {
     return `<div class="summary-label">${label}</div><div class="summary-list">${emptyText}</div>`;
   }
@@ -1988,8 +1922,35 @@ function summaryEvent(label, row, emptyText, change = false) {
     <div class="summary-row">
       <span class="ticker">${esc(fundTicker(row))}</span>
       <span class="summary-company">${esc(displayIssuer(holdingDisplayCompany(row)))}</span>
-      <span class="value ${change ? esc(changeClass(row.ch)) : ""}">${change ? esc(changeText(row.ch)) : fP(row.pct)}</span>
+      <span class="value ${esc(changeClass(row.ch))}">${esc(changeText(row.ch))}</span>
     </div>`;
+}
+
+function statCard(kind, label, value, visual) {
+  return `<div class="${kind}-stat">
+            <div>
+              <div class="${kind}-stat-label">${label}</div>
+              <div class="${kind}-stat-value mono">${value}</div>
+            </div>
+            ${visual}
+          </div>`;
+}
+
+function holdingIdentityCells(h, rowBg = "") {
+  const lookupId = stockLookupId(h.cusip || h.ticker, holdingPublishedInstrumentType(h));
+  const displayLabel = fundTicker(h);
+  const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
+  const background = rowBg ? `background:${rowBg};` : "";
+  const securityCell = lookupId
+    ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}</td>`
+    : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;${background}white-space:nowrap">${esc(displayLabel)}</td>`;
+  return `${securityCell}
+      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>`;
+}
+
+function holderFundCell(holder, rowBg = "") {
+  const background = rowBg ? `;background:${rowBg}` : "";
+  return `<td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap${background}" onclick="loadFund(${holder.cik})">${esc(displayHolderName(holder.name || ""))}</td>`;
 }
 
 
@@ -2028,9 +1989,6 @@ const POPULAR_FUND_NEEDLES = [
   "LONE PINE",
 ];
 
-// Top 20 by market cap, loosely — matched against idx.tickers so anything
-// the pipeline couldn't resolve (e.g. ticker renames, CUSIP-only holdings)
-// silently drops out.
 // ---------- global state ----------
 let idx = null;                  // lightweight fund bootstrap + lazy ticker search
 let fundIndexByCik = new Map();  // one O(1) reporting-calendar lookup per holder
@@ -2056,7 +2014,6 @@ class LRUCache {
     else if (this.m.size >= this.max) this.m.delete(this.m.keys().next().value);
     this.m.set(k, v);
   }
-  has(k) { return this.m.has(k); }
 }
 const fundCache = new LRUCache(50);
 const stockCache = new LRUCache(50);
@@ -2141,7 +2098,6 @@ async function loadCachedJson({
   url,
   loadingMessage,
   errorTitle,
-  errorPath,
   logLabel,
 }) {
   let data = cache.get(cacheKey);
@@ -2149,14 +2105,12 @@ async function loadCachedJson({
 
   showLoadingMessage(loadingMessage);
   try {
-    const r = await fetch(url, { cache: "no-cache" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    data = await r.json();
+    data = await fetchJson(url);
     cache.set(cacheKey, data);
     return data;
   } catch (e) {
     console.error(`${logLabel} fetch failed:`, e);
-    showLoadError(errorTitle, errorPath);
+    showLoadError(errorTitle, url);
     return null;
   }
 }
@@ -2235,25 +2189,22 @@ const DEFAULT_DIR = {
   value: "desc", shares: "desc", qoq: "desc",
 };
 
+function toggleSort(sort, col) {
+  sort.dir = sort.col === col
+    ? sort.dir === "asc" ? "desc" : "asc"
+    : DEFAULT_DIR[col] || "desc";
+  sort.col = col;
+}
+
 function onFundSort(col) {
-  if (fundSort.col === col) {
-    fundSort.dir = fundSort.dir === "asc" ? "desc" : "asc";
-  } else {
-    fundSort.col = col;
-    fundSort.dir = DEFAULT_DIR[col] || "desc";
-  }
+  toggleSort(fundSort, col);
   curFundRows = sortRows(curFundRows, fundSort.col, fundSort.dir, "fund");
   renderFundTbody();
   updateSortArrows("fundTable", fundSort);
 }
 
 function onStockSort(col) {
-  if (stockSort.col === col) {
-    stockSort.dir = stockSort.dir === "asc" ? "desc" : "asc";
-  } else {
-    stockSort.col = col;
-    stockSort.dir = DEFAULT_DIR[col] || "desc";
-  }
+  toggleSort(stockSort, col);
   curStockRows = sortRows(curStockRows, stockSort.col, stockSort.dir, "stock");
   stockPage = 1;
   renderStockTbody();
@@ -2300,9 +2251,7 @@ function normalizeSearchTickers(data) {
 
 async function fetchBootstrapIndex() {
   try {
-    const r = await fetch("data/funds-index.json", { cache: "no-cache" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
+    const data = await fetchJson("data/funds-index.json");
     assertCompatibleDataContract(data, "data/funds-index.json");
     if (!data || !Array.isArray(data.funds) || data.funds.length === 0) {
       throw new Error("funds-index.json has no funds");
@@ -2313,9 +2262,7 @@ async function fetchBootstrapIndex() {
     if (error instanceof DataContractMismatchError) throw error;
     // Safe rollout fallback for a stale Pages deployment or an older checkout.
     console.warn("funds-index.json load failed; falling back to index.json:", error);
-    const r = await fetch("data/index.json", { cache: "no-cache" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
+    const data = await fetchJson("data/index.json");
     assertCompatibleDataContract(data, "data/index.json");
     data.tickers = normalizeSearchTickers(data);
     return data;
@@ -2326,11 +2273,7 @@ async function ensureSearchIndex() {
   if (Array.isArray(idx?.tickers) && idx.tickers.length) return idx.tickers;
   if (!searchIndexPromise) {
     searchIndexError = null;
-    searchIndexPromise = fetch("data/index.json", { cache: "no-cache" })
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    searchIndexPromise = fetchJson("data/index.json")
       .then(data => {
         assertCompatibleDataContract(data, "data/index.json");
         const tickers = normalizeSearchTickers(data);
@@ -2708,7 +2651,6 @@ async function loadFund(cik, opts = {}) {
     url: `data/funds/${cik}.json`,
     loadingMessage: `Loading fund ${cik}...`,
     errorTitle: `Couldn't load fund ${cik}`,
-    errorPath: `data/funds/${cik}.json`,
     logLabel: "fund",
   });
   await securityLabelsReady;
@@ -2800,21 +2742,12 @@ function renderFund(f) {
   );
 
   // Build per-security history across filings for changes and sparklines.
-  const hh = {}; // key -> { ticker, issuer, cusip, history: {date: {shares,value}} }
+  const holdingHistories = {}; // position key -> date -> quantity/value record
   quarters.forEach(q => {
     (q.holdings || []).forEach(h => {
       const key = holdingHistoryKey(h);
-      if (!hh[key]) {
-        hh[key] = {
-          ticker: h.ticker,
-          issuer: h.issuer,
-          cusip: h.cusip,
-          holding_type: h.holding_type,
-          option_type: h.option_type,
-          history: {},
-        };
-      }
-      hh[key].history[q.report_date] = {
+      if (!holdingHistories[key]) holdingHistories[key] = {};
+      holdingHistories[key][q.report_date] = {
         date: q.report_date,
         shares: h.shares || 0,
         value: h.value || 0,
@@ -2827,8 +2760,8 @@ function renderFund(f) {
   // Enrich current quarter's holdings
   const enriched = (cur.holdings || []).map(h => {
     const key = holdingHistoryKey(h);
-    const hist = hh[key] || { history: {} };
-    const prevRec = prev ? hist.history[prev.report_date] : null;
+    const history = holdingHistories[key] || {};
+    const prevRec = prev ? history[prev.report_date] : null;
     const pct = cur.total_value > 0 ? (h.value / cur.total_value) * 100 : 0;
     const prevPct = (prevRec && prev && prev.total_value > 0)
       ? (prevRec.value / prev.total_value) * 100
@@ -2847,7 +2780,7 @@ function renderFund(f) {
       : null;
 
     const shareHistory = quartersAsc.map(
-      q => hist.history[q.report_date] || null
+      q => history[q.report_date] || null
     );
     const sparkData = contiguousQuarterHistory &&
       shareTrendIsComparable(
@@ -2856,7 +2789,7 @@ function renderFund(f) {
       )
       ? shareHistory.map(record => record.shares)
       : [];
-    return { ...h, pct, prevPct, ch, sparkData, _key: key };
+    return { ...h, pct, prevPct, ch, sparkData };
   });
   enriched.sort((a, b) => (b.value || 0) - (a.value || 0));
 
@@ -2869,10 +2802,10 @@ function renderFund(f) {
         .filter(h => !currentKeys.has(holdingHistoryKey(h)))
         .map(h => {
           const key = holdingHistoryKey(h);
-          const hist = hh[key] || { history: {} };
+          const history = holdingHistories[key] || {};
           const prevPct = prev.total_value > 0 ? ((h.value || 0) / prev.total_value) * 100 : 0;
           const shareHistory = quartersAsc.map(
-            q => hist.history[q.report_date] || null
+            q => history[q.report_date] || null
           );
           return {
             ...h,
@@ -2886,8 +2819,6 @@ function renderFund(f) {
               )
               ? shareHistory.map(record => record.shares)
               : [],
-            exitReportDate: cur.report_date,
-            _key: key,
           };
         })
         .sort((a, b) => (b.value || 0) - (a.value || 0))
@@ -2919,17 +2850,9 @@ function renderFund(f) {
   curFundRows = sortRows(enriched, fundSort.col, fundSort.dir, "fund");
   const sec13fUrl = sec13fFilingsUrl(f);
   const fundExitRows = exited.map((h, i) => {
-    const ht = holdingPublishedInstrumentType(h);
-    const displayLabel = fundTicker(h);
-    const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
-    const lookupId = stockLookupId(h.cusip || h.ticker, ht);
-    const securityCell = lookupId
-      ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;white-space:nowrap" onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}</td>`
-      : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;white-space:nowrap">${esc(displayLabel)}</td>`;
     return `<tr>
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:11px">${i + 1}</td>
-      ${securityCell}
-      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>
+      ${holdingIdentityCells(h)}
       <td class="mono" style="text-align:right;color:var(--mt)">${fP(h.prevPct)}</td>
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
       <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed, h.quantity_unknown)}</td>
@@ -2973,33 +2896,15 @@ function renderFund(f) {
 
         ${fundStatusNotice}
         <div class="fund-stat-grid">
-          <div class="fund-stat">
-            <div>
-              <div class="fund-stat-label">13F Equity Value</div>
-              <div class="fund-stat-value mono">${fV(cur.total_value)}</div>
-            </div>
-            ${miniLine(valuesAsc)}
-          </div>
-          <div class="fund-stat">
-            <div>
-              <div class="fund-stat-label">Positions</div>
-              <div class="fund-stat-value mono">${enriched.length.toLocaleString()}</div>
-            </div>
-            ${miniBars(positionsAsc)}
-          </div>
+          ${statCard("fund", "13F Equity Value", fV(cur.total_value), miniLine(valuesAsc))}
+          ${statCard("fund", "Positions", enriched.length.toLocaleString(), miniBars(positionsAsc))}
           <div class="fund-stat">
             <div class="top-position-copy">
               <div class="fund-stat-label">Top Position</div>
               <div class="fund-stat-value mono top-position-value ${top && securityLabelNeedsWrap(fundTicker(top)) ? "security-label-position" : ""}"><span class="top-position-symbol">${esc(fundTicker(top))}</span><span class="top-position-percent">${top ? fP(top.pct) : "—"}</span></div>
             </div>
           </div>
-          <div class="fund-stat">
-            <div>
-              <div class="fund-stat-label">Top 5 Concentration</div>
-              <div class="fund-stat-value mono">${fP(top5Pct)}</div>
-            </div>
-            ${donut(top5Pct)}
-          </div>
+          ${statCard("fund", "Top 5 Concentration", fP(top5Pct), donut(top5Pct))}
         </div>
 
         <section class="fund-panel">
@@ -3041,9 +2946,9 @@ function renderFund(f) {
             </div>
           `).join("")}
           <div class="summary-line"></div>
-          ${summaryEvent("Largest Increase", largestIncrease, "No increased positions", true)}
+          ${summaryEvent("Largest Increase", largestIncrease, "No increased positions")}
           <div class="summary-line"></div>
-          ${summaryEvent("Largest Reduction", largestReduction, "No reduced or exited positions", true)}
+          ${summaryEvent("Largest Reduction", largestReduction, "No reduced or exited positions")}
           <div class="summary-line"></div>
           <div class="summary-label">New Position</div>
           <div class="summary-list">${newPositions.length ? newPositions.map(h => `<span class="summary-new">${esc(fundTicker(h))}</span> ${esc(displayIssuer(holdingDisplayCompany(h)))}`).join("<br>") : "No new positions"}</div>
@@ -3078,18 +2983,10 @@ function renderFundTbody() {
     : curFundRows;
 
   const rows = visibleRows.map((h, i) => {
-    const ht = holdingPublishedInstrumentType(h);
     const rowBg = i%2 ? "var(--sf)" : "#06101a";
-    const displayLabel = fundTicker(h);
-    const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
-    const lookupId = stockLookupId(h.cusip || h.ticker, ht);
-    const securityCell = lookupId
-      ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;background:${rowBg};white-space:nowrap" onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}</td>`
-      : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;background:${rowBg};white-space:nowrap">${esc(displayLabel)}</td>`;
     return `<tr style="background:${i%2 ? "var(--sf)" : "transparent"}">
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:11px">${i+1}</td>
-      ${securityCell}
-      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>
+      ${holdingIdentityCells(h, rowBg)}
       <td class="mono" style="text-align:right;color:${h.pct >= 5 ? "var(--ac)" : "var(--mt)"}">${fP(h.pct)}</td>
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
       <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed, h.quantity_unknown)}</td>
@@ -3108,7 +3005,6 @@ function renderFundTbody() {
   }
 }
 
-// ---------- STOCK: home ----------
 // ---------- STOCK: detail ----------
 async function loadStock(stockId, opts = {}) {
   if (dataContractBlocked) {
@@ -3143,7 +3039,6 @@ async function loadStock(stockId, opts = {}) {
     url: stockPath,
     loadingMessage: `Loading ${loadingSecurityLabel}...`,
     errorTitle: `Couldn't load ${loadingSecurityLabel}`,
-    errorPath: stockPath,
     logLabel: "stock",
   });
   if (dataContractBlocked) {
@@ -3190,16 +3085,16 @@ function renderStock(sd, stockEntry = null) {
       withheld: aligned.withheld || null,
     };
 
-    if (aligned.state === "CURRENT") {
-      const current = aligned.current;
+    if (["CURRENT", "STALE", "WITHHELD"].includes(aligned.state)) {
+      const record = aligned.state === "CURRENT" ? aligned.current : aligned.reference;
       return {
         ...base,
-        shares: Number(current?.shares) || 0,
-        sharesImputed: current?.shares_imputed === true,
-        quantityUnknown: current?.quantity_unknown === true,
-        value: Number(current?.value) || 0,
-        pctOfFund: Number(current?.pct_of_fund) || 0,
-        asOfDate: current?.date || null,
+        shares: Number(record?.shares) || 0,
+        sharesImputed: record?.shares_imputed === true,
+        quantityUnknown: record?.quantity_unknown === true,
+        value: Number(record?.value) || 0,
+        pctOfFund: Number(record?.pct_of_fund) || 0,
+        asOfDate: record?.date || null,
       };
     }
     if (aligned.state === "EXIT") {
@@ -3214,19 +3109,6 @@ function renderStock(sd, stockEntry = null) {
         priorQuantityUnknown: previous?.quantity_unknown === true,
         priorValue: Number(previous?.value) || 0,
         priorPctOfFund: Number(previous?.pct_of_fund) || 0,
-        priorAsOfDate: previous?.date || null,
-      };
-    }
-    if (aligned.state === "STALE" || aligned.state === "WITHHELD") {
-      const reference = aligned.reference;
-      return {
-        ...base,
-        shares: Number(reference?.shares) || 0,
-        sharesImputed: reference?.shares_imputed === true,
-        quantityUnknown: reference?.quantity_unknown === true,
-        value: Number(reference?.value) || 0,
-        pctOfFund: Number(reference?.pct_of_fund) || 0,
-        asOfDate: reference?.date || null,
       };
     }
     return base;
@@ -3258,9 +3140,8 @@ function renderStock(sd, stockEntry = null) {
     currentReportingQuarter
   );
 
-  const topByValue = [...currentHolders].sort((a, b) => (b.value || 0) - (a.value || 0));
-  const topHolder = topByValue[0] || null;
-  const topConviction = [...currentHolders]
+  const topHolder = currentHolders[0] || null;
+  const topConviction = currentHolders
     .filter(h => (h.pctOfFund || 0) > 0)
     .sort((a, b) => (b.pctOfFund || 0) - (a.pctOfFund || 0))
     .slice(0, 5);
@@ -3328,7 +3209,7 @@ function renderStock(sd, stockEntry = null) {
   const stockExitRows = recentExits.map((h, i) => `
     <tr>
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${i + 1}</td>
-      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      ${holderFundCell(h)}
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.priorValue)}</td>
       <td class="mono" style="text-align:right">${formatShares(h.priorShares, h.priorSharesImputed, h.priorQuantityUnknown)}</td>
       <td class="mono" style="text-align:right;color:var(--mt)">${h.priorPctOfFund > 0 ? fP(h.priorPctOfFund) : "—"}</td>
@@ -3356,7 +3237,7 @@ function renderStock(sd, stockEntry = null) {
   const excludedRows = (rows, stateLabel) => rows.map((h, i) => `
     <tr>
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${i + 1}</td>
-      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      ${holderFundCell(h)}
       <td class="mono" style="text-align:right;font-weight:600">${h.asOfDate ? fV(h.value) : "—"}</td>
       <td class="mono" style="text-align:right">${h.asOfDate ? formatShares(h.shares, h.sharesImputed, h.quantityUnknown) : "—"}</td>
       <td class="mono" style="text-align:right;color:var(--mt);font-size:11px">${esc(h.asOfDate || "—")}</td>
@@ -3432,27 +3313,9 @@ function renderStock(sd, stockEntry = null) {
         ${classificationWarning}
         ${aggregateTrendNotice}
         <div class="stock-stat-grid">
-          <div class="stock-stat">
-            <div>
-              <div class="stock-stat-label">Current Institutional Holders</div>
-              <div class="stock-stat-value mono">${currentHolders.length.toLocaleString()}</div>
-            </div>
-            ${holdersIcon()}
-          </div>
-          <div class="stock-stat">
-            <div>
-              <div class="stock-stat-label">Total Held Value</div>
-              <div class="stock-stat-value mono">${fV(totV)}</div>
-            </div>
-            ${miniLine(aggregateValues)}
-          </div>
-          <div class="stock-stat">
-            <div>
-              <div class="stock-stat-label">Total Exact Shares</div>
-              <div class="stock-stat-value mono">${fS(totS)}</div>
-            </div>
-            ${miniBars(aggregateShares)}
-          </div>
+          ${statCard("stock", "Current Institutional Holders", currentHolders.length.toLocaleString(), holdersIcon())}
+          ${statCard("stock", "Total Held Value", fV(totV), miniLine(aggregateValues))}
+          ${statCard("stock", "Total Exact Shares", fS(totS), miniBars(aggregateShares))}
           <div class="stock-stat">
             <div class="stock-largest">
               ${bankIcon()}
@@ -3499,7 +3362,7 @@ function renderStock(sd, stockEntry = null) {
       <aside class="stock-sidebar">
         <section class="side-panel">
           <div class="side-title">Ownership Summary</div>
-          ${summarySection("Top Holders by Value", topByValue.slice(0, 5), h => fV(h.value), "value")}
+          ${summarySection("Top Holders by Value", currentHolders.slice(0, 5), h => fV(h.value), "value")}
           <div class="summary-line"></div>
           ${summarySection("Highest Conviction (% of Fund)", topConviction, h => fP(h.pctOfFund), "pct")}
           <div class="summary-line"></div>
@@ -3540,7 +3403,7 @@ function renderStockTbody() {
     const rowBg = i%2 ? "var(--sf)" : "var(--bg)";
     return `<tr style="background:${i%2 ? "var(--sf)" : "transparent"}">
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${rowNumber}</td>
-      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:${rowBg}" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      ${holderFundCell(h, rowBg)}
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
       <td class="mono" style="text-align:right">${formatShares(h.shares, h.sharesImputed, h.quantityUnknown)}</td>
       <td class="mono" style="text-align:right;color:${pctColor}">${pctText}</td>

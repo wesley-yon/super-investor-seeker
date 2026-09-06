@@ -20,7 +20,6 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 import threading
 import time
 import unicodedata
@@ -31,11 +30,13 @@ from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import requests
 from lxml import etree
 
+from sec_http import RedirectPolicy, get_sec_response, make_rate_pacer
+from atomic_files import atomic_text_output
 from security_identity import SEC_TICKER_RE
 
 
@@ -59,7 +60,6 @@ _SEC_DISCOVERY_HOSTS = frozenset(
         "www.sec.gov",
     }
 )
-_SEC_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 _DEFAULT_MAX_REDIRECTS = 5
 _ACCESSION_RE = re.compile(r"^(?P<cik>\d{10})-(?P<year>\d{2})-(?P<sequence>\d{6})$")
 _ARCHIVE_PATH_RE = re.compile(
@@ -1232,37 +1232,21 @@ def bridge_sec_evidence(
     return resolved
 
 
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    temporary_path = Path(temporary_name)
+def _fsync_cache_directory(path: Path) -> None:
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as out:
-            json.dump(payload, out, sort_keys=True, indent=2, ensure_ascii=False)
-            out.write("\n")
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary_path, path)
-        try:
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-        except OSError:
-            directory_fd = None
-        if directory_fd is not None:
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    except BaseException:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+        directory_fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    with atomic_text_output(path, sync_parent=_fsync_cache_directory) as output:
+        json.dump(payload, output, sort_keys=True, indent=2, ensure_ascii=False)
+        output.write("\n")
 
 
 def _utc_timestamp(value: datetime | None = None) -> str:
@@ -1323,65 +1307,36 @@ def make_sec_filing_fetcher(
             urlsplit(requested).path
         ).group("accession")
         requested_path = urlsplit(requested).path
-        request_url = requested
-        for redirect_count in range(max_redirects + 1):
-            response = http.get(
-                request_url,
-                headers={
-                    "User-Agent": agent,
-                    "Accept-Encoding": "gzip, deflate",
-                },
-                timeout=timeout,
-                allow_redirects=False,
-            )
-            response_url = normalize_sec_filing_url(
-                str(response.url or request_url)
-            )
-            if response_url != request_url:
-                raise NonSECFilingURL(
-                    "SEC filing response URL changed without an approved redirect"
-                )
-            response_accession = _ARCHIVE_PATH_RE.fullmatch(
-                urlsplit(response_url).path
-            ).group("accession")
-            if (
-                response_accession != requested_accession
-                or urlsplit(response_url).path != requested_path
-            ):
-                raise NonSECFilingURL(
-                    "SEC response redirected to another filing document"
-                )
-            if response.status_code not in _SEC_REDIRECT_STATUS_CODES:
-                if 300 <= response.status_code < 400:
-                    raise NonSECFilingURL(
-                        "unsupported SEC filing redirect response"
-                    )
-                response.raise_for_status()
-                return bytes(response.content)
-            if redirect_count >= max_redirects:
-                raise NonSECFilingURL("SEC filing redirect limit exceeded")
-            location = str(response.headers.get("Location") or "").strip()
-            if not location:
-                raise NonSECFilingURL(
-                    "SEC filing redirect response has no Location header"
-                )
-            # Validate the next target before passing it to Requests so the
-            # contact-bearing user agent can never leave an SEC filing host.
-            request_url = normalize_sec_filing_url(
-                urljoin(response_url, location)
-            )
-            redirect_match = _ARCHIVE_PATH_RE.fullmatch(
-                urlsplit(request_url).path
-            )
+
+        def check_redirect(candidate: str) -> None:
+            redirect_match = _ARCHIVE_PATH_RE.fullmatch(urlsplit(candidate).path)
             if (
                 redirect_match is None
                 or redirect_match.group("accession") != requested_accession
-                or urlsplit(request_url).path != requested_path
+                or urlsplit(candidate).path != requested_path
             ):
                 raise NonSECFilingURL(
                     "SEC response redirected to another filing document"
                 )
-        raise AssertionError("bounded SEC filing redirect loop exhausted")
+
+        # Admitted redirects retain this document's path. Requiring every
+        # response URL to equal its request also binds it to that same scope.
+        response = get_sec_response(
+            http, requested,
+            headers={"User-Agent": agent, "Accept-Encoding": "gzip, deflate"},
+            timeout=timeout, max_redirects=max_redirects,
+            policy=RedirectPolicy(
+                normalize_url=normalize_sec_filing_url,
+                error_type=NonSECFilingURL,
+                limit_message="SEC filing redirect limit exceeded",
+                missing_location_message="SEC filing redirect response has no Location header",
+                changed_response_message="SEC filing response URL changed without an approved redirect",
+                unsupported_status_message="unsupported SEC filing redirect response",
+                check_redirect=check_redirect,
+            ),
+        )
+        response.raise_for_status()
+        return bytes(response.content)
 
     return fetch
 
@@ -1432,22 +1387,9 @@ def make_sec_discovery_fetcher(
             "SEC discovery max_redirects must be between zero and ten"
         )
     http = session or requests.Session()
-    rate_lock = threading.Lock()
-    next_request_at = 0.0
-    minimum_interval = 1.0 / float(max_requests_per_second)
-
-    def before_request() -> None:
-        nonlocal next_request_at
-        if pace is not None:
-            pace()
-            return
-        with rate_lock:
-            now = time.monotonic()
-            scheduled_at = max(now, next_request_at)
-            delay = scheduled_at - now
-            next_request_at = scheduled_at + minimum_interval
-        if delay > 0:
-            time.sleep(delay)
+    before_request = pace if pace is not None else make_rate_pacer(
+        max_requests_per_second, clock=time, lock=threading.Lock(),
+    )
 
     def retry_delay(attempt_number: int) -> None:
         delay = min(8.0, float(backoff_seconds) * (2 ** (attempt_number - 1)))
@@ -1483,56 +1425,26 @@ def make_sec_discovery_fetcher(
                 )
             return normalized
 
+        redirect_policy = RedirectPolicy(
+            normalize_url=validate_scope,
+            error_type=NonSECFilingURL,
+            limit_message="SEC discovery redirect limit exceeded",
+            missing_location_message="SEC redirect response has no Location header",
+            changed_response_message="SEC response URL changed without an approved redirect",
+            unsupported_status_message="unsupported SEC discovery redirect response",
+        )
         for attempt_number in range(1, max_attempts + 1):
-            response: requests.Response | None = None
-            request_url = requested
             try:
-                for redirect_count in range(max_redirects + 1):
-                    before_request()
-                    response = http.get(
-                        request_url,
-                        headers={
-                            "User-Agent": agent,
-                            "Accept-Encoding": "gzip, deflate",
-                            "Accept": (
-                                "application/json, application/xml, text/html"
-                            ),
-                        },
-                        timeout=timeout,
-                        allow_redirects=False,
-                    )
-                    response_url = validate_scope(
-                        str(response.url or request_url)
-                    )
-                    if response_url != request_url:
-                        raise NonSECFilingURL(
-                            "SEC response URL changed without an approved redirect"
-                        )
-                    if response.status_code not in _SEC_REDIRECT_STATUS_CODES:
-                        if 300 <= response.status_code < 400:
-                            raise NonSECFilingURL(
-                                "unsupported SEC discovery redirect response"
-                            )
-                        break
-                    if redirect_count >= max_redirects:
-                        raise NonSECFilingURL(
-                            "SEC discovery redirect limit exceeded"
-                        )
-                    location = str(
-                        response.headers.get("Location") or ""
-                    ).strip()
-                    if not location:
-                        raise NonSECFilingURL(
-                            "SEC redirect response has no Location header"
-                        )
-                    # Validate before issuing the next physical request.  A
-                    # cross-host Location therefore never receives the user
-                    # agent, even when the supplied Session normally follows
-                    # redirects.
-                    request_url = validate_scope(
-                        urljoin(response_url, location)
-                    )
-                assert response is not None
+                response = get_sec_response(
+                    http, requested,
+                    headers={
+                        "User-Agent": agent,
+                        "Accept-Encoding": "gzip, deflate",
+                        "Accept": "application/json, application/xml, text/html",
+                    },
+                    timeout=timeout, max_redirects=max_redirects,
+                    policy=redirect_policy, pace=before_request,
+                )
                 response.raise_for_status()
             except requests.RequestException as exc:
                 response_for_error = getattr(exc, "response", None)

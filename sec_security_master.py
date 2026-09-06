@@ -25,7 +25,6 @@ import os
 import re
 import secrets
 import stat
-import tempfile
 import threading
 import time
 import unicodedata
@@ -44,6 +43,8 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 import requests
 
+from sec_http import RedirectPolicy, get_sec_response
+from atomic_files import atomic_text_output, discard_temporary
 from security_identity import SEC_TICKER_RE, VALID_INSTRUMENT_TYPES
 
 
@@ -503,35 +504,18 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary_prefix = (
         f"{path.name}." if path.name.startswith(".") else f".{path.name}."
     )
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=temporary_prefix,
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as out:
-            json.dump(
-                payload,
-                out,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-            )
-            out.write("\n")
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
-    except BaseException:
-        try:
-            temporary_path.unlink()
-        except BaseException:
-            # Cleanup is best-effort and must never replace the active write,
-            # fsync, SystemExit, or KeyboardInterrupt exception.
-            pass
-        raise
+    with atomic_text_output(
+        path, prefix=temporary_prefix, private_mode=0o600,
+        sync_parent=_fsync_directory, cleanup=discard_temporary,
+    ) as output:
+        json.dump(
+            payload,
+            output,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        output.write("\n")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -8137,42 +8121,22 @@ def make_sec_fetcher(
 
     def fetch(url: str) -> bytes:
         canonical_url = normalize_sec_url(url)
+        redirect_policy = RedirectPolicy(
+            normalize_url=normalize_sec_url,
+            error_type=SecurityMasterError,
+            limit_message="SEC response exceeded the redirect limit",
+            missing_location_message="SEC redirect response has no Location header",
+            missing_location_error_type=SourceParseError,
+        )
         for attempt in range(max_attempts):
             response: requests.Response | None = None
-            request_url = canonical_url
             try:
-                for redirect_count in range(max_redirects + 1):
-                    pace()
-                    response = http.get(
-                        request_url,
-                        headers={
-                            "User-Agent": agent,
-                            "Accept-Encoding": "gzip, deflate",
-                        },
-                        timeout=timeout,
-                        allow_redirects=False,
-                    )
-                    response_url = normalize_sec_url(
-                        str(response.url or request_url)
-                    )
-                    if response.status_code not in {301, 302, 303, 307, 308}:
-                        break
-                    if redirect_count >= max_redirects:
-                        raise SecurityMasterError(
-                            "SEC response exceeded the redirect limit"
-                        )
-                    location = str(
-                        response.headers.get("Location") or ""
-                    ).strip()
-                    if not location:
-                        raise SourceParseError(
-                            "SEC redirect response has no Location header"
-                        )
-                    # Validate before making the redirected request; requests
-                    # never receives a non-SEC target.
-                    request_url = normalize_sec_url(
-                        urljoin(response_url, location)
-                    )
+                response = get_sec_response(
+                    http, canonical_url,
+                    headers={"User-Agent": agent, "Accept-Encoding": "gzip, deflate"},
+                    timeout=timeout, max_redirects=max_redirects,
+                    policy=redirect_policy, pace=pace,
+                )
             except (requests.ConnectionError, requests.Timeout):
                 if attempt + 1 >= max_attempts:
                     raise

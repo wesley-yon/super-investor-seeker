@@ -723,13 +723,14 @@ class GeneratedDataContractTests(unittest.TestCase):
         self.assertIn("assertCompatibleDataContract(data", html)
         self.assertIn("showDataMaintenance()", html)
         self.assertIn(
-            'fetch("data/funds-index.json", { cache: "no-cache" })',
+            'fetchJson("data/funds-index.json")',
             html,
         )
         self.assertIn(
-            'fetch("data/index.json", { cache: "no-cache" })',
+            'fetchJson("data/index.json")',
             html,
         )
+        self.assertIn('fetch(url, { cache: "no-cache" })', html)
 
     def test_security_label_artifact_covers_registry_without_raw_cusips(
         self,

@@ -159,7 +159,6 @@ class HistoryRetentionTests(unittest.TestCase):
             mock.patch.object(
                 pipeline, "load_state", return_value={"_processed_set": set()}
             ),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline,
                 "get_13f_filings_for_cik",
@@ -169,7 +168,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 pipeline, "replay_quarters_for_cik", return_value=1
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_for_cik(CIK, 2, rebuild_outputs=False))
 
@@ -179,18 +177,13 @@ class HistoryRetentionTests(unittest.TestCase):
 
     def test_single_fund_failure_checkpoints_partial_replay_progress(self) -> None:
         state = {"_processed_set": set()}
-        cusip_map = {}
 
         def fail_after_progress(*_args, **_kwargs) -> int:
             state["partial_retry"] = {"cik": CIK}
-            cusip_map["123456789"] = "XYZ"
             raise pipeline.FilingParseError("later filing failed")
 
         with (
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(
-                pipeline, "load_cusip_map", return_value=cusip_map
-            ),
             mock.patch.object(
                 pipeline,
                 "get_13f_filings_for_cik",
@@ -202,16 +195,13 @@ class HistoryRetentionTests(unittest.TestCase):
                 side_effect=fail_after_progress,
             ),
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
         ):
             self.assertFalse(
                 pipeline.run_for_cik(CIK, 2, rebuild_outputs=False)
             )
 
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
         self.assertEqual({"cik": CIK}, state["partial_retry"])
-        self.assertEqual("XYZ", cusip_map["123456789"])
 
     def test_normal_ingestion_preserves_history(self) -> None:
         state = {
@@ -226,7 +216,6 @@ class HistoryRetentionTests(unittest.TestCase):
             mock.patch.object(pipeline, "WORKER_COUNT", 1),
             mock.patch.object(pipeline.time, "sleep"),
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(pipeline, "retry_pending_amendment_migrations"),
             mock.patch.object(
                 pipeline, "get_recent_filing_quarters", return_value=[(2026, 2)]
@@ -238,7 +227,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 pipeline, "replay_quarters_for_cik", return_value=1
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(3, rebuild_outputs=False))
 
@@ -262,7 +250,6 @@ class HistoryRetentionTests(unittest.TestCase):
             mock.patch.object(pipeline, "WORKER_COUNT", 1),
             mock.patch.object(pipeline.time, "sleep"),
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(pipeline, "retry_pending_amendment_migrations"),
             mock.patch.object(
                 pipeline, "get_recent_filing_quarters", return_value=[(2026, 2)]
@@ -274,7 +261,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 pipeline, "replay_quarters_for_cik", return_value=1
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(3, rebuild_outputs=False))
 
@@ -289,7 +275,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 mock.patch.object(pipeline, "FUNDS_DIR", data_dir / "funds"),
                 mock.patch.object(pipeline, "STOCKS_DIR", data_dir / "stocks"),
                 mock.patch.object(pipeline, "load_state", return_value=state),
-                mock.patch.object(pipeline, "load_cusip_map", return_value={}),
                 mock.patch.object(
                     refresh_recent_13f_filings,
                     "fetch_recent_feed_filings",
@@ -299,7 +284,6 @@ class HistoryRetentionTests(unittest.TestCase):
                     pipeline, "replay_quarters_for_cik", return_value=1
                 ) as replay,
                 mock.patch.object(pipeline, "save_state"),
-                mock.patch.object(pipeline, "save_cusip_map"),
             ):
                 self.assertEqual(0, refresh_recent_13f_filings.main())
 
@@ -321,7 +305,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 mock.patch.object(pipeline, "FUNDS_DIR", data_dir / "funds"),
                 mock.patch.object(pipeline, "STOCKS_DIR", data_dir / "stocks"),
                 mock.patch.object(pipeline, "load_state", return_value=state),
-                mock.patch.object(pipeline, "load_cusip_map", return_value={}),
                 mock.patch.object(
                     refresh_recent_13f_filings,
                     "fetch_recent_feed_filings",
@@ -331,7 +314,6 @@ class HistoryRetentionTests(unittest.TestCase):
                     pipeline, "replay_quarters_for_cik", return_value=1
                 ) as replay,
                 mock.patch.object(pipeline, "save_state"),
-                mock.patch.object(pipeline, "save_cusip_map"),
             ):
                 self.assertEqual(0, refresh_recent_13f_filings.main())
 
@@ -343,7 +325,6 @@ class HistoryRetentionTests(unittest.TestCase):
             mock.patch.object(
                 pipeline, "load_state", return_value={"_processed_set": set()}
             ),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline, "get_recent_filing_quarters", return_value=[(2026, 2)]
             ),
@@ -354,7 +335,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 pipeline, "replay_quarters_for_cik", return_value=1
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(
                 pipeline.repair_amendments(4, rebuild_outputs=False)

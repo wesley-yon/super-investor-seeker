@@ -115,7 +115,7 @@ def regenerate(path=BASELINE):
     current = inventory(prior_registry)
     changed, _ = affected(baseline['funds'], current, set())
     extend_master_for_changed_funds([p.FUNDS_DIR / name for name in sorted(changed) if name in current])
-    registry = p.build_cusip_registry(refresh_official_fund_names=False)
+    registry = p.build_cusip_registry()
     p.write_security_labels(registry)
     issues = p.validate_cusip_registry(current_cusips=registry.observed_cusips)
     if issues:

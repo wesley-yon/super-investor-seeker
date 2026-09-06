@@ -269,9 +269,8 @@ class IdentityMarkerTests(unittest.TestCase):
 
 
 class IdentityReplayTests(unittest.TestCase):
-    def test_interrupt_checkpoints_identity_replay_state_and_map(self) -> None:
+    def test_interrupt_checkpoints_identity_replay_state(self) -> None:
         state = {}
-        cusip_map = {}
 
         class InterruptibleThread:
             def __init__(self, *args, **kwargs) -> None:
@@ -296,22 +295,18 @@ class IdentityReplayTests(unittest.TestCase):
                 pipeline.time, "sleep", side_effect=KeyboardInterrupt
             ),
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
         ):
             succeeded, resolved = pipeline._run_security_identity_replays(
                 [{"cik": CIK, "report_date": REPORT_DATE}],
                 state,
-                cusip_map,
             )
 
         self.assertFalse(succeeded)
         self.assertEqual(0, resolved)
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
 
     def test_alive_identity_worker_gets_final_checkpoint(self) -> None:
         state = {}
-        cusip_map = {}
 
         class LateAliveThread:
             def __init__(self, *args, **kwargs) -> None:
@@ -331,18 +326,15 @@ class IdentityReplayTests(unittest.TestCase):
         with (
             mock.patch.object(pipeline.threading, "Thread", LateAliveThread),
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
         ):
             succeeded, resolved = pipeline._run_security_identity_replays(
                 [{"cik": CIK, "report_date": REPORT_DATE}],
                 state,
-                cusip_map,
             )
 
         self.assertFalse(succeeded)
         self.assertEqual(0, resolved)
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
 
     def _write_fund(self, funds_dir: Path, *, neighbor: bool = False) -> Path:
         path = funds_dir / f"{CIK}.json"
@@ -393,7 +385,6 @@ class IdentityReplayTests(unittest.TestCase):
                         CIK,
                         [target],
                         state,
-                        {"123456789": "XYZ"},
                         threading.Lock(),
                     )
                 )
@@ -455,7 +446,6 @@ class IdentityReplayTests(unittest.TestCase):
                 processed = pipeline.replay_quarters_for_cik(
                     CIK,
                     [filing_row()],
-                    {"123456789": "XYZ"},
                     4,
                     state,
                     preserve_history=True,
@@ -513,7 +503,6 @@ class IdentityReplayTests(unittest.TestCase):
                         CIK,
                         [target],
                         state,
-                        {"123456789": "XYZ"},
                         threading.Lock(),
                     ),
                 )
@@ -551,7 +540,6 @@ class IdentityReplayTests(unittest.TestCase):
                         CIK,
                         [target],
                         state,
-                        {"123456789": "XYZ"},
                         threading.Lock(),
                     ),
                 )
@@ -610,7 +598,6 @@ class IdentityReplayTests(unittest.TestCase):
                         CIK,
                         [target],
                         state,
-                        {"123456789": "XYZ"},
                         threading.Lock(),
                     ),
                 )
@@ -750,7 +737,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
             def record_systemic_failure(
                 targets: list[dict],
                 state: dict,
-                _cusip_map: dict[str, str],
             ) -> tuple[bool, int]:
                 pipeline._set_security_identity_pending(
                     state,
@@ -766,8 +752,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
                 mock.patch.object(
                     pipeline, "LEGACY_STATE_PATH", root / "missing-state.json"
                 ),
-                mock.patch.object(pipeline, "load_cusip_map", return_value={}),
-                mock.patch.object(pipeline, "save_cusip_map"),
                 mock.patch.object(
                     pipeline,
                     "retained_security_identity_migration_targets",
@@ -831,7 +815,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
             def record_isolated_failure(
                 targets: list[dict],
                 state: dict,
-                _cusip_map: dict[str, str],
             ) -> tuple[bool, int]:
                 pipeline._set_security_identity_pending(
                     state,
@@ -852,8 +835,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
                 mock.patch.object(
                     pipeline, "LEGACY_STATE_PATH", root / "missing-state.json"
                 ),
-                mock.patch.object(pipeline, "load_cusip_map", return_value={}),
-                mock.patch.object(pipeline, "save_cusip_map"),
                 mock.patch.object(
                     pipeline,
                     "retained_security_identity_migration_targets",
@@ -916,7 +897,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
                 pipeline, "get_recent_filing_quarters", return_value=[]
             ) as recent_quarters,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(
                 4,

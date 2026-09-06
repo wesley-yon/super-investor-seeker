@@ -746,7 +746,6 @@ class ReplayIntegrationTests(unittest.TestCase):
             replayed = pipeline.replay_quarters_for_cik(
                 CIK,
                 [BASE_ROW],
-                {},
                 4,
                 state,
                 quarantine_failures=True,
@@ -780,7 +779,6 @@ class ReplayIntegrationTests(unittest.TestCase):
                 "_processed_set": set(),
                 "_quarantined": {ADDITION_ACCESSION: {"reason": "prior failure"}},
             }
-            cusip_map: dict[str, str] = {}
             components = {
                 BASE_ACCESSION: BASE_COMPONENT,
                 ADDITION_ACCESSION: ADDITION_COMPONENT,
@@ -801,10 +799,10 @@ class ReplayIntegrationTests(unittest.TestCase):
                     "fetch_filing_holdings",
                     side_effect=lambda cik, accession, filing=None: components[accession],
                 ),
-                mock.patch.object(pipeline, "update_cusip_map"),
+                mock.patch.object(pipeline, "update_holding_tickers"),
             ):
                 processed = pipeline.replay_quarters_for_cik(
-                    CIK, [ADDITION_ROW], cusip_map, 4, state
+                    CIK, [ADDITION_ROW], 4, state
                 )
 
             self.assertEqual(1, processed)
@@ -851,13 +849,13 @@ class ReplayIntegrationTests(unittest.TestCase):
                         unknown_accession: unknown_component,
                     }[accession],
                 ),
-                mock.patch.object(pipeline, "update_cusip_map"),
+                mock.patch.object(pipeline, "update_holding_tickers"),
             ):
                 with self.assertRaisesRegex(
                     pipeline.FilingChainError, "unknown semantics"
                 ):
                     pipeline.replay_quarters_for_cik(
-                        CIK, [unknown_row], {}, 4, state
+                        CIK, [unknown_row], 4, state
                     )
 
             self.assertEqual(original_bytes, fund_path.read_bytes())
@@ -917,12 +915,11 @@ class ReplayIntegrationTests(unittest.TestCase):
                     "fetch_filing_holdings",
                     side_effect=lambda cik, accession, filing=None: components[accession],
                 ),
-                mock.patch.object(pipeline, "update_cusip_map"),
+                mock.patch.object(pipeline, "update_holding_tickers"),
             ):
                 processed = pipeline.replay_quarters_for_cik(
                     CIK,
                     [ADDITION_ROW],
-                    {},
                     4,
                     state,
                     force=True,
@@ -946,7 +943,6 @@ class ReplayIntegrationTests(unittest.TestCase):
                 processed = pipeline.replay_quarters_for_cik(
                     CIK,
                     [ADDITION_ROW],
-                    {},
                     4,
                     state,
                     force=True,
@@ -1008,10 +1004,10 @@ class ReplayIntegrationTests(unittest.TestCase):
                     ),
                 ),
                 mock.patch.object(pipeline, "fetch_filing_holdings", side_effect=fetch),
-                mock.patch.object(pipeline, "update_cusip_map"),
+                mock.patch.object(pipeline, "update_holding_tickers"),
             ):
                 processed = pipeline.replay_quarters_for_cik(
-                    CIK, [restatement_row], {}, 4, state
+                    CIK, [restatement_row], 4, state
                 )
 
             self.assertEqual(1, processed)
@@ -1072,13 +1068,13 @@ class ReplayIntegrationTests(unittest.TestCase):
                 "fetch_filing_holdings",
                 return_value=BASE_COMPONENT,
             ),
-            mock.patch.object(pipeline, "update_cusip_map"),
+            mock.patch.object(pipeline, "update_holding_tickers"),
             mock.patch.object(pipeline, "merge_composed_quarters_into_fund", return_value={}),
             mock.patch.object(pipeline, "save_fund", side_effect=OSError("disk full")),
         ):
             with self.assertRaisesRegex(OSError, "disk full"):
                 pipeline.replay_quarters_for_cik(
-                    CIK, [BASE_ROW], {}, 4, state
+                    CIK, [BASE_ROW], 4, state
                 )
 
         self.assertEqual(set(), state["_processed_set"])
@@ -1150,12 +1146,11 @@ class ReplayIntegrationTests(unittest.TestCase):
                     "fetch_filing_holdings",
                     side_effect=lambda cik, accession, filing=None: components[accession],
                 ),
-                mock.patch.object(pipeline, "update_cusip_map"),
+                mock.patch.object(pipeline, "update_holding_tickers"),
             ):
                 processed = pipeline.replay_quarters_for_cik(
                     CIK,
                     [good_row, bad_row],
-                    {},
                     4,
                     state,
                     quarantine_failures=True,
@@ -1439,10 +1434,10 @@ class AmendmentMigrationOutcomeTests(unittest.TestCase):
                         accession
                     ],
                 ),
-                mock.patch.object(pipeline, "update_cusip_map"),
+                mock.patch.object(pipeline, "update_holding_tickers"),
             ):
                 retried = pipeline.retry_pending_amendment_migrations(
-                    state, {}, 4
+                    state, 4
                 )
 
             restored = json.loads(fund_path.read_text())
@@ -1469,7 +1464,6 @@ class RepairModeTests(unittest.TestCase):
         self,
     ) -> None:
         state = {"_processed_set": set()}
-        cusip_map = {}
 
         def interrupt_after_progress(*_args, **_kwargs) -> int:
             state["amendment_migration_pending"] = {
@@ -1478,14 +1472,10 @@ class RepairModeTests(unittest.TestCase):
                     "report_date": REPORT_DATE,
                 }
             }
-            cusip_map["123456789"] = "XYZ"
             raise KeyboardInterrupt
 
         with (
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(
-                pipeline, "load_cusip_map", return_value=cusip_map
-            ),
             mock.patch.object(
                 pipeline, "get_recent_filing_quarters", return_value=[(2026, 2)]
             ),
@@ -1498,14 +1488,11 @@ class RepairModeTests(unittest.TestCase):
                 side_effect=interrupt_after_progress,
             ),
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
         ):
             with self.assertRaises(KeyboardInterrupt):
                 pipeline.repair_amendments(4, rebuild_outputs=False)
 
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
-        self.assertEqual("XYZ", cusip_map["123456789"])
 
     def test_health_gate_uses_existing_corpus_quarantine_ceiling(self) -> None:
         self.assertIsNone(
@@ -1638,7 +1625,6 @@ class RepairModeTests(unittest.TestCase):
             def quarantine_every_target(
                 _cik: int,
                 triggers: list[dict],
-                _cusip_map: dict[str, str],
                 _quarters_n: int,
                 state: dict,
                 **_kwargs,
@@ -1660,7 +1646,6 @@ class RepairModeTests(unittest.TestCase):
                 mock.patch.object(
                     pipeline, "LEGACY_STATE_PATH", root / "missing-state.json"
                 ),
-                mock.patch.object(pipeline, "load_cusip_map", return_value={}),
                 mock.patch.object(
                     pipeline,
                     "retained_new_holdings_migration_triggers",
@@ -1674,7 +1659,6 @@ class RepairModeTests(unittest.TestCase):
                     "replay_quarters_for_cik",
                     side_effect=quarantine_every_target,
                 ),
-                mock.patch.object(pipeline, "save_cusip_map"),
             ):
                 succeeded = pipeline.repair_amendments(
                     8,
@@ -1742,7 +1726,6 @@ class RepairModeTests(unittest.TestCase):
         def resolve_one_target(
             _cik: int,
             triggers: list[dict],
-            _cusip_map: dict[str, str],
             _quarters_n: int,
             replay_state: dict,
             **_kwargs,
@@ -1765,7 +1748,6 @@ class RepairModeTests(unittest.TestCase):
 
         with (
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline,
                 "retained_new_holdings_migration_triggers",
@@ -1788,7 +1770,6 @@ class RepairModeTests(unittest.TestCase):
                 return_value=2,
             ) as withhold,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
             mock.patch.object(pipeline, "rebuild_registry_backed_outputs"),
         ):
             succeeded = pipeline.repair_amendments(
@@ -1837,7 +1818,6 @@ class RepairModeTests(unittest.TestCase):
         }
         with (
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline,
                 "retained_new_holdings_migration_triggers",
@@ -1858,7 +1838,6 @@ class RepairModeTests(unittest.TestCase):
                 return_value=1,
             ) as withhold,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
             mock.patch.object(pipeline, "rebuild_registry_backed_outputs"),
         ):
             succeeded = pipeline.repair_amendments(
@@ -1934,7 +1913,6 @@ class RepairModeTests(unittest.TestCase):
                 mock.patch.object(pipeline, "FUNDS_DIR", funds_dir),
                 mock.patch.object(pipeline, "STATE_PATH", state_path),
                 mock.patch.object(pipeline, "load_state", return_value=state),
-                mock.patch.object(pipeline, "load_cusip_map", return_value={}),
                 mock.patch.object(
                     pipeline,
                     "retained_new_holdings_migration_triggers",
@@ -1956,7 +1934,6 @@ class RepairModeTests(unittest.TestCase):
                     "save_fund",
                     side_effect=fail_second_fund_save,
                 ),
-                mock.patch.object(pipeline, "save_cusip_map"),
                 mock.patch.object(pipeline, "rebuild_registry_backed_outputs"),
             ):
                 succeeded = pipeline.repair_amendments(
@@ -1995,7 +1972,6 @@ class RepairModeTests(unittest.TestCase):
                 return_value=[BASE_ROW, ADDITION_ROW],
             ) as download,
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline, "retained_new_holdings_migration_triggers", return_value=[]
             ),
@@ -2004,7 +1980,6 @@ class RepairModeTests(unittest.TestCase):
             ),
             mock.patch.object(pipeline, "replay_quarters_for_cik", return_value=1) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
             mock.patch.object(pipeline, "rebuild_registry_backed_outputs"),
         ):
             self.assertTrue(pipeline.repair_amendments(
@@ -2015,7 +1990,7 @@ class RepairModeTests(unittest.TestCase):
         args, kwargs = replay.call_args
         self.assertEqual(CIK, args[0])
         self.assertEqual([ADDITION_ACCESSION], [row["accession"] for row in args[1]])
-        self.assertEqual(8, args[3])
+        self.assertEqual(8, args[2])
         self.assertTrue(kwargs["force"])
         self.assertTrue(kwargs["include_archives"])
         self.assertTrue(kwargs["preserve_history"])
@@ -2046,13 +2021,11 @@ class RepairModeTests(unittest.TestCase):
                 pipeline, "load_state", side_effect=[legacy_state, migrated_state]
             ),
             mock.patch.object(pipeline, "repair_amendments", return_value=True) as repair,
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline, "get_recent_filing_quarters", return_value=[(2026, 3)]
             ),
             mock.patch.object(pipeline, "download_company_idx", return_value=[]),
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(4, rebuild_outputs=False))
 
@@ -2077,7 +2050,6 @@ class RepairModeTests(unittest.TestCase):
         }
         with (
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline, "retry_pending_amendment_migrations", return_value=0
             ) as retry,
@@ -2089,11 +2061,10 @@ class RepairModeTests(unittest.TestCase):
             ),
             mock.patch.object(pipeline, "download_company_idx", return_value=[]),
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(4, rebuild_outputs=False))
 
-        retry.assert_called_once_with(state, {}, 4)
+        retry.assert_called_once_with(state, 4)
         enforce_health.assert_called_once_with(state)
 
     def test_retry_state_is_checkpointed_before_index_discovery_failure(
@@ -2114,12 +2085,8 @@ class RepairModeTests(unittest.TestCase):
             "security_identity_migration_pending": {},
             "quarter_health_pending": {},
         }
-        cusip_map = {}
         with (
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(
-                pipeline, "load_cusip_map", return_value=cusip_map
-            ),
             mock.patch.object(
                 pipeline, "retry_pending_amendment_migrations", return_value=1
             ) as retry,
@@ -2127,7 +2094,6 @@ class RepairModeTests(unittest.TestCase):
                 pipeline, "enforce_published_quarter_health", return_value=0
             ) as enforce_health,
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
             mock.patch.object(
                 pipeline, "get_recent_filing_quarters", return_value=[(2026, 3)]
             ),
@@ -2139,10 +2105,9 @@ class RepairModeTests(unittest.TestCase):
         ):
             self.assertFalse(pipeline.run_all(4, rebuild_outputs=False))
 
-        retry.assert_called_once_with(state, cusip_map, 4)
+        retry.assert_called_once_with(state, 4)
         enforce_health.assert_called_once_with(state)
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
 
     def test_retry_interruption_checkpoints_before_discovery(self) -> None:
         state = {
@@ -2160,34 +2125,26 @@ class RepairModeTests(unittest.TestCase):
             "security_identity_migration_pending": {},
             "quarter_health_pending": {},
         }
-        cusip_map = {}
 
         def interrupt_after_progress(*_args, **_kwargs) -> int:
             state["retry_progress"] = "durable"
-            cusip_map["123456789"] = "XYZ"
             raise KeyboardInterrupt
 
         with (
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(
-                pipeline, "load_cusip_map", return_value=cusip_map
-            ),
             mock.patch.object(
                 pipeline,
                 "retry_pending_amendment_migrations",
                 side_effect=interrupt_after_progress,
             ),
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
             mock.patch.object(pipeline, "get_recent_filing_quarters") as recent,
         ):
             self.assertFalse(pipeline.run_all(4, rebuild_outputs=False))
 
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
         recent.assert_not_called()
         self.assertEqual("durable", state["retry_progress"])
-        self.assertEqual("XYZ", cusip_map["123456789"])
 
     def test_outer_worker_quarantines_only_unprocessed_trigger(self) -> None:
         state = {
@@ -2202,7 +2159,6 @@ class RepairModeTests(unittest.TestCase):
         }
         with (
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(pipeline, "retry_pending_amendment_migrations"),
             mock.patch.object(
                 pipeline, "get_recent_filing_quarters", return_value=[(2026, 3)]
@@ -2218,7 +2174,6 @@ class RepairModeTests(unittest.TestCase):
                 side_effect=pipeline.FilingParseError("new trigger failed"),
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(4, rebuild_outputs=False))
 

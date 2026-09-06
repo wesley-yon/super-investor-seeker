@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import tempfile
 import threading
@@ -905,7 +906,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
         with (
             mock.patch.object(pipeline, "WORKER_COUNT", 1),
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline,
                 "get_recent_filing_quarters",
@@ -931,7 +931,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
                 "save_state",
                 side_effect=save_state,
             ),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(4, rebuild_outputs=False))
 
@@ -952,18 +951,15 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
             "security_identity_migration_pending": {},
             "quarter_health_pending": {},
         }
-        cusip_map: dict[str, str] = {}
         mutated = threading.Event()
         release_worker = threading.Event()
         worker_finished = threading.Event()
         saved_states: list[dict] = []
-        saved_maps: list[dict] = []
 
         def replay(*_args, **_kwargs) -> int:
             state["_quarantined"]["checkpointed"] = {
                 "reason": "FilingFetchError",
             }
-            cusip_map["037833100"] = "AAPL"
             mutated.set()
             release_worker.wait(2)
             worker_finished.set()
@@ -977,11 +973,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
             with (
                 mock.patch.object(pipeline, "WORKER_COUNT", 1),
                 mock.patch.object(pipeline, "load_state", return_value=state),
-                mock.patch.object(
-                    pipeline,
-                    "load_cusip_map",
-                    return_value=cusip_map,
-                ),
                 mock.patch.object(
                     pipeline,
                     "get_recent_filing_quarters",
@@ -1014,13 +1005,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
                         copy.deepcopy(value)
                     ),
                 ),
-                mock.patch.object(
-                    pipeline,
-                    "save_cusip_map",
-                    side_effect=lambda value: saved_maps.append(
-                        copy.deepcopy(value)
-                    ),
-                ),
             ):
                 self.assertFalse(
                     pipeline.run_all(4, rebuild_outputs=False)
@@ -1033,13 +1017,33 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
             "checkpointed" in snapshot["_quarantined"]
             for snapshot in saved_states
         ))
-        self.assertTrue(any(
-            snapshot.get("037833100") == "AAPL"
-            for snapshot in saved_maps
-        ))
 
 
 class RecentFeedCheckpointHardeningTests(unittest.TestCase):
+    def test_help_and_unknown_arguments_do_not_start_ingestion(self) -> None:
+        for arguments, exit_code in ((["--help"], 0), (["--unknown"], 2)):
+            with (
+                self.subTest(arguments=arguments),
+                mock.patch.object(refresh_recent_13f_filings, "main") as ingest,
+                mock.patch("sys.stdout", new_callable=io.StringIO),
+                mock.patch("sys.stderr", new_callable=io.StringIO),
+                self.assertRaises(SystemExit) as caught,
+            ):
+                refresh_recent_13f_filings.cli(arguments)
+            self.assertEqual(exit_code, caught.exception.code)
+            ingest.assert_not_called()
+
+    def test_no_arguments_runs_ingestion_and_preserves_exit_status(self) -> None:
+        for exit_code in (0, 1):
+            with (
+                self.subTest(exit_code=exit_code),
+                mock.patch.object(
+                    refresh_recent_13f_filings, "main", return_value=exit_code
+                ) as ingest,
+            ):
+                self.assertEqual(exit_code, refresh_recent_13f_filings.cli([]))
+            ingest.assert_called_once_with()
+
     def test_replay_interrupt_and_error_checkpoint_mutations(self) -> None:
         trigger = {
             "cik": 1,
@@ -1051,14 +1055,11 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                     "_processed_set": set(),
                     "_quarantined": {},
                 }
-                cusip_map: dict[str, str] = {}
                 saved_states: list[dict] = []
-                saved_maps: list[dict] = []
 
                 def replay(
                     _cik: int,
                     _triggers: list[dict],
-                    replay_map: dict[str, str],
                     _quarters_n: int,
                     replay_state: dict,
                     **_kwargs,
@@ -1066,7 +1067,6 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                     replay_state["_quarantined"]["checkpointed"] = {
                         "reason": "test",
                     }
-                    replay_map["037833100"] = "AAPL"
                     raise failure
 
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -1089,11 +1089,6 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                             return_value=state,
                         ),
                         mock.patch.object(
-                            pipeline,
-                            "load_cusip_map",
-                            return_value=cusip_map,
-                        ),
-                        mock.patch.object(
                             refresh_recent_13f_filings,
                             "fetch_recent_feed_filings",
                             return_value=[trigger],
@@ -1110,13 +1105,6 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                                 copy.deepcopy(value)
                             ),
                         ),
-                        mock.patch.object(
-                            pipeline,
-                            "save_cusip_map",
-                            side_effect=lambda value: saved_maps.append(
-                                copy.deepcopy(value)
-                            ),
-                        ),
                     ):
                         self.assertEqual(
                             1,
@@ -1127,7 +1115,6 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                     "checkpointed",
                     saved_states[-1]["_quarantined"],
                 )
-                self.assertEqual("AAPL", saved_maps[-1]["037833100"])
 
     def test_discovery_failure_does_not_write_an_unmutated_checkpoint(
         self,
@@ -1153,22 +1140,15 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                     return_value=state,
                 ),
                 mock.patch.object(
-                    pipeline,
-                    "load_cusip_map",
-                    return_value={},
-                ),
-                mock.patch.object(
                     refresh_recent_13f_filings,
                     "fetch_recent_feed_filings",
                     side_effect=RuntimeError("feed unavailable"),
                 ),
                 mock.patch.object(pipeline, "save_state") as save_state,
-                mock.patch.object(pipeline, "save_cusip_map") as save_map,
             ):
                 self.assertEqual(1, refresh_recent_13f_filings.main())
 
         save_state.assert_not_called()
-        save_map.assert_not_called()
 
 
 if __name__ == "__main__":

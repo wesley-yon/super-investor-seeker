@@ -425,7 +425,7 @@ class WithheldFundStatusTests(unittest.TestCase):
         with mock.patch.multiple(
             pipeline,
             _compose_replay_targets=mock.Mock(return_value=[quarter]),
-            update_cusip_map=mock.Mock(),
+            update_holding_tickers=mock.Mock(),
             merge_composed_quarters_into_fund=mock.Mock(return_value={
                 "cik": 123,
                 "quarters": [quarter],
@@ -438,7 +438,6 @@ class WithheldFundStatusTests(unittest.TestCase):
             replayed = pipeline.replay_quarters_for_cik(
                 123,
                 [trigger],
-                {},
                 1,
                 state,
                 force=True,

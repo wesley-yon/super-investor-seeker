@@ -93,6 +93,7 @@ def disable_network() -> None:
 
 def code_hashes() -> dict[str, str]:
     names = ["pipeline.py", "sec_security_master.py", "sec_edgar_evidence.py",
+             "sec_http.py", "atomic_files.py",
              "security_identity.py", "scripts/frozen_sec_rebuild.py"]
     return {name: digest((ROOT / name).read_bytes()) for name in names}
 
