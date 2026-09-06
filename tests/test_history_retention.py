@@ -169,7 +169,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 pipeline, "replay_quarters_for_cik", return_value=1
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_for_cik(CIK, 2, rebuild_outputs=False))
 
@@ -202,14 +201,12 @@ class HistoryRetentionTests(unittest.TestCase):
                 side_effect=fail_after_progress,
             ),
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
         ):
             self.assertFalse(
                 pipeline.run_for_cik(CIK, 2, rebuild_outputs=False)
             )
 
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
         self.assertEqual({"cik": CIK}, state["partial_retry"])
         self.assertEqual("XYZ", cusip_map["123456789"])
 
@@ -238,7 +235,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 pipeline, "replay_quarters_for_cik", return_value=1
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(3, rebuild_outputs=False))
 
@@ -274,7 +270,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 pipeline, "replay_quarters_for_cik", return_value=1
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(3, rebuild_outputs=False))
 
@@ -299,7 +294,6 @@ class HistoryRetentionTests(unittest.TestCase):
                     pipeline, "replay_quarters_for_cik", return_value=1
                 ) as replay,
                 mock.patch.object(pipeline, "save_state"),
-                mock.patch.object(pipeline, "save_cusip_map"),
             ):
                 self.assertEqual(0, refresh_recent_13f_filings.main())
 
@@ -331,7 +325,6 @@ class HistoryRetentionTests(unittest.TestCase):
                     pipeline, "replay_quarters_for_cik", return_value=1
                 ) as replay,
                 mock.patch.object(pipeline, "save_state"),
-                mock.patch.object(pipeline, "save_cusip_map"),
             ):
                 self.assertEqual(0, refresh_recent_13f_filings.main())
 
@@ -354,7 +347,6 @@ class HistoryRetentionTests(unittest.TestCase):
                 pipeline, "replay_quarters_for_cik", return_value=1
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(
                 pipeline.repair_amendments(4, rebuild_outputs=False)

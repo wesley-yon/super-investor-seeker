@@ -74,7 +74,7 @@ class FrontendSemanticsTests(unittest.TestCase):
             "const PINNED_POPULAR_FUND_CIKS ="
         )
         constants_end = self.html.index(
-            "// Top 20 by market cap", constants_start
+            "// ---------- global state ----------", constants_start
         )
         lookup_start = self.html.index("let _popularFundsCache = null;")
         lookup_end = self.html.index(

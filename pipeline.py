@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Super Investor Seeker - Phase 1 data pipeline.
+Super Investor Seeker SEC 13F data pipeline.
 
 Downloads SEC 13F-HR institutional holdings filings, parses them, and writes
 JSON files into ./data for the static website to consume.
@@ -2740,101 +2740,6 @@ def quarter_has_unsafe_legacy_option_identity(quarter: dict) -> bool:
     )
 
 
-def find_ambiguous_ticker_cusips(holdings: list[dict]) -> set[str]:
-    """CUSIPs that collide under the same ticker + instrument type."""
-    by_key: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for h in holdings:
-        ticker = str(h.get("ticker") or "").strip().upper()
-        cusip = str(h.get("cusip") or "").strip().upper()
-        if not (ticker and cusip):
-            continue
-        holding_type = classify_saved_holding(h)
-        by_key[(ticker, holding_type)].add(cusip)
-    ambiguous: set[str] = set()
-    for cusips in by_key.values():
-        if len(cusips) > 1:
-            ambiguous.update(cusips)
-    return ambiguous
-
-
-def _collect_zero_share_price_references(
-    quarter: dict,
-    by_report_position: dict[tuple[str, str, str], list[float]],
-    by_position: dict[tuple[str, str], list[float]],
-) -> None:
-    """Record non-derived per-share prices from one materialized quarter."""
-    report_date = quarter.get("report_date") or ""
-    for holding in quarter.get("holdings", []):
-        cusip = str(holding.get("cusip") or "").strip().upper()
-        holding_type = classify_saved_holding(holding)
-        value = holding.get("value") or 0
-        shares = holding.get("shares") or 0
-        if (
-            not cusip
-            or value <= 0
-            or shares <= 0
-            or "shares_imputed" in holding
-        ):
-            continue
-        price = value / shares
-        if price <= 0:
-            continue
-        if report_date:
-            by_report_position[(report_date, cusip, holding_type)].append(price)
-        by_position[(cusip, holding_type)].append(price)
-
-
-def _median_zero_share_price_references(
-    by_report_position: dict[tuple[str, str, str], list[float]],
-    by_position: dict[tuple[str, str], list[float]],
-) -> tuple[
-    dict[tuple[str, str, str], float],
-    dict[tuple[str, str], float],
-]:
-    return (
-        {
-            key: statistics.median(values)
-            for key, values in by_report_position.items()
-            if values
-        },
-        {
-            key: statistics.median(values)
-            for key, values in by_position.items()
-            if values
-        },
-    )
-
-
-def build_zero_share_price_reference_maps() -> tuple[
-    dict[tuple[str, str, str], float],
-    dict[tuple[str, str], float],
-]:
-    """Build price medians by quarter and canonical public position."""
-    by_report_position: dict[tuple[str, str, str], list[float]] = defaultdict(list)
-    by_position: dict[tuple[str, str], list[float]] = defaultdict(list)
-
-    if not FUNDS_DIR.exists():
-        return {}, {}
-
-    for fp in sorted(FUNDS_DIR.glob("*.json")):
-        try:
-            with open(fp) as f:
-                fund = json.load(f)
-        except json.JSONDecodeError:
-            continue
-        for quarter in fund.get("quarters", []):
-            _collect_zero_share_price_references(
-                quarter,
-                by_report_position,
-                by_position,
-            )
-
-    return _median_zero_share_price_references(
-        by_report_position,
-        by_position,
-    )
-
-
 class CusipRegistry(dict[str, dict]):
     """Registry result carrying the CUSIP set observed during its build."""
 
@@ -4274,42 +4179,6 @@ def load_cusip_map() -> dict[str, str]:
         for cusip, tickers in candidates.items()
         if len(tickers) == 1
     }
-
-
-def save_cusip_map(cusip_map: dict[str, str]) -> None:
-    """Compatibility no-op; mappings persist only with SEC provenance."""
-
-    _ = cusip_map
-
-
-def load_sec_security_details() -> dict[str, dict]:
-    """Return one deterministic descriptive SEC-master record per CUSIP."""
-
-    type_priority = {
-        "EQUITY": 0,
-        "PREF": 1,
-        "WARRANT": 2,
-        "NOTE": 3,
-        "CALL": 4,
-        "PUT": 5,
-        "OPT": 6,
-    }
-    selected: dict[str, tuple[int, dict]] = {}
-    records = load_security_master(SEC_SECURITY_MASTER_PATH).get("records", {})
-    for record in records.values():
-        if not isinstance(record, dict):
-            continue
-        cusip = normalize_security_identifier(record.get("cusip"))
-        if not cusip:
-            continue
-        instrument_type = normalize_instrument_type(
-            record.get("instrument_type")
-        )
-        priority = type_priority.get(instrument_type, 99)
-        current = selected.get(cusip)
-        if current is None or priority < current[0]:
-            selected[cusip] = (priority, dict(record))
-    return {cusip: record for cusip, (_priority, record) in selected.items()}
 
 
 def load_cusip_registry() -> dict:
@@ -9318,23 +9187,6 @@ def rebuild_registry_backed_outputs(
     write_ticker_health_report()
 
 
-def refresh_security_master_incremental() -> int:
-    """Refresh new SEC source files and return the changed-record count."""
-
-    before = load_security_master(SEC_SECURITY_MASTER_PATH)
-    before_records = before.get("records", {})
-    result = refresh_sec_security_master_from_funds(full_rebuild=False)
-    if result is None:
-        return 0
-    after_records = result.master.get("records", {})
-    keys = set(before_records) | set(after_records)
-    changed = sum(
-        before_records.get(key) != after_records.get(key)
-        for key in keys
-    )
-    log.info("  incremental SEC security refresh changed %s record(s)", changed)
-    return changed
-
 # ----------------------------------------------------------------------------
 # Main pipeline orchestration
 # ----------------------------------------------------------------------------
@@ -9722,9 +9574,9 @@ def run_for_cik(
         )
     except (Exception, KeyboardInterrupt) as exc:
         log.error("single-CIK replay failed for CIK %s: %s", cik, exc)
-        # Replay can mutate the durable retry/quarantine state and ticker map
-        # before a later filing in the same CIK fails. Preserve that progress
-        # so the next run resumes instead of repeating completed lookups.
+        # Replay can mutate durable retry/quarantine state before a later
+        # filing in the same CIK fails. Preserve that progress so the next run
+        # resumes instead of repeating completed filing work.
         try:
             save_state(state)
         except Exception as checkpoint_exc:
@@ -9733,20 +9585,11 @@ def run_for_cik(
                 cik,
                 checkpoint_exc,
             )
-        try:
-            save_cusip_map(cusip_map)
-        except Exception as checkpoint_exc:
-            log.error(
-                "failed to checkpoint CUSIP map after CIK %s failure: %s",
-                cik,
-                checkpoint_exc,
-            )
         return False
 
     if rebuild_outputs:
         enforce_published_quarter_health(state)
     save_state(state)
-    save_cusip_map(cusip_map)
     log.info("processed %s filing trigger(s) for CIK %s", processed, cik)
     if rebuild_outputs:
         rebuild_registry_backed_outputs()
@@ -9934,17 +9777,15 @@ def run_all(
         # any retry that completed before the signal so automatic continuation
         # does not repeat completed SEC filing work.
         save_state(state)
-        save_cusip_map(cusip_map)
         log.warning("interrupted during pending-target retries; checkpointed")
         return False
     if retry_checkpoint_required:
         # Retry routines can publish recovered fund quarters before the
         # routine filing-index discovery begins. Finalize health ownership and
-        # checkpoint state/map now so a later SEC index outage cannot leave
+        # checkpoint state now so a later SEC index outage cannot leave
         # durable queues out of sync with those fund files.
         enforce_published_quarter_health(state)
         save_state(state)
-        save_cusip_map(cusip_map)
     quarters = get_recent_filing_quarters(quarters_n)
     log.info(f"checking filing quarters: {quarters}")
 
@@ -10044,7 +9885,6 @@ def run_all(
             if current - last_checkpoint >= 25:
                 with io_lock:
                     save_state(state)
-                    save_cusip_map(cusip_map)
                 log.info(
                     "checkpoint: %s CIK groups complete, %s new trigger filings",
                     current,
@@ -10062,7 +9902,6 @@ def run_all(
         # newest quarantine/cooldown state and repeat those requests.
         with io_lock:
             save_state(state)
-            save_cusip_map(cusip_map)
         log.info("checkpointed pipeline state after interruption")
 
     for thread in threads:
@@ -10070,10 +9909,9 @@ def run_all(
     alive = [thread.name for thread in threads if thread.is_alive()]
     if alive:
         # Capture any short state update that landed while workers were being
-        # joined. The lock keeps the state/map pair internally consistent.
+        # joined. The lock keeps the saved state internally consistent.
         with io_lock:
             save_state(state)
-            save_cusip_map(cusip_map)
         log.error("workers did not stop cleanly: %s", ", ".join(alive))
         return False
 
@@ -10081,7 +9919,6 @@ def run_all(
         enforce_published_quarter_health(state)
     with io_lock:
         save_state(state)
-        save_cusip_map(cusip_map)
     log.info(f"processed {processed[0]} new filings total")
     if failures:
         log.error("pipeline failed for %s CIK group(s)", len(failures))
@@ -10386,10 +10223,9 @@ def repair_amendments(
                 failures.append(f"CIK {cik}: {exc}")
                 log.error("  amendment repair failed for CIK %s: %s", cik, exc)
     finally:
-        # Each replay may resolve map entries or update durable retry queues.
-        # Commit all completed groups on ordinary failure and interruption.
+        # Each replay may update durable retry queues. Commit all completed
+        # groups on ordinary failure and interruption.
         save_state(state)
-        save_cusip_map(cusip_map)
 
     if failures:
         log.error("amendment repair failed for %s CIK group(s)", len(failures))
@@ -10424,7 +10260,6 @@ def repair_amendments(
         if health_error:
             log.error(health_error)
             save_state(state)
-            save_cusip_map(cusip_map)
             return False
         # Persist the retry queue before removing any unresolved quarter. If
         # the process stops during the file writes below, the next run still
@@ -10448,7 +10283,6 @@ def repair_amendments(
             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         )
     save_state(state)
-    save_cusip_map(cusip_map)
     if rebuild_outputs:
         rebuild_registry_backed_outputs()
     log.info("replayed %s amendment accession(s)", repaired)
@@ -10747,7 +10581,6 @@ def _run_security_identity_replays(
             if current - last_checkpoint >= 100:
                 with state_lock:
                     save_state(state)
-                    save_cusip_map(cusip_map)
                 log.info(
                     "security identity checkpoint: %s/%s CIKs",
                     current,
@@ -10760,7 +10593,6 @@ def _run_security_identity_replays(
         failures.append("pipeline interrupted")
         with state_lock:
             save_state(state)
-            save_cusip_map(cusip_map)
         log.info("checkpointed security identity state after interruption")
 
     for thread in threads:
@@ -10768,10 +10600,9 @@ def _run_security_identity_replays(
     alive = [thread.name for thread in threads if thread.is_alive()]
     if alive:
         # A worker may complete a short mutation during the bounded join.
-        # Take one last consistent state/map snapshot before returning failure.
+        # Take one last consistent state snapshot before returning failure.
         with state_lock:
             save_state(state)
-            save_cusip_map(cusip_map)
         failures.append(
             "security identity workers did not stop: " + ", ".join(alive)
         )
@@ -10959,7 +10790,6 @@ def repair_security_identity_migration(
     )
     if not succeeded:
         save_state(state)
-        save_cusip_map(cusip_map)
         return False
 
     unresolved = sum(
@@ -10977,7 +10807,6 @@ def repair_security_identity_migration(
     if health_error:
         log.error(health_error)
         save_state(state)
-        save_cusip_map(cusip_map)
         return False
 
     # Queue durability precedes withholding, matching the amendment migration.
@@ -11002,7 +10831,6 @@ def repair_security_identity_migration(
         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
     save_state(state)
-    save_cusip_map(cusip_map)
     if withheld:
         log.warning(
             "withheld %s unresolved security identity quarter(s); they will "

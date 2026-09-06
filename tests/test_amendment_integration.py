@@ -1498,13 +1498,11 @@ class RepairModeTests(unittest.TestCase):
                 side_effect=interrupt_after_progress,
             ),
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
         ):
             with self.assertRaises(KeyboardInterrupt):
                 pipeline.repair_amendments(4, rebuild_outputs=False)
 
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
         self.assertEqual("XYZ", cusip_map["123456789"])
 
     def test_health_gate_uses_existing_corpus_quarantine_ceiling(self) -> None:
@@ -1674,7 +1672,6 @@ class RepairModeTests(unittest.TestCase):
                     "replay_quarters_for_cik",
                     side_effect=quarantine_every_target,
                 ),
-                mock.patch.object(pipeline, "save_cusip_map"),
             ):
                 succeeded = pipeline.repair_amendments(
                     8,
@@ -1788,7 +1785,6 @@ class RepairModeTests(unittest.TestCase):
                 return_value=2,
             ) as withhold,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
             mock.patch.object(pipeline, "rebuild_registry_backed_outputs"),
         ):
             succeeded = pipeline.repair_amendments(
@@ -1858,7 +1854,6 @@ class RepairModeTests(unittest.TestCase):
                 return_value=1,
             ) as withhold,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
             mock.patch.object(pipeline, "rebuild_registry_backed_outputs"),
         ):
             succeeded = pipeline.repair_amendments(
@@ -1956,7 +1951,6 @@ class RepairModeTests(unittest.TestCase):
                     "save_fund",
                     side_effect=fail_second_fund_save,
                 ),
-                mock.patch.object(pipeline, "save_cusip_map"),
                 mock.patch.object(pipeline, "rebuild_registry_backed_outputs"),
             ):
                 succeeded = pipeline.repair_amendments(
@@ -2004,7 +1998,6 @@ class RepairModeTests(unittest.TestCase):
             ),
             mock.patch.object(pipeline, "replay_quarters_for_cik", return_value=1) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
             mock.patch.object(pipeline, "rebuild_registry_backed_outputs"),
         ):
             self.assertTrue(pipeline.repair_amendments(
@@ -2052,7 +2045,6 @@ class RepairModeTests(unittest.TestCase):
             ),
             mock.patch.object(pipeline, "download_company_idx", return_value=[]),
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(4, rebuild_outputs=False))
 
@@ -2089,7 +2081,6 @@ class RepairModeTests(unittest.TestCase):
             ),
             mock.patch.object(pipeline, "download_company_idx", return_value=[]),
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(4, rebuild_outputs=False))
 
@@ -2127,7 +2118,6 @@ class RepairModeTests(unittest.TestCase):
                 pipeline, "enforce_published_quarter_health", return_value=0
             ) as enforce_health,
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
             mock.patch.object(
                 pipeline, "get_recent_filing_quarters", return_value=[(2026, 3)]
             ),
@@ -2142,7 +2132,6 @@ class RepairModeTests(unittest.TestCase):
         retry.assert_called_once_with(state, cusip_map, 4)
         enforce_health.assert_called_once_with(state)
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
 
     def test_retry_interruption_checkpoints_before_discovery(self) -> None:
         state = {
@@ -2178,13 +2167,11 @@ class RepairModeTests(unittest.TestCase):
                 side_effect=interrupt_after_progress,
             ),
             mock.patch.object(pipeline, "save_state") as save_state,
-            mock.patch.object(pipeline, "save_cusip_map") as save_map,
             mock.patch.object(pipeline, "get_recent_filing_quarters") as recent,
         ):
             self.assertFalse(pipeline.run_all(4, rebuild_outputs=False))
 
         save_state.assert_called_once_with(state)
-        save_map.assert_called_once_with(cusip_map)
         recent.assert_not_called()
         self.assertEqual("durable", state["retry_progress"])
         self.assertEqual("XYZ", cusip_map["123456789"])
@@ -2218,7 +2205,6 @@ class RepairModeTests(unittest.TestCase):
                 side_effect=pipeline.FilingParseError("new trigger failed"),
             ) as replay,
             mock.patch.object(pipeline, "save_state"),
-            mock.patch.object(pipeline, "save_cusip_map"),
         ):
             self.assertTrue(pipeline.run_all(4, rebuild_outputs=False))
 

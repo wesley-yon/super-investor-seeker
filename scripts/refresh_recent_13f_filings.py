@@ -10,6 +10,7 @@ index pass with SEC's current-filings feed and processes any recent 13F-HR or
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
@@ -313,14 +314,6 @@ def main() -> int:
                 "could not checkpoint current-feed replay state: %s",
                 exc,
             )
-        try:
-            pipeline.save_cusip_map(cusip_map)
-        except Exception as exc:
-            checkpoint_errors += 1
-            pipeline.log.error(
-                "could not checkpoint current-feed CUSIP map: %s",
-                exc,
-            )
 
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
@@ -350,5 +343,11 @@ def main() -> int:
     return 0
 
 
+def cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args(argv)
+    return main()
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

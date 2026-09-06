@@ -42,7 +42,7 @@ live Pages deployment remain unchanged.
 
 1. **GitHub Actions** restores the newest authenticated private snapshot.
 2. Weekday maintenance runs inspect SEC EDGAR throughout the filing day; a
-   separate weekly pass deterministically rebuilds the SEC security master.
+   separate overnight pass deterministically rebuilds the SEC security master.
 3. The pipeline discovers all 13F filers, fetches new filings, rebuilds derived
    data, and runs complete corpus validation plus regression tests.
 4. Changed data is published as a new private, content-addressed snapshot.
@@ -269,12 +269,13 @@ The only approved `ticker_source` values are `sec_ftd` and `sec_ixbrl`.
 `sec_13f_list`, `sec_company_tickers`, `sec_fund_series`,
 `sec_schedule_13dg`, and `sec_13f_filer_consensus` are corroborating SEC
 metadata sources for identity, issuer, class, kind, labels, or candidate
-validation; none can publish a ticker alone. Weekday runs use
-`--refresh-security-master` to fetch new or changed SEC inputs; the weekly
-workflow uses the same incremental source discovery but runs the complete
-deterministic registry/provenance audit. `--rebuild-security-master` is reserved
-for the one-time legacy cutover or an explicit clean rebuild. The weekly
-workflow exposes that clean path as the manual `rebuild_security_master` input;
+validation; none can publish a ticker alone. Weekday runs reuse the verified
+SEC master and leave new identities tickerless pending evidence maintenance.
+The overnight workflow uses `--refresh-security-master` to fetch new or changed
+SEC inputs and runs the complete deterministic registry/provenance audit.
+`--rebuild-security-master` is reserved for the one-time legacy cutover or an
+explicit clean rebuild. The overnight workflow exposes that clean path as the
+manual `rebuild_security_master` input;
 it stages against empty source/master files and promotes the pair only after
 the full acceptance audit passes.
 
@@ -405,10 +406,9 @@ of an integrity-checked partial SQLite generation on resume, and preserves a
 ### Tech Stack
 
 - Single `index.html` file with inline CSS and JavaScript — no frontend compilation, npm, or framework
-- **Chart.js** from CDN for stacked bar charts
-- **SVG sparklines** rendered inline
+- Inline **SVG sparklines and miniature line/bar charts**, plus a CSS concentration donut
 - Data loaded via `fetch()` from `data/*.json` files
-- Client-side search against the index.json
+- Client-side search using `funds-index.json` and the lazily loaded `index.json`
 
 ### Features
 
@@ -418,27 +418,29 @@ of an integrity-checked partial SQLite generation on resume, and preserves a
 - Click any fund to see their portfolio
 
 **Fund Portfolio View:**
-- Stats: 13F Equity Value (not "Portfolio Value"), number of positions, top holding
+- Stats: 13F Equity Value (not "Portfolio Value"), number of positions, top holding, and top-five concentration
 - Note explaining that 13F excludes cash, T-bills, private holdings, and operating businesses
-- Stacked bar chart: portfolio composition over time (top 5 holdings + "Other")
-- Holdings table columns in order: rank, ticker, company, 4-quarter sparkline trend, % of portfolio, previous % of portfolio, % change (QoQ badge), value, shares
+- Miniature charts show four-quarter total-value and position-count histories; a donut shows current top-five concentration
+- Holdings table columns in order: rank, security, company, % of portfolio, value, shares, change vs prior, previous % of portfolio, four-quarter trend, and security type
 - QoQ changes computed client-side by comparing current quarter to prior quarter in the JSON
 - Sparklines computed from the quarterly history in the JSON
 - Click any ticker → jump to stock lookup
 
 **Stock Search & Browse:**
-- Search bar — searches across all tickers and company names
+- The unified search matches ticker symbols and verified fund-product names; ordinary company descriptions are displayed with results
+- Search results focus on common equities, ticker-based funds, and ETNs; options and other security types remain reachable through fund holdings
 - Click any ticker to see holders
 
 **Stock Detail View:**
-- Stats: number of institutional holders, total held value, total shares, largest holder
-- Holders table: fund name, shares, value, % of that fund's portfolio, QoQ change, sparkline
+- Stats: current institutional holders, total held value, total exact shares, and largest holder
+- Holders table: rank, fund name, value, shares, % of that fund's portfolio, change vs prior, four-quarter trend, and source date
+- Separate panels retain latest-filing exits, stale records, and withheld records without including them in current totals
 - Click any fund name → jump to that fund's portfolio
 
 **Cross-Linking:**
 - Fund view tickers are clickable → stock detail
 - Stock view fund names are clickable → fund portfolio
-- Tab navigation always visible (Fund Lookup / Stock Lookup)
+- Unified search remains available on detail pages; the logo and Back button return home, and hash routes support browser history
 
 ### Design
 
@@ -448,17 +450,21 @@ The design is implemented in `index.html`. Any future rework must preserve:
 - 4-quarter sparklines and 4-quarter charts.
 
 Design rules to preserve:
-- Dark theme: `#06080d` background, `#0d1017` surface, `#111620` cards, `#1c2333` borders
-- Accent: `#4e8cff`, Green: `#34d399`, Red: `#f87171`, Gold: `#fbbf24`
-- Fonts: JetBrains Mono (data), Source Sans 3 (text) — both from Google Fonts CDN
-- Color-coded QoQ badges: gold NEW, green ↑X%, red ↓X%, gray —
+- Analyst's Notebook light theme: `#f4f0e8` background, `#f7f3eb` surface, `#fcfaf5` cards, and `#d6cfc3` borders
+- Accent: `#006b4f`, green: `#007342`, red: `#97281f`, gold: `#744620`
+- Fonts: Newsreader (headings) and Source Sans 3 (text and tabular numbers), loaded from Google Fonts
+- Color-coded QoQ badges: green NEW/increases, red reductions/exits, and muted unchanged or unavailable values
 - SVG sparklines: green bars = shares increased, red = decreased
 
 ### Data Loading Strategy
 
 ```javascript
 // site-data-loader.js transparently maps detail fetches to .json.gz.
-// On page load, load the browser-facing search index.
+// On page load, fetch the fund bootstrap and required security metadata.
+const funds = await fetch('data/funds-index.json').then(r => r.json());
+const labels = await fetch('data/security_labels.json').then(r => r.json());
+
+// Warm the larger ticker search index after the initial view is ready.
 const index = await fetch('data/index.json').then(r => r.json());
 
 // Detail payloads are individually gzip-compressed in the Pages artifact.
@@ -480,7 +486,7 @@ complete corpus up front.
 
 - Runs repeatedly during the Monday-Friday 7am-6pm America/New_York filing
   window and supports manual dispatch.
-- Uses a shared `data-maintenance` concurrency group so Update and the weekly
+- Uses a shared `data-maintenance` concurrency group so Update and the overnight
   security-master rebuild cannot mutate snapshot state concurrently.
 - Checks out live `main`, authenticates to the private data repository with a
   short-lived GitHub App token, and transactionally restores the newest
@@ -495,14 +501,14 @@ complete corpus up front.
 
 ### `refresh-cusip-registry.yml`
 
-- Performs a weekly deterministic SEC security-master refresh and complete
-  registry/provenance audit under the same maintenance lock and private-snapshot
-  contract.
+- Performs a daily deterministic SEC security-master refresh at 04:23 UTC and
+  complete registry/provenance audit under the same maintenance lock and
+  private-snapshot contract.
 - A legacy restore reconstructs and verifies every retained immutable holding
   against SEC Form 13F bulk data and exact accession filings before rebuilding
   mappings and verifies the provider-neutral cutover difference report. That
   local report is excluded from snapshots and workflow artifact uploads.
-  Contract-v2 weekly runs
+  Contract-v2 overnight runs
   reuse the verified corpus and discover only changed SEC security-master
   sources, so the all-history 13F download remains a one-time migration unless
   an operator explicitly selects the workflow's `rebuild_security_master`

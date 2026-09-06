@@ -138,12 +138,6 @@ _INFOTABLE_REQUIRED_COLUMNS = frozenset({
     "SSHPRNAMTTYPE",
     "PUTCALL",
 })
-_INFOTABLE_OPTIONAL_COLUMNS = frozenset({
-    "FIGI",
-    "INVESTMENTDISCRETION",
-    "OTHERMANAGER",
-})
-
 Fetcher = Callable[[str], bytes]
 
 
@@ -6616,35 +6610,6 @@ def verify_reported_identity_against_sec(
     return ReportedIdentityVerificationResult(
         **totals,
         issues=tuple(issues),
-    )
-
-
-def _archive_targets_for_unmatched_verification(
-    verification: ReportedIdentityVerificationResult,
-) -> tuple[list[dict[str, str]], tuple[dict[str, str], ...]]:
-    targets: set[tuple[str, str, str]] = set()
-    unaddressable: list[dict[str, str]] = []
-    for issue in verification.issues:
-        if issue["status"] != "unmatched":
-            continue
-        cik = str(issue["cik"])
-        report_date = str(issue["report_date"])
-        accessions = tuple(issue.get("accessions") or ())
-        if cik and report_date and accessions:
-            targets.update((cik, accession, report_date) for accession in accessions)
-        else:
-            unaddressable.append({
-                "cik": cik,
-                "accession": str(issue.get("holding_accession") or ""),
-                "report_date": report_date,
-                "reason": "unmatched holding lacks an exact accession fallback",
-            })
-    return (
-        [
-            {"cik": cik, "accession": accession, "report_date": report_date}
-            for cik, accession, report_date in sorted(targets)
-        ],
-        tuple(unaddressable),
     )
 
 
