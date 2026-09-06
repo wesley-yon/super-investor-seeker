@@ -1593,7 +1593,7 @@ gh_mutate_once() {
             "- name: Refresh recently accepted 13F filings", 1
         )[1].split("- name: Regenerate registry-backed site data", 1)[0]
 
-        self.assertIn("timeout --signal=TERM --kill-after=120s 210m", pipeline)
+        self.assertIn("timeout --signal=TERM --kill-after=120s 180m", pipeline)
         self.assertIn('if [ "$pipeline_status" -eq 124 ]; then', pipeline)
         self.assertIn('elif [ "$pipeline_status" -ne 0 ]; then', pipeline)
         self.assertIn('exit "$pipeline_status"', pipeline)

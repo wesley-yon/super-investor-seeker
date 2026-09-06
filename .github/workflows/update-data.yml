@@ -249,7 +249,7 @@ jobs:
           set +e
           # Leave the step-level guard enough room for the bounded local
           # value-unit preflight above plus the checkpoint kill grace.
-          timeout --signal=TERM --kill-after=120s 210m \
+          timeout --signal=TERM --kill-after=120s 180m \
             python pipeline.py "${mode[@]}" --quarters "$FILING_QUARTERS" --defer-regeneration
           pipeline_status=$?
           set -e
@@ -356,9 +356,11 @@ jobs:
         # is temporarily late, while new or conflicting evidence fails closed.
         # This incremental path is bounded separately from the one-time legacy
         # rebuild. Match the weekly 90-minute allowance for the full retained
-        # corpus. The 210-minute ingest and 15-minute recent-feed bounds leave
-        # 45 minutes of the six-hour job for setup, validation and publication
-        # (about 41 minutes after both inner cancellation grace periods).
+        # corpus. The 180-minute ingest and 15-minute recent-feed bounds leave
+        # 75 minutes of the six-hour job for setup, validation and publication
+        # (71 minutes after both inner cancellation grace periods). Hosted
+        # candidate verification measured about 45 minutes for restore, full
+        # validation, regression tests and packing; retain publication margin.
         timeout-minutes: 90
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
