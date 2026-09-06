@@ -16,6 +16,41 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class GeneratedDataContractTests(unittest.TestCase):
+    def test_strict_iso_date_rejects_noncanonical_and_invalid_dates(self) -> None:
+        for value in ("2024-02-29", "2026-09-05", "2000-01-01", "9999-12-31"):
+            self.assertTrue(validate_data.is_strict_iso_date(value), value)
+        for value in (
+            None, 20260905, {}, "", "2026-9-5", "20260905", "2026-W36-6",
+            "2026-02-29", "2026-13-01", "2026-00-01", "2026-09-00",
+            "2026-09-05 ", " 2026-09-05", "2026-09-05T00:00:00Z",
+        ):
+            self.assertFalse(validate_data.is_strict_iso_date(value), repr(value))
+
+    def test_registry_loader_prefers_snapshot_data_over_stale_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_registry = root / "data/cusip_registry.json"
+            cache_registry = root / ".cache/cusip_registry.json"
+            data_registry.parent.mkdir()
+            cache_registry.parent.mkdir()
+            data_registry.write_text(
+                '{"037833100":{"ticker":"AAPL"}}\n',
+                encoding="utf-8",
+            )
+            cache_registry.write_text(
+                '{"037833100":{"ticker":"STALE"}}\n',
+                encoding="utf-8",
+            )
+
+            with mock.patch.multiple(
+                pipeline,
+                CUSIP_REGISTRY_PATH=cache_registry,
+                LEGACY_CUSIP_REGISTRY_PATH=data_registry,
+            ):
+                registry = pipeline.load_cusip_registry()
+
+            self.assertEqual("AAPL", registry["037833100"]["ticker"])
+
     def test_ticker_health_annotations_separate_backlog_from_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "ticker_health.json"
@@ -85,13 +120,13 @@ class GeneratedDataContractTests(unittest.TestCase):
         ), lines)
         self.assertTrue(any(
             line.startswith(
-                "::warning title=ticker_health::1 current unresolved"
+                "::notice title=ticker_health::1 current unresolved"
             )
             and "222222222=∅" in line
             for line in lines
         ), lines)
         self.assertTrue(any(
-            "::warning title=ticker_health::1 current nonzero synthetic"
+            "::notice title=ticker_health::1 current nonzero synthetic"
             in line
             for line in lines
         ), lines)
@@ -105,13 +140,132 @@ class GeneratedDataContractTests(unittest.TestCase):
             for line in lines
         ), lines)
         self.assertTrue(any(
-            "::warning title=ticker_health::1 option_family_artifact"
+            "::notice title=ticker_health::1 option_family_artifact"
             in line
             for line in lines
         ), lines)
 
     def test_current_contract_is_explicitly_version_five(self) -> None:
         self.assertEqual(5, data_contract.DATA_CONTRACT_VERSION)
+
+    def test_registry_consensus_does_not_replace_exact_blank_issuer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            funds_dir = Path(tmpdir) / "funds"
+            funds_dir.mkdir()
+            (funds_dir / "1643792.json").write_text(json.dumps({
+                "cik": 1643792,
+                "quarters": [{
+                    "report_date": "2026-06-30",
+                    "holdings": [{
+                        "cusip": "M46528101",
+                        "reported_cusip": "M46528101",
+                        "issuer": "Frontline plc",
+                        "reported_issuer": "",
+                        "class": "COM",
+                        "reported_class": "COM",
+                        "holding_type": "EQUITY",
+                        "value": 0,
+                    }],
+                }],
+            }))
+            with (
+                mock.patch.object(pipeline, "FUNDS_DIR", funds_dir),
+                mock.patch.object(
+                    pipeline,
+                    "load_security_master",
+                    return_value={"records": {}},
+                ),
+                mock.patch.object(pipeline, "save_cusip_registry"),
+            ):
+                registry = pipeline.build_cusip_registry()
+
+        entry = registry["M46528101"]
+        self.assertEqual("", entry["dominant_issuer"])
+        self.assertEqual("COM", entry["dominant_class"])
+        self.assertEqual("UNIDENTIFIED EQUITY SECURITY", entry["name"])
+        self.assertNotIn("Frontline", json.dumps(entry))
+
+    def test_registry_issuer_skips_identifiers_in_exact_evidence(self) -> None:
+        identifier = "436CVR021"
+        record = {
+            "cusip": identifier,
+            "official_13f": {"records": [{"issuer": identifier}]},
+            "reported_issuer": identifier,
+            "reported_issuers": [identifier, "HOLOGIC INC"],
+        }
+        self.assertEqual(
+            ("HOLOGIC INC", "sec_13f_filer_consensus"),
+            pipeline._master_record_issuer(record, identifier),
+        )
+        record.update({
+            "instrument_type": "EQUITY",
+            "mapping_status": "ambiguous",
+            "ticker": None,
+            "reported_classes": ["13F EXEMPT"],
+            "security_label": f"{identifier} — 13F EXEMPT",
+        })
+        evidence = {identifier: {
+            "issuer_value": {"HOLOGIC INC": 1},
+            "class_value": {"RIGHT": 1},
+            "instrument_type_count": {"EQUITY": 1},
+            "instrument_type_value": {"EQUITY": 1},
+        }}
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(pipeline, "FUNDS_DIR", Path(temporary)),
+                mock.patch.object(pipeline, "_aggregate_cusip_evidence", return_value=evidence),
+                mock.patch.object(pipeline, "load_security_master", return_value={
+                    "records": {f"{identifier}|EQUITY": record},
+                }),
+                mock.patch.object(pipeline, "save_cusip_registry"),
+            ):
+                entry = pipeline.build_cusip_registry()[identifier]
+        self.assertEqual("HOLOGIC INC", entry["name"])
+        self.assertEqual(
+            "HOLOGIC INC — 13F EXEMPT — 436CVR021", entry["security_label"]
+        )
+        self.assertIsNone(entry["ticker"])
+        record["reported_issuers"] = [identifier]
+        self.assertEqual(("", ""), pipeline._master_record_issuer(record, identifier))
+
+    def test_fund_share_markers_exclude_explicit_options_but_not_bad_debt(self) -> None:
+        registry = {
+            f"00000000{number}": {
+                "type": kind,
+                "name": "EXAMPLE FUND",
+                "security_label": "EXAMPLE FUND — ETF",
+                "label_source": "sec_13f_filer_consensus",
+                "security_kind": "ETF",
+                "security_kind_source": "filer_metadata",
+                "dominant_class": "ETF",
+            }
+            for number, kind in enumerate(("EQUITY", "CALL", "PUT", "OPT"), 1)
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            labels_path = Path(temporary) / "labels.json"
+            with (
+                mock.patch.object(pipeline, "SECURITY_LABELS_PATH", labels_path),
+                mock.patch.object(validate_data, "SECURITY_LABELS_PATH", labels_path),
+            ):
+                pipeline.write_security_labels(registry)
+                self.assertEqual(
+                    ["000000001"], json.loads(labels_path.read_text())["fund_identities"]
+                )
+                errors = []
+                validate_data.validate_security_labels(registry, errors)
+                self.assertEqual([], errors)
+                registry["000000002"]["type"] = "NOTE"
+                pipeline.write_security_labels(registry)
+                validate_data.validate_security_labels(registry, errors)
+                self.assertTrue(any("fund_identities differ" in error for error in errors))
+
+    def test_filer_fund_kind_does_not_reclassify_saved_debt_from_issuer_alone(self) -> None:
+        entry = {"name": "ISHARES TR", "dominant_class": "IBONDS DEC 2029",
+                 "security_kind": "BOND", "ticker": None}
+        for kind in ("NOTE", "PREF", "WARRANT"):
+            self.assertIsNone(validate_data.expected_filer_fund_kind({**entry, "type": kind}))
+        for kind in ("EQUITY", "CALL", "PUT"):
+            self.assertEqual("ETF", validate_data.expected_filer_fund_kind({**entry, "type": kind}))
 
     def test_validator_requires_exact_current_integer_version(self) -> None:
         errors: list[str] = []
@@ -353,6 +507,41 @@ class GeneratedDataContractTests(unittest.TestCase):
             report["buckets"]["option_family_artifact"][0]["cusip"],
         )
 
+    def test_ticker_health_ignores_unproven_holding_ticker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            funds_dir = data_dir / "funds"
+            funds_dir.mkdir(parents=True)
+            health_path = data_dir / "ticker_health.json"
+            (funds_dir / "123.json").write_text(json.dumps({
+                "cik": 123,
+                "quarters": [{
+                    "report_date": "2026-03-31",
+                    "holdings": [{
+                        "cusip": "037833100",
+                        "ticker": "UNPROVEN",
+                        "issuer": "Unproven Vendor Label",
+                        "reported_issuer": "APPLE INC",
+                        "class": "COM",
+                        "value": 100,
+                        "holding_type": "EQUITY",
+                    }],
+                }],
+            }))
+            with mock.patch.multiple(
+                pipeline,
+                DATA_DIR=data_dir,
+                FUNDS_DIR=funds_dir,
+                TICKER_HEALTH_PATH=health_path,
+                load_cusip_registry=mock.Mock(return_value={}),
+            ):
+                report = pipeline.write_ticker_health_report()
+
+        row = report["buckets"]["unresolved"][0]
+        self.assertIsNone(row["ticker"])
+        self.assertEqual("APPLE INC", row["issuer"])
+        self.assertNotIn("ambiguous", report["buckets"])
+
     def test_ticker_health_accepts_sec_verified_reserved_word_ticker(
         self,
     ) -> None:
@@ -400,378 +589,124 @@ class GeneratedDataContractTests(unittest.TestCase):
             self.assertNotIn("suspicious_symbol", report["buckets"])
             self.assertNotIn("unresolved", report["buckets"])
 
-    def test_committed_registry_metadata_survives_stale_private_cache(
+    def test_ticker_health_accepts_proven_sec_ftd_reserved_word_ticker(
         self,
     ) -> None:
-        common_cases = {
-            "02157G309": ("ALCE", "COM"),
-            "39531G308": ("VIP", "CLASS A COM"),
-            "63902N106": ("SHMP", "COMMON"),
-            "G4036C106": ("TONT", "ORD SHS CL A"),
-        }
-        fund_kind_cases = {
-            "00143W701": ("ODMAX", "MUTUAL FUND"),
-            "552981706": ("MRFIX", "MUTUAL FUND"),
-            "552981805": ("MTRIX", "MUTUAL FUND"),
-            "74441K107": ("PGNAX", "MUTUAL FUND"),
-            "G12808104": ("BOPCF", "CLOSED-END FUND"),
-            "G29361113": ("EWIIF", "CLOSED-END FUND"),
-            "G3156P103": ("ASA", "CLOSED-END FUND"),
-            "G8766R134": ("TGONF", "CLOSED-END FUND"),
-            "G8827C100": ("TPNTF", "CLOSED-END FUND"),
-        }
-        product_cases = {
-            "00768Y271": {
-                "symbol": "HVAC",
-                "name": "ADVISORSHARES TR",
-                "class": "HVAC INDUS ETF",
-                "expected": "ADVISORSHARES TR — HVAC INDUS ETF",
-                "expected_source": "filer_issuer_class",
-                "stale": "ADVISORSHARES HVAC INDUS",
-                "stale_openfigi": True,
-            },
-            "37960A230": {
-                "symbol": "CHPX",
-                "name": "GLOBAL X FDS AI SEMIC",
-                "class": "COMMON",
-                "expected": "GLO X AI SEMICON & QUANT ETF",
-                "expected_source": "openfigi",
-                "stale": None,
-                "stale_openfigi": False,
-            },
-            "69384J307": {
-                "symbol": "MMAY",
-                "name": "PACER FDS TR",
-                "class": "SWAN SOS MAY ETF",
-                "expected": "PACER FDS TR — SWAN SOS MAY ETF",
-                "expected_source": "filer_issuer_class",
-                "stale": "PCR SWN SOS MRTE MAY ETF",
-                "stale_openfigi": True,
-            },
-            "88340F795": {
-                "symbol": "UPSG",
-                "name": "THEMES ETF TR",
-                "class": "LEVERAGE SHS 2X",
-                "expected": "LEVERAGE SHARES 2X UPS",
-                "expected_source": "openfigi",
-                "stale": "THEMES ETF TR — LEVERAGE SHS 2X — UPSG",
-                "stale_openfigi": False,
-            },
-            "88340W541": {
-                "symbol": "ORLG",
-                "name": "THEMES ETF TR",
-                "class": "LEVERAGE SHS 2X",
-                "expected": "LEVERAGE SHARES 2X ORLY",
-                "expected_source": "openfigi",
-                "stale": "THEMES ETF TR — LEVERAGE SHS 2X — ORLG",
-                "stale_openfigi": False,
-            },
-            "88340W624": {
-                "symbol": "DNNG",
-                "name": "THEMES ETF TR",
-                "class": "LEVERAGE SHS 2X",
-                "expected": "LEVERAGE SHARES 2X DNN",
-                "expected_source": "openfigi",
-                "stale": "THEMES ETF TR — LEVERAGE SHS 2X — DNNG",
-                "stale_openfigi": False,
-            },
-            "88340W731": {
-                "symbol": "AXPG",
-                "name": "THEMES ETF TR",
-                "class": "LEVERAGE SHS 2X",
-                "expected": "LEVERAGE SHARES 2X AXP",
-                "expected_source": "openfigi",
-                "stale": "THEMES ETF TR — LEVERAGE SHS 2X — AXPG",
-                "stale_openfigi": False,
-            },
-            "921910840": {
-                "symbol": "MGV",
-                "name": "VANGUARD WORLD FD",
-                "class": "MEGA CAP VAL ETF",
-                "expected": "VANGUARD MEGA CAP VALUE ETF",
-                "expected_source": "openfigi",
-                "stale": "VNGRD MRGSTR MG CP VL ETF-UI",
-                "stale_openfigi": True,
-            },
-            "922908611": {
-                "symbol": "VBR",
-                "name": "VANGUARD INDEX FDS",
-                "class": "SM CP VAL ETF",
-                "expected": "VANGUARD SMALL-CAP VALUE ETF",
-                "expected_source": "openfigi",
-                "stale": "VNGRD MRNGST SL-CP VAL ETF-U",
-                "stale_openfigi": True,
-            },
-        }
-
-        private_registry: dict[str, dict] = {}
-        committed_registry: dict[str, dict] = {}
-        for identifier, (symbol, dominant_class) in common_cases.items():
-            private_entry = {
-                "ticker": symbol,
-                "security_label": symbol,
-                "type": "EQUITY",
-                "dominant_class": dominant_class,
-                "sources": ["filer_dominant", "cusip_map_vetted"],
-            }
-            private_registry[identifier] = private_entry
-            committed_registry[identifier] = {
-                **private_entry,
-                "security_kind": "COMMON",
-                "security_kind_source": "filer_metadata",
-            }
-        for identifier, (symbol, kind) in fund_kind_cases.items():
-            private_entry = {
-                "ticker": symbol,
-                "security_label": symbol,
-                "type": "EQUITY",
-                "dominant_class": "COM",
-                "sources": ["filer_dominant", "cusip_map_vetted"],
-            }
-            private_registry[identifier] = private_entry
-            committed_registry[identifier] = {
-                **private_entry,
-                "security_kind": kind,
-                "security_kind_source": "openfigi",
-            }
-        for identifier, case in product_cases.items():
-            private_entry = {
-                "ticker": case["symbol"],
-                "security_label": case["symbol"],
-                "security_kind": "ETF",
-                "security_kind_source": "openfigi",
-                "type": "EQUITY",
-                "name": case["name"],
-                "dominant_issuer": case["name"],
-                "dominant_class": case["class"],
-                "sources": ["filer_dominant"],
-            }
-            if case["stale"]:
-                private_entry["product_name"] = case["stale"]
-                private_entry["product_name_source"] = (
-                    "openfigi"
-                    if case["stale_openfigi"]
-                    else "filer_issuer_class_ticker"
-                )
-            private_registry[identifier] = private_entry
-            committed_registry[identifier] = {
-                **private_entry,
-                "product_name": case["expected"],
-                "product_name_source": case["expected_source"],
-            }
-
-        private_registry["123456789"] = {
-            "ticker": "NEWF",
-            "security_label": "NEWF",
-            "security_kind": "MUTUAL FUND",
-            "security_kind_source": "openfigi",
-            "product_name": "NEW SHORT VALUE ETF",
-            "product_name_source": "openfigi",
-        }
-        committed_registry["123456789"] = {
-            "ticker": "OLDF",
-            "security_label": "OLDF",
-            "security_kind": "ETF",
-            "security_kind_source": "openfigi",
-            "product_name": "OLD SPONSOR LONG STRATEGY ETF",
-            "product_name_source": "openfigi",
-        }
-
         with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            private_path = root / "cache" / "cusip_registry.json"
-            public_path = root / "data" / "cusip_registry.json"
-            private_path.parent.mkdir()
-            public_path.parent.mkdir()
-            private_path.write_text(json.dumps(private_registry))
-            public_path.write_text(json.dumps(committed_registry))
+            data_dir = Path(tmpdir) / "data"
+            funds_dir = data_dir / "funds"
+            funds_dir.mkdir(parents=True)
+            health_path = data_dir / "ticker_health.json"
+            (data_dir / "company_tickers.json").write_text(json.dumps({
+                "0": {
+                    "ticker": "PFD",
+                    "title": (
+                        "FLAHERTY & CRUMRINE PREFERRED & INCOME FUND INC"
+                    ),
+                },
+            }))
+            (funds_dir / "123.json").write_text(json.dumps({
+                "cik": 123,
+                "quarters": [{
+                    "report_date": "2026-06-30",
+                    "holdings": [{
+                        "cusip": "338480106",
+                        "ticker": None,
+                        "issuer": "FLAHERTY & CRUMRINE PFD INCO",
+                        "class": "COM",
+                        "value": 100,
+                    }],
+                }],
+            }))
+            registry_entry = {
+                "ticker": "PFD",
+                "ticker_source": "sec_ftd",
+                "ticker_as_of": "2026-08-06",
+                "mapping_status": "resolved",
+                "name": "FLAHERTY & CRUMRINE PFD INCO",
+                "dominant_issuer": "FLAHERTY & CRUMRINE PFD INCO",
+                "type": "EQUITY",
+                "security_label": "FLAHERTY & CRUMRINE PFD INCO — COM",
+                "security_kind": "COMMON",
+                "security_kind_source": "sec_13f_list",
+                "sources": [
+                    "sec_13f_list",
+                    "sec_company_tickers",
+                    "sec_ftd",
+                ],
+            }
             with mock.patch.multiple(
                 pipeline,
-                CUSIP_REGISTRY_PATH=private_path,
-                LEGACY_CUSIP_REGISTRY_PATH=public_path,
+                DATA_DIR=data_dir,
+                FUNDS_DIR=funds_dir,
+                TICKER_HEALTH_PATH=health_path,
+                load_cusip_registry=mock.Mock(return_value={
+                    "338480106": registry_entry,
+                }),
             ):
-                prior_registry = pipeline.load_cusip_registry()
+                report = pipeline.write_ticker_health_report()
 
-        for identifier in common_cases:
-            with self.subTest(identifier=identifier):
-                self.assertEqual(
-                    "COMMON",
-                    prior_registry[identifier]["security_kind"],
-                )
-                self.assertEqual(
-                    ("COMMON", "filer_metadata"),
-                    pipeline._registry_security_kind(
-                        identifier=identifier,
-                        openfigi_detail=None,
-                        prior_entry=prior_registry[identifier],
-                        entry=private_registry[identifier],
-                    ),
-                )
-        for identifier, (_symbol, kind) in fund_kind_cases.items():
-            with self.subTest(identifier=identifier):
-                self.assertEqual(
-                    kind,
-                    prior_registry[identifier]["security_kind"],
-                )
-                self.assertEqual(
-                    (kind, "openfigi_prior_registry"),
-                    pipeline._registry_security_kind(
-                        identifier=identifier,
-                        openfigi_detail=None,
-                        prior_entry=prior_registry[identifier],
-                        entry=private_registry[identifier],
-                    ),
-                )
-        for identifier, case in product_cases.items():
-            with self.subTest(identifier=identifier):
-                self.assertEqual(
-                    case["expected"],
-                    prior_registry[identifier]["product_name"],
-                )
-                openfigi_detail = (
-                    {
-                        "status": "matched",
-                        "ticker": case["symbol"],
-                        "securityDescription": case["symbol"],
-                        "name": case["stale"],
-                    }
-                    if case["stale_openfigi"]
-                    else None
-                )
-                product_name, _source = (
-                    pipeline._registry_fund_product_name(
-                        identifier=identifier,
-                        entry=private_registry[identifier],
-                        openfigi_detail=openfigi_detail,
-                        prior_entry=prior_registry[identifier],
-                    )
-                )
-                self.assertEqual(case["expected"], product_name)
+            self.assertNotIn("suspicious_symbol", report["buckets"])
+            self.assertNotIn("unresolved", report["buckets"])
 
-        self.assertEqual(
-            "MUTUAL FUND",
-            prior_registry["123456789"]["security_kind"],
-        )
-        self.assertEqual(
-            "NEW SHORT VALUE ETF",
-            prior_registry["123456789"]["product_name"],
-        )
-
-    def test_committed_sec_fund_provenance_survives_case_only_cache_drift(
+    def test_ticker_health_keeps_unproven_reserved_word_ticker_suspicious(
         self,
     ) -> None:
-        identifier = "464286772"
-        committed_entry = {
-            "ticker": "EWY",
-            "security_label": "EWY",
-            "security_kind": "ETF",
-            "product_name": "iShares MSCI South Korea ETF",
-            "product_name_source": "sec_fund_series",
-        }
-        private_entry = {
-            "ticker": "EWY",
-            "security_label": "EWY",
-            "security_kind": "ETF",
-            "product_name": "ISHARES MSCI SOUTH KOREA ETF",
-            "product_name_source": "openfigi",
-        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            funds_dir = data_dir / "funds"
+            funds_dir.mkdir(parents=True)
+            health_path = data_dir / "ticker_health.json"
+            (data_dir / "company_tickers.json").write_text(json.dumps({
+                "0": {
+                    "ticker": "PFD",
+                    "title": (
+                        "FLAHERTY & CRUMRINE PREFERRED & INCOME FUND INC"
+                    ),
+                },
+            }))
+            (funds_dir / "123.json").write_text(json.dumps({
+                "cik": 123,
+                "quarters": [{
+                    "report_date": "2026-06-30",
+                    "holdings": [{
+                        "cusip": "338480106",
+                        "ticker": None,
+                        "issuer": "FLAHERTY & CRUMRINE PFD INCO",
+                        "class": "COM",
+                        "value": 100,
+                    }],
+                }],
+            }))
+            registry_entry = {
+                "ticker": "PFD",
+                "ticker_source": "sec_ftd",
+                "ticker_as_of": "2026-08-06",
+                "mapping_status": "resolved",
+                "name": "FLAHERTY & CRUMRINE PFD INCO",
+                "dominant_issuer": "FLAHERTY & CRUMRINE PFD INCO",
+                "type": "EQUITY",
+                "security_label": "FLAHERTY & CRUMRINE PFD INCO — COM",
+                "security_kind": "COMMON",
+                "security_kind_source": "filer_metadata",
+                "sources": ["sec_company_tickers", "sec_ftd"],
+            }
+            with mock.patch.multiple(
+                pipeline,
+                DATA_DIR=data_dir,
+                FUNDS_DIR=funds_dir,
+                TICKER_HEALTH_PATH=health_path,
+                load_cusip_registry=mock.Mock(return_value={
+                    "338480106": registry_entry,
+                }),
+            ):
+                report = pipeline.write_ticker_health_report()
 
-        for private_source in ("openfigi", ""):
-            with self.subTest(private_source=private_source):
-                candidate = {
-                    **private_entry,
-                    "product_name_source": private_source,
-                }
-                merged = pipeline._merge_committed_registry_display_metadata(
-                    {identifier: candidate},
-                    {identifier: committed_entry},
-                )
-                self.assertEqual(
-                    committed_entry["product_name"],
-                    merged[identifier]["product_name"],
-                )
-                self.assertEqual(
-                    "sec_fund_series",
-                    merged[identifier]["product_name_source"],
-                )
-
-        changed_symbol = {
-            **private_entry,
-            "ticker": "NEWF",
-            "security_label": "NEWF",
-        }
-        changed = pipeline._merge_committed_registry_display_metadata(
-            {identifier: changed_symbol},
-            {identifier: committed_entry},
-        )
-        self.assertEqual(
-            private_entry["product_name"],
-            changed[identifier]["product_name"],
-        )
-        self.assertEqual(
-            "openfigi",
-            changed[identifier]["product_name_source"],
-        )
-
-    def test_swgxx_manual_name_override_keeps_filer_issuer_provenance(
-        self,
-    ) -> None:
-        evidence = {
-            "808515209": {
-                "total_value": 7_850_874,
-                "holder_ciks": {1, 2, 3, 4},
-                "issuer_value": {"APPLE INC": 7_850_874},
-                "class_value": {"MONEY MARKET FUND": 7_850_874},
-                "put_call_value": {},
-                "first_seen": "2019-06-30",
-                "last_seen": "2026-03-31",
-            },
-        }
-        openfigi_details = {
-            "808515209": {
-                "status": "matched",
-                "ticker": "SWGXX",
-                "name": "SCHWAB GOVT MNY FND-SWP",
-                "securityDescription": "SWGXX",
-                "securityType": "Open-End Fund",
-                "securityType2": "Mutual Fund",
-                "marketSector": "Equity",
-                "exchCode": "US",
-            },
-        }
-        with mock.patch.multiple(
-            pipeline,
-            FUNDS_DIR=mock.MagicMock(exists=mock.Mock(return_value=True)),
-            _aggregate_cusip_evidence=mock.Mock(return_value=evidence),
-            load_cusip_map=mock.Mock(return_value={}),
-            load_cusip_registry=mock.Mock(return_value={}),
-            load_openfigi_details=mock.Mock(
-                return_value=openfigi_details
-            ),
-            load_sec_fund_name_cache=mock.Mock(return_value={}),
-            save_cusip_registry=mock.Mock(),
-        ):
-            registry = pipeline.build_cusip_registry(
-                company_ticker_data=[],
+            self.assertEqual(1, report["summary"]["suspicious_symbol"])
+            self.assertEqual(
+                "338480106",
+                report["buckets"]["suspicious_symbol"][0]["cusip"],
             )
-
-        swgxx = registry["808515209"]
-        self.assertEqual(
-            "SCHWAB GOVERNMENT MONEY FUND - SWEEP SHARES",
-            swgxx["name"],
-        )
-        self.assertEqual("APPLE INC", swgxx["dominant_issuer"])
-        self.assertIn("manual_name_override", swgxx["sources"])
-        self.assertEqual("SWGXX", swgxx["ticker"])
-        self.assertEqual("MUTUAL FUND", swgxx["security_kind"])
-        self.assertEqual(
-            "SCHWAB GOVERNMENT MONEY FUND - SWEEP SHARES",
-            swgxx["product_name"],
-        )
-        self.assertEqual(
-            "manual_name_override",
-            swgxx["product_name_source"],
-        )
 
     def test_frontend_version_and_fail_closed_guard_match_python(self) -> None:
         html = (ROOT / "index.html").read_text()
@@ -801,35 +736,39 @@ class GeneratedDataContractTests(unittest.TestCase):
     ) -> None:
         registry = {
             "037833100": {
+                "ticker": "AAPL",
                 "name": "Apple Inc.",
                 "security_label": "AAPL",
                 "label_source": "canonical_ticker",
                 "dominant_class": "COM",
             },
             "65339F655": {
+                "ticker": None,
                 "name": "NEXTERA ENERGY INC",
                 "security_label": "NEE 7.375 02/15/29",
-                "label_source": "openfigi",
+                "label_source": "sec_13f_list",
                 "security_kind": "PREFERRED",
-                "security_kind_source": "openfigi",
+                "security_kind_source": "sec_13f_list",
                 "dominant_class": "UNIT 02/15/2029",
             },
             "46222L116": {
+                "ticker": None,
                 "name": "IONQ INC",
                 "security_label": "IONQ/WS — WARRANT EXP 10/01/26",
-                "label_source": "manual_verified",
+                "label_source": "sec_13f_list",
                 "security_kind": "WARRANT",
-                "security_kind_source": "manual_verified",
+                "security_kind_source": "sec_13f_list",
                 "dominant_class": "0",
             },
             "464286772": {
+                "ticker": "EWY",
                 "name": "ISHARES INC",
                 "security_label": "EWY",
-                "label_source": "openfigi",
+                "label_source": "sec_ftd",
                 "security_kind": "ETF",
-                "security_kind_source": "openfigi",
+                "security_kind_source": "sec_fund_series",
                 "product_name": "ISHARES MSCI SOUTH KOREA ETF",
-                "product_name_source": "openfigi",
+                "product_name_source": "sec_fund_series",
                 "dominant_class": "MSCI STH KOR ETF",
             },
         }
@@ -902,13 +841,14 @@ class GeneratedDataContractTests(unittest.TestCase):
                     "ISHARES MSCI SOUTH KOREA ETF"
                 )
                 registry["464287655"] = {
+                    "ticker": "IWM",
                     "name": "ISHARES TR",
                     "security_label": "IWM",
-                    "label_source": "openfigi",
+                    "label_source": "sec_ftd",
                     "security_kind": "ETF",
-                    "security_kind_source": "openfigi",
+                    "security_kind_source": "sec_fund_series",
                     "product_name": "ISHARES MSCI SOUTH KOREA ETF",
-                    "product_name_source": "openfigi",
+                    "product_name_source": "sec_fund_series",
                     "dominant_class": "RUSSELL 2000 ETF",
                 }
                 payload["labels"]["464287655"] = "IWM"
@@ -931,7 +871,7 @@ class GeneratedDataContractTests(unittest.TestCase):
                     "GENERIC ISSUER SPONSORED ADR"
                 )
                 registry["464287655"]["security_kind"] = "COMMON"
-                registry["464287655"]["security_kind_source"] = "openfigi"
+                registry["464287655"]["security_kind_source"] = "sec_13f_list"
                 payload["kinds"]["464287655"] = "COMMON"
                 labels_path.write_text(json.dumps(payload))
                 errors.clear()
@@ -975,7 +915,7 @@ class GeneratedDataContractTests(unittest.TestCase):
                         "type": "NOTE",
                         "sources": sources,
                         "security_label": "SLVO",
-                        "label_source": "openfigi",
+                        "label_source": "sec_ftd",
                         "security_kind": "ETN",
                         "security_kind_source": "filer_metadata",
                         "product_name": product_name,
@@ -1009,7 +949,7 @@ class GeneratedDataContractTests(unittest.TestCase):
                         registry[identifier]["security_kind"] = "ETF"
                         registry[identifier][
                             "security_kind_source"
-                        ] = "openfigi"
+                        ] = "sec_13f_list"
                         payload["kinds"][identifier] = "ETF"
                         labels_path.write_text(json.dumps(payload))
                         errors.clear()
@@ -1084,6 +1024,33 @@ class GeneratedDataContractTests(unittest.TestCase):
         registry = json.loads(
             (ROOT / "data/cusip_registry.json").read_text()
         )
+        if any("mapping_status" in entry for entry in registry.values()):
+            # The legacy snapshot below used manual/vendor-era display
+            # overrides. An SEC cutover must instead reconcile every public
+            # identity and mapping to its exact provenance-bearing master.
+            master = pipeline.load_security_master(
+                pipeline.SEC_SECURITY_MASTER_PATH
+            )
+            errors: list[str] = []
+            validate_data.validate_sec_mapping_provenance(registry, errors)
+            validate_data.validate_public_registry_provenance(registry, errors)
+            validate_data.validate_security_labels(registry, errors)
+            validate_data.validate_sec_safety_anchors(registry, master, errors)
+            self.assertEqual([], errors)
+            for cusip, entry in registry.items():
+                with self.subTest(cusip=cusip):
+                    key = f"{cusip}|{entry['type']}"
+                    self.assertIn(key, master["records"])
+                    exact = master["records"][key]
+                    for field in (
+                        "mapping_status", "ticker", "ticker_source", "ticker_as_of"
+                    ):
+                        self.assertEqual(exact.get(field), entry.get(field))
+                    self.assertEqual(
+                        entry["security_label"], labels["labels"][cusip]
+                    )
+            return
+
         prudential_note = registry["744320888"]
         self.assertEqual("NOTE", prudential_note["type"])
         self.assertEqual("BOND", prudential_note["security_kind"])
@@ -1133,10 +1100,7 @@ class GeneratedDataContractTests(unittest.TestCase):
             registry_entry = registry[identifier]
             self.assertEqual(
                 symbol,
-                pipeline._registry_fund_symbol(
-                    identifier=identifier,
-                    entry=registry_entry,
-                ),
+                registry_entry.get("ticker"),
                 identifier,
             )
             actual = (
@@ -1283,10 +1247,7 @@ class GeneratedDataContractTests(unittest.TestCase):
             product_name = str(entry.get("product_name") or "").strip()
             if not product_name:
                 continue
-            symbol = pipeline._registry_fund_symbol(
-                identifier=identifier,
-                entry=entry,
-            )
+            symbol = str(entry.get("ticker") or "").strip().upper() or None
             if symbol:
                 product_symbols.setdefault(
                     product_name.casefold(),
@@ -1392,6 +1353,7 @@ class GeneratedDataContractTests(unittest.TestCase):
             workflow,
             r"(?s)- name: Refresh recently accepted 13F filings.*?"
             r"if: >-\n\s+"
+            r"steps\.restore_snapshot\.outputs\.legacy_snapshot != 'true' &&\n\s+"
             r"steps\.pipeline\.outputs\.migration_only != 'true' &&\n\s+"
             r"steps\.pipeline\.outputs\.targeted_cik != 'true'",
         )

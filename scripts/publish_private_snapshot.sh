@@ -12,6 +12,26 @@ gh_mutate_once() {
   python scripts/github_cli_retry.py -- "$@"
 }
 
+verify_private_data_repository() {
+  local repository_json
+
+  if ! repository_json=$(
+      gh_read_retry api "/repos/$DATA_REPOSITORY"
+    ); then
+    echo "::error::Unable to verify private data repository visibility; refusing snapshot publication" >&2
+    return 1
+  fi
+  if ! jq -e --arg repository "$DATA_REPOSITORY" '
+      type == "object"
+      and .full_name == $repository
+      and .private == true
+      and .visibility == "private"
+    ' <<<"$repository_json" >/dev/null; then
+    echo "::error::Data repository must be API-confirmed as the exact private target before snapshot publication" >&2
+    return 1
+  fi
+}
+
 release_state() {
   local tag=$1
   gh_read_retry api --paginate --slurp \
@@ -53,6 +73,8 @@ wait_for_draft_release() {
   done
   return 1
 }
+
+verify_private_data_repository
 
 code_sha=$(git rev-parse HEAD)
 git fetch --no-tags origin main:refs/remotes/origin/main

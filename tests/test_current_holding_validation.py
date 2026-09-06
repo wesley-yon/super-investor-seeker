@@ -102,6 +102,72 @@ class SparseHistoryClassificationTests(unittest.TestCase):
 
 
 class CurrentHoldingCorpusValidationTests(unittest.TestCase):
+    def test_fund_label_requires_exact_retained_type_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            funds = root / "funds"
+            funds.mkdir()
+            equity = holding("037833100", 100, 10)
+            note = holding("037833100", 100, 20, "NOTE")
+            note["ticker"] = None
+            (funds / "1.json").write_text(json.dumps({
+                "cik": 1, "name": "Fund 1",
+                "quarters": [quarter("2026-03-31", [equity, note])],
+            }))
+            errors = []
+            with mock.patch.object(validate_data, "FUNDS_DIR", funds):
+                _files, _groups, _cusips, calendars, expected = (
+                    validate_data.validate_funds(errors, {})
+                )
+            self.assertEqual([], errors)
+            registry = {"037833100": {
+                "type": "EQUITY", "security_kind": "ETF", "name": "APPLE INC",
+                "ticker": "AAPL", "mapping_status": "resolved",
+                "ticker_source": "sec_ftd", "ticker_as_of": "2026-03-31",
+            }}
+            originals = {}
+            for kind, shares in (("EQUITY", 10), ("NOTE", 20)):
+                originals[kind] = {
+                    "stock_id": "037833100" if kind == "EQUITY" else "037833100|NOTE",
+                    "cusip": "037833100", "instrument_type": kind,
+                    "ticker": "AAPL" if kind == "EQUITY" else "037833100",
+                    "issuer": "APPLE INC",
+                    "holders": [{"cik": 1, "name": "Fund 1", "history": [
+                        history_entry("2026-03-31", 100, shares, 50.0),
+                    ]}],
+                }
+            for scenario in ("preserved", "invented", "merged", "missing_equity", "mistickered", "changed_history", "unproven"):
+                with self.subTest(scenario=scenario):
+                    stocks = root / scenario
+                    stocks.mkdir()
+                    payloads = json.loads(json.dumps(originals))
+                    if scenario == "invented":
+                        payloads["PREF"] = json.loads(json.dumps(payloads["NOTE"]))
+                        payloads["PREF"].update(stock_id="037833100|PREF", instrument_type="PREF")
+                    elif scenario == "merged":
+                        payloads.pop("NOTE")
+                        payloads["EQUITY"]["holders"][0]["history"][0].update(value=200, shares=30, pct_of_fund=100.0)
+                    elif scenario == "missing_equity":
+                        payloads.pop("EQUITY")
+                    elif scenario == "mistickered":
+                        payloads["NOTE"]["ticker"] = "AAPL"
+                    elif scenario == "changed_history":
+                        payloads["NOTE"]["holders"][0]["history"][0]["shares"] = 21
+                    for kind, payload in payloads.items():
+                        filename = "037833100.json" if kind == "EQUITY" else f"037833100__{kind}.json"
+                        (stocks / filename).write_text(json.dumps(payload))
+                    errors = []
+                    with mock.patch.object(validate_data, "STOCKS_DIR", stocks):
+                        validate_data.validate_stocks(
+                            errors, calendars,
+                            None if scenario == "unproven" else expected,
+                            registry=registry,
+                        )
+                    if scenario == "preserved":
+                        self.assertEqual([], errors)
+                    else:
+                        self.assertTrue(errors, scenario)
+
     def _write_fixture(self, data_dir: Path) -> None:
         funds_dir = data_dir / "funds"
         stocks_dir = data_dir / "stocks"

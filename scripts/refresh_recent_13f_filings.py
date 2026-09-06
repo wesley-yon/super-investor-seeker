@@ -196,6 +196,7 @@ def main() -> int:
     pipeline.STOCKS_DIR.mkdir(exist_ok=True)
 
     state = pipeline.load_state()
+    initially_processed = set(state["_processed_set"])
     cusip_map = pipeline.load_cusip_map()
     state_lock = threading.Lock()
 
@@ -210,11 +211,17 @@ def main() -> int:
     except Exception as exc:
         pipeline.log.error("current feed discovery failed: %s", exc)
         return 1
-    pending = [
-        filing for filing in filings
-        if filing["accession"] not in state["_processed_set"]
-        and pipeline.accession_retry_due(state, filing["accession"])
-    ]
+    # Persist discovery before processing so time limits, cooldowns and feed
+    # age cannot silently discard already discovered accessions.
+    queue = dict(state.get("recent_feed_pending", {}))
+    for filing in filings:
+        queue[filing["accession"]] = filing
+    queue = {key: filing for key, filing in queue.items()
+             if key not in state["_processed_set"]}
+    state["recent_feed_pending"] = queue
+    pipeline.save_state(state)
+    pending = [filing for key, filing in queue.items()
+               if pipeline.accession_retry_due(state, key)]
     pipeline.log.info(
         "current feed returned %s recent 13F filing(s), %s pending",
         len(filings),
@@ -231,7 +238,12 @@ def main() -> int:
     interrupted = False
     checkpoint_errors = 0
     try:
-        for cik in sorted(pending_by_cik):
+        # Oldest outstanding acceptance first; bound a batch so publication
+        # does not wait for a deadline-day backlog to drain completely.
+        ordered_ciks = sorted(pending_by_cik, key=lambda cik: min(
+            (f.get("accepted_at") or f.get("date_filed") or "", f["accession"])
+            for f in pending_by_cik[cik]))
+        for cik in ordered_ciks[:env_int("RECENT_13F_MAX_CIKS", 50)]:
             triggers = pending_by_cik[cik]
             try:
                 quarantined_before = set(state.get("_quarantined", {}))
@@ -291,6 +303,9 @@ def main() -> int:
         )
     finally:
         try:
+            state["recent_feed_pending"] = {
+                key: filing for key, filing in queue.items()
+                if key not in state["_processed_set"]}
             pipeline.save_state(state)
         except Exception as exc:
             checkpoint_errors += 1
@@ -306,6 +321,16 @@ def main() -> int:
                 "could not checkpoint current-feed CUSIP map: %s",
                 exc,
             )
+
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        remaining_due = sum(
+            pipeline.accession_retry_due(state, accession)
+            for accession in state.get("recent_feed_pending", {})
+        )
+        with Path(output_path).open("a") as output:
+            output.write(f"processed_accessions={len(state['_processed_set'] - initially_processed)}\n")
+            output.write(f"remaining_due={remaining_due}\n")
 
     if interrupted or errors or checkpoint_errors:
         pipeline.log.error(

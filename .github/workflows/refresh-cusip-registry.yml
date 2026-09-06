@@ -1,11 +1,17 @@
-name: Refresh CUSIP Registry
+name: Rebuild SEC Security Master
 
 on:
   schedule:
     # Preserve the existing 04:00 UTC maintenance window while avoiding the
     # scheduler's heavily loaded top of hour.
-    - cron: '23 4 * * 0'
+    - cron: '23 4 * * *'
   workflow_dispatch:
+    inputs:
+      rebuild_security_master:
+        description: Discard SEC caches and refetch the complete security master
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: data-maintenance
@@ -20,13 +26,17 @@ env:
   DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
 
 jobs:
-  refresh-cusips:
+  rebuild_security_master:
     runs-on: ubuntu-latest
     concurrency:
       group: private-release-publication
       cancel-in-progress: false
       queue: max
-    timeout-minutes: 90
+    # A legacy snapshot receives the one-time complete SEC history backfill.
+    # Contract-v2 snapshots normally use checksum-driven discovery and a
+    # deterministic full registry/provenance audit; a manual dispatch can also
+    # request an isolated clean rebuild for disaster recovery or revalidation.
+    timeout-minutes: 360
     outputs:
       code_sha: ${{ steps.publish_snapshot.outputs.code_sha }}
       release_tag: ${{ steps.publish_snapshot.outputs.release_tag }}
@@ -78,33 +88,151 @@ jobs:
           release_tag=$(jq -er '.release_tag' <<<"$restore_json")
           dataset_id=$(jq -er '.dataset_id' <<<"$restore_json")
           archive_sha256=$(jq -er '.archive_sha256' <<<"$restore_json")
+          legacy_snapshot=$(jq -er '
+            if (.legacy_snapshot | type) == "boolean"
+            then (.legacy_snapshot | tostring)
+            else error("legacy_snapshot must be boolean")
+            end
+          ' <<<"$restore_json")
           if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
              [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
-             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+             [[ "$legacy_snapshot" != "true" && "$legacy_snapshot" != "false" ]]; then
             echo "::error::Private snapshot returned invalid identity metadata"
             exit 1
           fi
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
+          echo "code_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "legacy_snapshot=$legacy_snapshot" >> "$GITHUB_OUTPUT"
           echo "Restored private snapshot $release_tag ($dataset_id)"
 
-      - name: Verify OPENFIGI_API_KEY secret is configured
+      - name: Verify SEC_USER_AGENT secret is configured
         env:
-          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
         run: |
-          if [ -z "$OPENFIGI_API_KEY" ]; then
-            echo "::error::OPENFIGI_API_KEY secret is not set. Create it under Settings → Secrets and variables → Actions → 'New repository secret'."
+          if [ -z "$SEC_USER_AGENT" ]; then
+            echo "::error::SEC_USER_AGENT secret is not set. Create it under Settings → Secrets and variables → Actions → 'New repository secret' with a value like 'YourName your.real@email.com'."
             exit 1
           fi
+          case "$SEC_USER_AGENT" in
+            *@*.*) : ;;
+            *) echo "::error::SEC_USER_AGENT does not look like it contains a valid contact email. SEC requires a real email."; exit 1 ;;
+          esac
 
-      - name: Fully refresh private CUSIP cache, registry, and derived data
+      - name: Restore nonpublishable clean-rebuild checkpoint
+        if: >-
+          steps.restore_snapshot.outputs.legacy_snapshot == 'true' ||
+          inputs.rebuild_security_master == true
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache/sec_13f_bulk_rebuild_checkpoint.json
+            .cache/sec_13f_bulk_source_state.json
+            .cache/sec_13f_bulk_completed_receipt.json
+            .cache/sec_13f_bulk_indices/.rebuild-*.sqlite3.partial
+            .cache/sec_13f_bulk_indices/index-*.sqlite3
+            .cache/sec_13f_bulk_rebuild_checkpoint.accession-discovery.json
+            .cache/sec-security-master-rebuild-work/manifest.json
+            .cache/sec-security-master-rebuild-work/edgar-exception-batch-*.json
+          key: >-
+            sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-
+
+      - name: Clean-backfill SEC identity and security master
+        if: >-
+          steps.restore_snapshot.outputs.legacy_snapshot == 'true' ||
+          inputs.rebuild_security_master == true
+        timeout-minutes: 280
         env:
-          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-        run: python pipeline.py --regenerate-only --full-cusip-refresh
+        run: |
+          set -euo pipefail
+          python scripts/prepare_sec_cold_workspace.py \
+            --root "$GITHUB_WORKSPACE" --discard-derived-stocks
+          set +e
+          timeout --signal=TERM --kill-after=120s 260m \
+            python pipeline.py --regenerate-only --rebuild-security-master --apply-quantity-policy
+          clean_status=$?
+          set -e
+          if [ "$clean_status" -eq 124 ]; then
+            echo "::error::Clean SEC rebuild reached its cooperative time budget; the private checkpoint will be saved for the next run"
+          fi
+          exit "$clean_status"
+
+      - name: Detect reusable clean-rebuild work
+        id: clean_checkpoint
+        if: >-
+          always() &&
+          (steps.restore_snapshot.outputs.legacy_snapshot == 'true' ||
+           inputs.rebuild_security_master == true)
+        run: |
+          if [ -f .cache/sec_13f_bulk_rebuild_checkpoint.json ] ||
+             [ -f .cache/sec_13f_bulk_source_state.json ] ||
+             [ -f .cache/sec_13f_bulk_completed_receipt.json ] ||
+             [ -f .cache/sec_13f_bulk_rebuild_checkpoint.accession-discovery.json ] ||
+             [ -f .cache/sec-security-master-rebuild-work/manifest.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save nonpublishable clean-rebuild work
+        if: always() && steps.clean_checkpoint.outputs.present == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cache/sec_13f_bulk_rebuild_checkpoint.json
+            .cache/sec_13f_bulk_source_state.json
+            .cache/sec_13f_bulk_completed_receipt.json
+            .cache/sec_13f_bulk_indices/.rebuild-*.sqlite3.partial
+            .cache/sec_13f_bulk_indices/index-*.sqlite3
+            .cache/sec_13f_bulk_rebuild_checkpoint.accession-discovery.json
+            .cache/sec-security-master-rebuild-work/manifest.json
+            .cache/sec-security-master-rebuild-work/edgar-exception-batch-*.json
+          key: >-
+            sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Remove cached Form 13F working set before validation
+        if: >-
+          success() &&
+          (steps.restore_snapshot.outputs.legacy_snapshot == 'true' ||
+           inputs.rebuild_security_master == true)
+        run: |
+          python -c 'from sec_13f_bulk_backfill import cleanup_13f_bulk_working_set; cleanup_13f_bulk_working_set()'
+
+      - name: Reconcile broad SEC filing indexes overnight
+        if: >-
+          steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
+          inputs.rebuild_security_master != true
+        timeout-minutes: 50
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --signal=TERM --kill-after=120s 45m \
+            python pipeline.py --all --quarters 4 --defer-regeneration
+          reconcile_status=$?
+          set -e
+          if [ "$reconcile_status" -eq 124 ]; then
+            echo "::warning::Broad reconciliation reached its checkpoint budget"
+          elif [ "$reconcile_status" -ne 0 ]; then
+            exit "$reconcile_status"
+          fi
+
+      - name: Refresh and audit private SEC security master and derived data
+        if: >-
+          steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
+          inputs.rebuild_security_master != true
+        timeout-minutes: 90
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: python pipeline.py --regenerate-only --refresh-security-master
 
       - name: Validate generated data
-        run: python validate_data.py
+        run: python validate_data.py --incremental --refresh-cache
 
       - name: Run generated-data contract regression tests
         # Keep known identity and descriptive-name corrections in the publish
@@ -118,15 +246,16 @@ jobs:
         run: node --test tests/test_site_data_loader.mjs
 
       - name: Annotate ticker health report
-        # Non-fatal: surfaces bucket counts from the fresh full-refresh pass
-        # so any CUSIPs that still don't resolve after hitting OpenFIGI for
-        # every current holding are visible in the Actions run summary.
+        # Non-fatal notices keep terminal no-symbol and quarantined identifiers
+        # observable without creating a perpetual manual-resolution alert queue.
+        # Source freshness, schema, and coverage alerts come from the fatal SEC
+        # master acceptance gate above.
         if: always()
         continue-on-error: true
         run: python scripts/annotate_ticker_health.py
 
-      # Refresh the one-hour installation token after validation so a slow
-      # OpenFIGI pass cannot leave publication with an expired credential.
+      # Refresh the one-hour installation token after validation so a slow SEC
+      # source rebuild cannot leave publication with an expired credential.
       - name: Refresh private data publication credential
         id: publish-data-app-token
         uses: actions/create-github-app-token@v3
@@ -147,18 +276,18 @@ jobs:
         run: bash scripts/publish_private_snapshot.sh
 
   deploy-pages:
-    needs: refresh-cusips
+    needs: rebuild_security_master
     if: >-
-      ${{ needs.refresh-cusips.result == 'success' &&
-          needs.refresh-cusips.outputs.code_sha != '' &&
-          needs.refresh-cusips.outputs.release_tag != '' &&
-          needs.refresh-cusips.outputs.dataset_id != '' &&
-          needs.refresh-cusips.outputs.site_changed == 'true' }}
+      ${{ needs.rebuild_security_master.result == 'success' &&
+          needs.rebuild_security_master.outputs.code_sha != '' &&
+          needs.rebuild_security_master.outputs.release_tag != '' &&
+          needs.rebuild_security_master.outputs.dataset_id != '' &&
+          needs.rebuild_security_master.outputs.site_changed == 'true' }}
     uses: ./.github/workflows/deploy-pages.yml
     with:
-      code_sha: ${{ needs.refresh-cusips.outputs.code_sha }}
-      release_tag: ${{ needs.refresh-cusips.outputs.release_tag }}
-      dataset_id: ${{ needs.refresh-cusips.outputs.dataset_id }}
+      code_sha: ${{ needs.rebuild_security_master.outputs.code_sha }}
+      release_tag: ${{ needs.rebuild_security_master.outputs.release_tag }}
+      dataset_id: ${{ needs.rebuild_security_master.outputs.dataset_id }}
     secrets: inherit
     permissions:
       actions: write

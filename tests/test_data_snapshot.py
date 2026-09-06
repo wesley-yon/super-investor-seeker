@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import sec_security_master
 from scripts import data_snapshot
 
 
@@ -20,11 +21,26 @@ CREATED_AT = "2026-08-05T16:00:00Z"
 
 
 class DataSnapshotTests(unittest.TestCase):
+    def write_security_master_pair(self, root: Path, name: str) -> None:
+        state = sec_security_master.empty_source_state()
+        state["updated_at"] = (
+            f"2026-08-05T16:00:{sum(name.encode('utf-8')) % 60:02d}Z"
+        )
+        master = sec_security_master.rebuild_security_master(state, [])
+        master_path, source_state_path = (
+            root / relative for relative in data_snapshot.CACHE_FILES
+        )
+        sec_security_master.save_security_master_pair(
+            master,
+            state,
+            master_path=master_path,
+            source_state_path=source_state_path,
+        )
+
     def make_source(self, parent: Path, name: str = "source") -> Path:
         source = parent / name
         (source / "data/funds").mkdir(parents=True)
         (source / "data/stocks").mkdir(parents=True)
-        (source / "data/empty").mkdir(parents=True)
         (source / ".cache").mkdir()
         (source / "data/funds/1.json").write_text(
             '{"cik":1,"holdings":["ABC"]}\n',
@@ -38,11 +54,7 @@ class DataSnapshotTests(unittest.TestCase):
             '{"cursor":"current"}\n',
             encoding="utf-8",
         )
-        for index, relative in enumerate(data_snapshot.CACHE_FILES):
-            (source / relative).write_text(
-                json.dumps({"cache": index}, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+        self.write_security_master_pair(source, name)
         (source / ".cache/local-only.txt").write_text(
             "must not be archived\n",
             encoding="utf-8",
@@ -60,6 +72,36 @@ class DataSnapshotTests(unittest.TestCase):
 
     def load_manifest(self, summary: dict) -> dict:
         return json.loads(Path(summary["manifest_path"]).read_text())
+
+    def test_quantity_evidence_round_trip_and_stale_cache_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = self.make_source(root)
+            target = self.make_source(root, "target")
+            for relative in data_snapshot.OPTIONAL_CACHE_FILES:
+                (source / relative).write_text('{"schema_version":1,"references":{}}')
+            summary = self.pack(source, root / "output")
+            extracted = root / "payload"
+            data_snapshot.verify_snapshot(
+                archive_path=Path(summary["archive_path"]),
+                manifest_path=Path(summary["manifest_path"]),
+                max_archive_bytes=1_000_000, extract_root=extracted,
+            )
+            data_snapshot._replace_payload(target, extracted, contract_version=data_snapshot.CONTRACT_VERSION)
+            for relative in data_snapshot.OPTIONAL_CACHE_FILES:
+                self.assertEqual((source / relative).read_bytes(), (target / relative).read_bytes())
+            older = self.make_source(root, "older")
+            old_summary = self.pack(older, root / "old-output")
+            (root / "second-restore").mkdir()
+            old_payload = root / "second-restore/old-payload"
+            data_snapshot.verify_snapshot(
+                archive_path=Path(old_summary["archive_path"]),
+                manifest_path=Path(old_summary["manifest_path"]),
+                max_archive_bytes=1_000_000, extract_root=old_payload,
+            )
+            data_snapshot._replace_payload(target, old_payload, contract_version=data_snapshot.CONTRACT_VERSION)
+            for relative in data_snapshot.OPTIONAL_CACHE_FILES:
+                self.assertFalse((target / relative).exists())
 
     def test_pack_is_deterministic_and_uses_raw_digest_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -90,6 +132,67 @@ class DataSnapshotTests(unittest.TestCase):
             self.assertEqual(first["archive_bytes"], manifest["archive"]["bytes"])
             self.assertEqual(first["file_count"], manifest["dataset"]["file_count"])
 
+    def test_pack_recovers_orphans_and_holds_pair_lock_through_archive_write(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = self.make_source(root)
+            orphan = source / ".cache" / (
+                ".sec-security-master-pair."
+                + "f" * 32
+                + ".master.old"
+            )
+            orphan.write_text("stale pair backup\n", encoding="utf-8")
+            real_lock = data_snapshot.security_master_pair_lock
+            real_digest = data_snapshot._source_content_digest
+            real_write = data_snapshot._write_archive
+            locked = False
+
+            @contextlib.contextmanager
+            def tracked_lock(**kwargs: object):
+                nonlocal locked
+                with real_lock(**kwargs) as pair:
+                    locked = True
+                    try:
+                        yield pair
+                    finally:
+                        locked = False
+
+            def guarded_digest(entries: object):
+                self.assertTrue(locked)
+                return real_digest(entries)
+
+            def guarded_write(entries: object, archive_path: Path) -> None:
+                self.assertTrue(locked)
+                real_write(entries, archive_path)
+
+            with mock.patch.object(
+                data_snapshot,
+                "security_master_pair_lock",
+                side_effect=tracked_lock,
+            ), mock.patch.object(
+                data_snapshot,
+                "_source_content_digest",
+                side_effect=guarded_digest,
+            ), mock.patch.object(
+                data_snapshot,
+                "_write_archive",
+                side_effect=guarded_write,
+            ):
+                summary = self.pack(source, root / "output")
+
+            self.assertFalse(orphan.exists())
+            with tarfile.open(summary["archive_path"], mode="r:gz") as archive:
+                self.assertFalse(
+                    any(
+                        Path(name).name.startswith(
+                            data_snapshot.PAIR_TRANSACTION_ARTIFACT_PREFIX
+                        )
+                        for name in archive.getnames()
+                    )
+                )
+
     def test_verify_round_trip_extracts_full_data_and_allowlisted_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -110,13 +213,21 @@ class DataSnapshotTests(unittest.TestCase):
                 (source / "data/funds/1.json").read_bytes(),
                 (extracted / "data/funds/1.json").read_bytes(),
             )
-            self.assertTrue((extracted / "data/empty").is_dir())
             for relative in data_snapshot.CACHE_FILES:
                 self.assertEqual(
                     (source / relative).read_bytes(),
                     (extracted / relative).read_bytes(),
                 )
             self.assertFalse((extracted / ".cache/local-only.txt").exists())
+            with tarfile.open(summary["archive_path"], mode="r:gz") as archive:
+                self.assertFalse(
+                    any(
+                        Path(name).name.startswith(
+                            data_snapshot.PAIR_TRANSACTION_ARTIFACT_PREFIX
+                        )
+                        for name in archive.getnames()
+                    )
+                )
 
     def test_pack_excludes_rolled_back_insider_subtree(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -146,7 +257,8 @@ class DataSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             missing_source = self.make_source(root, "missing")
-            (missing_source / data_snapshot.CACHE_FILES[0]).unlink()
+            for relative in data_snapshot.CACHE_FILES:
+                (missing_source / relative).unlink()
             with self.assertRaisesRegex(
                 data_snapshot.SnapshotError,
                 "required cache file is missing",
@@ -162,6 +274,49 @@ class DataSnapshotTests(unittest.TestCase):
                 "unsupported entry",
             ):
                 self.pack(linked_source, root / "linked-output")
+
+    def test_pack_rejects_incomplete_or_digest_mismatched_sec_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            incomplete = self.make_source(root, "incomplete")
+            (incomplete / data_snapshot.CACHE_FILES[0]).unlink()
+            with self.assertRaisesRegex(
+                data_snapshot.SnapshotError,
+                "security-master pair is incomplete",
+            ):
+                self.pack(incomplete, root / "incomplete-output")
+
+            mismatched = self.make_source(root, "mismatched")
+            different_state = sec_security_master.empty_source_state()
+            different_state["updated_at"] = "2026-08-05T17:00:00Z"
+            sec_security_master.save_source_state(
+                different_state,
+                mismatched / data_snapshot.CACHE_FILES[1],
+            )
+            with self.assertRaisesRegex(
+                data_snapshot.SnapshotError,
+                "source-state digest does not match",
+            ):
+                self.pack(mismatched, root / "mismatched-output")
+
+    def test_v2_pack_rejects_raw_sec_and_temporary_data_entries(self) -> None:
+        cases = (
+            ("raw-ftd.zip", b"raw SEC archive"),
+            ("funds/raw-table.txt", b"raw SEC rows"),
+        )
+        for relative, payload in cases:
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                source = self.make_source(root)
+                path = source / "data" / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+
+                with self.assertRaisesRegex(
+                    data_snapshot.SnapshotError,
+                    "non-derived or unexpected entry",
+                ):
+                    self.pack(source, root / "output")
 
     def test_pack_and_verify_fail_closed_at_size_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -217,7 +372,11 @@ class DataSnapshotTests(unittest.TestCase):
 
     def test_verify_rejects_manifest_contract_id_and_timestamp_mismatches(self) -> None:
         cases = (
-            ("contract_version", 2, "contract version"),
+            (
+                "contract_version",
+                data_snapshot.CONTRACT_VERSION + 1,
+                "contract version",
+            ),
             ("dataset_id", "dataset-" + "b" * 64, "dataset_id"),
             ("created_at", "not-a-time", "created_at"),
         )
@@ -286,7 +445,7 @@ class DataSnapshotTests(unittest.TestCase):
                 "filename": archive_name,
                 "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
             },
-            "contract_version": 1,
+            "contract_version": data_snapshot.CONTRACT_VERSION,
             "created_at": CREATED_AT,
             "dataset": {
                 "bytes": len(payload) + len(data_snapshot.CACHE_FILES),
@@ -314,12 +473,22 @@ class DataSnapshotTests(unittest.TestCase):
             info.type = tarfile.DIRTYPE
             info.mode = mode
             members.append((info, None))
-        for relative in data_snapshot.CACHE_FILES:
+        for relative in data_snapshot.LEGACY_RESTORABLE_CACHE_FILES:
             info = tarfile.TarInfo(relative.as_posix())
             info.type = tarfile.REGTYPE
             info.mode = 0o644
             info.size = 1
             members.append((info, b"x"))
+        for discarded_name in (
+            ".cache/cusip_map.json",
+            ".cache/cusip_registry.json",
+            ".cache/legacy-provider-private.json",
+        ):
+            discarded_cache = tarfile.TarInfo(discarded_name)
+            discarded_cache.type = tarfile.REGTYPE
+            discarded_cache.mode = 0o644
+            discarded_cache.size = 1
+            members.append((discarded_cache, b"z"))
         legacy = tarfile.TarInfo(
             "data/insiders/private/state/approved-issuers-v1.json"
         )
@@ -408,6 +577,16 @@ class DataSnapshotTests(unittest.TestCase):
                 (restored / "data/insiders/private").stat().st_mode & 0o777,
             )
             self.assertEqual(0o600, legacy.stat().st_mode & 0o777)
+            self.assertFalse(
+                (restored / ".cache/legacy-provider-private.json").exists()
+            )
+            self.assertFalse((restored / ".cache/cusip_map.json").exists())
+            self.assertFalse((restored / ".cache/cusip_registry.json").exists())
+            for relative in data_snapshot.LEGACY_RESTORABLE_CACHE_FILES:
+                self.assertTrue((restored / relative).is_file())
+            # The migration rebuild creates the v2 cache contract before the
+            # first replacement snapshot is published.
+            self.write_security_master_pair(restored, "restored")
             repacked = self.pack(restored, root / "repacked")
             sanitized = root / "sanitized"
             data_snapshot.verify_snapshot(
@@ -417,6 +596,240 @@ class DataSnapshotTests(unittest.TestCase):
                 extract_root=sanitized,
             )
             self.assertFalse((sanitized / "data/insiders").exists())
+
+    def test_legacy_restore_keeps_shared_state_and_discards_private_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            archive, manifest = self.write_legacy_private_snapshot(root)
+            payload = root / "payload"
+            summary = data_snapshot.verify_snapshot(
+                archive_path=archive,
+                manifest_path=manifest,
+                max_archive_bytes=1_000_000,
+                extract_root=payload,
+            )
+            target = root / "target"
+            (target / "data").mkdir(parents=True)
+            (target / ".cache").mkdir()
+            (target / "data/old.json").write_text("old\n", encoding="utf-8")
+            (target / ".cache/local-only.txt").write_text(
+                "preserve\n",
+                encoding="utf-8",
+            )
+            self.write_security_master_pair(target, "legacy-target")
+            for relative in data_snapshot.RETIRED_PROVIDER_CACHE_FILES:
+                (target / relative).write_text(
+                    "retired provider cache\n",
+                    encoding="utf-8",
+                )
+
+            data_snapshot._replace_payload(
+                target,
+                payload,
+                contract_version=summary["contract_version"],
+            )
+
+            self.assertTrue(summary["legacy_snapshot"])
+            self.assertFalse((target / "data/old.json").exists())
+            for relative in data_snapshot.LEGACY_RESTORABLE_CACHE_FILES:
+                self.assertTrue((target / relative).is_file())
+            self.assertFalse(
+                (target / ".cache/legacy-provider-private.json").exists()
+            )
+            for relative in (
+                *data_snapshot.RETIRED_PROVIDER_CACHE_FILES,
+                *data_snapshot.CACHE_FILES,
+            ):
+                self.assertFalse((target / relative).exists(), relative)
+            self.assertEqual(
+                "preserve\n",
+                (target / ".cache/local-only.txt").read_text(encoding="utf-8"),
+            )
+
+    def test_legacy_restore_accepts_an_absent_sec_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            archive, manifest = self.write_legacy_private_snapshot(root)
+            payload = root / "payload"
+            summary = data_snapshot.verify_snapshot(
+                archive_path=archive,
+                manifest_path=manifest,
+                max_archive_bytes=1_000_000,
+                extract_root=payload,
+            )
+            target = root / "target"
+            (target / "data").mkdir(parents=True)
+            (target / ".cache").mkdir()
+            (target / "data/old.json").write_text("old\n", encoding="utf-8")
+
+            data_snapshot._replace_payload(
+                target,
+                payload,
+                contract_version=summary["contract_version"],
+            )
+
+            self.assertFalse((target / "data/old.json").exists())
+            for relative in data_snapshot.CACHE_FILES:
+                self.assertFalse((target / relative).exists())
+            for relative in data_snapshot.LEGACY_RESTORABLE_CACHE_FILES:
+                self.assertTrue((target / relative).is_file())
+
+    def test_restore_rejects_retired_cache_symlink_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            publisher = self.make_source(root, "publisher")
+            summary = self.pack(publisher, root / "assets")
+            payload = root / "payload"
+            data_snapshot.verify_snapshot(
+                archive_path=Path(summary["archive_path"]),
+                manifest_path=Path(summary["manifest_path"]),
+                max_archive_bytes=1_000_000,
+                extract_root=payload,
+            )
+            target = self.make_source(root, "target")
+            protected = target / ".cache/local-only.txt"
+            retired = target / data_snapshot.RETIRED_PROVIDER_CACHE_FILES[0]
+            retired.symlink_to(protected)
+            before = (target / "data/funds/1.json").read_bytes()
+
+            with self.assertRaisesRegex(
+                data_snapshot.SnapshotError,
+                "existing cache target must be a regular file",
+            ):
+                data_snapshot._replace_payload(
+                    target,
+                    payload,
+                    contract_version=data_snapshot.CONTRACT_VERSION,
+                )
+
+            self.assertTrue(retired.is_symlink())
+            self.assertEqual(before, (target / "data/funds/1.json").read_bytes())
+            self.assertEqual("must not be archived\n", protected.read_text())
+
+    def test_restore_rolls_back_retired_cache_removal_on_install_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            publisher = self.make_source(root, "publisher")
+            summary = self.pack(publisher, root / "assets")
+            payload = root / "payload"
+            data_snapshot.verify_snapshot(
+                archive_path=Path(summary["archive_path"]),
+                manifest_path=Path(summary["manifest_path"]),
+                max_archive_bytes=1_000_000,
+                extract_root=payload,
+            )
+            target = self.make_source(root, "target")
+            old_fund = (target / "data/funds/1.json").read_bytes()
+            old_pair = {
+                relative: (target / relative).read_bytes()
+                for relative in data_snapshot.CACHE_FILES
+            }
+            expected_cache: dict[Path, bytes] = {}
+            for index, relative in enumerate(
+                data_snapshot.RETIRED_PROVIDER_CACHE_FILES
+            ):
+                path = target / relative
+                path.write_text(f"retired-{index}\n", encoding="utf-8")
+                expected_cache[relative] = path.read_bytes()
+            with mock.patch.object(
+                data_snapshot,
+                "save_security_master_pair",
+                side_effect=OSError("injected install failure"),
+            ), self.assertRaisesRegex(
+                data_snapshot.SnapshotError,
+                "snapshot restore failed: injected install failure",
+            ):
+                data_snapshot._replace_payload(
+                    target,
+                    payload,
+                    contract_version=data_snapshot.CONTRACT_VERSION,
+                )
+
+            self.assertEqual(old_fund, (target / "data/funds/1.json").read_bytes())
+            for relative, expected in expected_cache.items():
+                self.assertEqual(expected, (target / relative).read_bytes())
+            for relative, expected in old_pair.items():
+                self.assertEqual(expected, (target / relative).read_bytes())
+
+    def test_restore_rolls_back_data_on_pair_install_keyboard_interrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            publisher = self.make_source(root, "publisher")
+            summary = self.pack(publisher, root / "assets")
+            payload = root / "payload"
+            data_snapshot.verify_snapshot(
+                archive_path=Path(summary["archive_path"]),
+                manifest_path=Path(summary["manifest_path"]),
+                max_archive_bytes=1_000_000,
+                extract_root=payload,
+            )
+            target = self.make_source(root, "target")
+            retired = target / data_snapshot.RETIRED_PROVIDER_CACHE_FILES[0]
+            retired.write_text("preserve on interrupt\n", encoding="utf-8")
+            old_fund = (target / "data/funds/1.json").read_bytes()
+            old_pair = {
+                relative: (target / relative).read_bytes()
+                for relative in data_snapshot.CACHE_FILES
+            }
+
+            with mock.patch.object(
+                data_snapshot,
+                "save_security_master_pair",
+                side_effect=KeyboardInterrupt,
+            ), self.assertRaises(KeyboardInterrupt):
+                data_snapshot._replace_payload(
+                    target,
+                    payload,
+                    contract_version=data_snapshot.CONTRACT_VERSION,
+                )
+
+            self.assertEqual(old_fund, (target / "data/funds/1.json").read_bytes())
+            self.assertEqual("preserve on interrupt\n", retired.read_text())
+            for relative, expected in old_pair.items():
+                self.assertEqual(expected, (target / relative).read_bytes())
+
+    def test_restore_rejects_extracted_pair_digest_mismatch_before_mutation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            publisher = self.make_source(root, "publisher")
+            summary = self.pack(publisher, root / "assets")
+            payload = root / "payload"
+            data_snapshot.verify_snapshot(
+                archive_path=Path(summary["archive_path"]),
+                manifest_path=Path(summary["manifest_path"]),
+                max_archive_bytes=1_000_000,
+                extract_root=payload,
+            )
+            mismatched_state = sec_security_master.empty_source_state()
+            mismatched_state["updated_at"] = "2026-08-05T18:00:00Z"
+            sec_security_master.save_source_state(
+                mismatched_state,
+                payload / data_snapshot.CACHE_FILES[1],
+            )
+            target = self.make_source(root, "target")
+            old_fund = (target / "data/funds/1.json").read_bytes()
+            old_pair = {
+                relative: (target / relative).read_bytes()
+                for relative in data_snapshot.CACHE_FILES
+            }
+
+            with self.assertRaisesRegex(
+                data_snapshot.SnapshotError,
+                "extracted SEC security-master pair is invalid:.*digest does not match",
+            ):
+                data_snapshot._replace_payload(
+                    target,
+                    payload,
+                    contract_version=data_snapshot.CONTRACT_VERSION,
+                )
+
+            self.assertEqual(old_fund, (target / "data/funds/1.json").read_bytes())
+            for relative, expected in old_pair.items():
+                self.assertEqual(expected, (target / relative).read_bytes())
 
     def test_verify_rejects_traversal_symlink_and_unexpected_members(self) -> None:
         cases = []
@@ -435,6 +848,18 @@ class DataSnapshotTests(unittest.TestCase):
         unexpected.mode = 0o644
         unexpected.size = 3
         cases.append((unexpected, "unexpected archive member"))
+        pair_transaction = tarfile.TarInfo(
+            ".cache/.sec-security-master-pair.transaction.json"
+        )
+        pair_transaction.type = tarfile.REGTYPE
+        pair_transaction.mode = 0o600
+        pair_transaction.size = 3
+        cases.append((pair_transaction, "transaction artifact is not publishable"))
+        raw_sec = tarfile.TarInfo("data/raw-ftd.zip")
+        raw_sec.type = tarfile.REGTYPE
+        raw_sec.mode = 0o600
+        raw_sec.size = 3
+        cases.append((raw_sec, "unexpected archive member"))
 
         for index, (member, message) in enumerate(cases):
             with self.subTest(message=message), tempfile.TemporaryDirectory() as tmpdir:
@@ -462,8 +887,8 @@ class DataSnapshotTests(unittest.TestCase):
             (target / "data/old-only.json").write_text("old\n")
             (target / ".cache/local-only.txt").write_text("preserve me\n")
             (target / "user-file.txt").write_text("also preserve me\n")
-            for relative in data_snapshot.CACHE_FILES:
-                (target / relative).write_text("old cache\n")
+            for relative in data_snapshot.RETIRED_PROVIDER_CACHE_FILES:
+                (target / relative).write_text("retired provider cache\n")
 
             release = {
                 "assets": [
@@ -527,6 +952,8 @@ class DataSnapshotTests(unittest.TestCase):
                     (publisher / relative).read_bytes(),
                     (target / relative).read_bytes(),
                 )
+            for relative in data_snapshot.RETIRED_PROVIDER_CACHE_FILES:
+                self.assertFalse((target / relative).exists(), relative)
             self.assertEqual(
                 "preserve me\n",
                 (target / ".cache/local-only.txt").read_text(),

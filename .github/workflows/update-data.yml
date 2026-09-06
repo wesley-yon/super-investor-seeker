@@ -16,7 +16,7 @@ on:
         default: false
         type: boolean
       filing_quarters:
-        description: Number of SEC filing quarters to inspect
+        description: Filing quarters to inspect for a targeted replay or repair
         required: false
         default: 4
         type: number
@@ -65,6 +65,11 @@ jobs:
     needs: filing-window
     if: needs.filing-window.outputs.run_update == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      actions: write            # request continuation after a published batch
+      contents: read
+      deployments: read
+      pages: read
     concurrency:
       group: private-release-publication
       cancel-in-progress: false
@@ -121,15 +126,23 @@ jobs:
           release_tag=$(jq -er '.release_tag' <<<"$restore_json")
           dataset_id=$(jq -er '.dataset_id' <<<"$restore_json")
           archive_sha256=$(jq -er '.archive_sha256' <<<"$restore_json")
+          legacy_snapshot=$(jq -er '
+            if (.legacy_snapshot | type) == "boolean"
+            then (.legacy_snapshot | tostring)
+            else error("legacy_snapshot must be boolean")
+            end
+          ' <<<"$restore_json")
           if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
              [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
-             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+             [[ ! "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+             [[ "$legacy_snapshot" != "true" && "$legacy_snapshot" != "false" ]]; then
             echo "::error::Private snapshot returned invalid identity metadata"
             exit 1
           fi
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
           echo "code_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "legacy_snapshot=$legacy_snapshot" >> "$GITHUB_OUTPUT"
           echo "Restored private snapshot $release_tag ($dataset_id)"
 
       - name: Verify SEC_USER_AGENT secret is configured
@@ -148,29 +161,52 @@ jobs:
             *) echo "::error::SEC_USER_AGENT does not look like it contains a valid contact email. SEC requires a real email."; exit 1 ;;
           esac
 
+      - name: Restore nonpublishable SEC cutover checkpoint
+        if: steps.restore_snapshot.outputs.legacy_snapshot == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache/sec_13f_bulk_rebuild_checkpoint.json
+            .cache/sec_13f_bulk_source_state.json
+            .cache/sec_13f_bulk_completed_receipt.json
+            .cache/sec_13f_bulk_indices/.rebuild-*.sqlite3.partial
+            .cache/sec_13f_bulk_indices/index-*.sqlite3
+            .cache/sec_13f_bulk_rebuild_checkpoint.accession-discovery.json
+            .cache/sec-security-master-rebuild-work/manifest.json
+            .cache/sec-security-master-rebuild-work/edgar-exception-batch-*.json
+          key: >-
+            sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-
+
+      - name: Capture validated baseline before ingestion
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: python scripts/incremental_pipeline.py capture
+
       - name: Run pipeline
         id: pipeline
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
         # An inner cooperative timeout sends SIGTERM while enough job time
         # remains to regenerate, validate, and publish the pipeline's durable
         # checkpoint. Unexpected non-zero exits still fail closed. A
         # successful migration-only or explicit single-CIK run intentionally
         # skips the recent-feed pass so the bounded replay keeps the hosted-run
         # budget and cannot broaden a targeted repair.
-        # Even if this step, the recent-feed pass, and regeneration all reach
-        # their ceilings, the job retains more than an hour for validation,
-        # private snapshot publication, Pages, and setup variance.
+        # Contract-v1 restores skip this ordinary ingest entirely so the
+        # one-time SEC history backfill below receives its full budget.
         timeout-minutes: 240
         env:
           # Read from repo secret — never commit your email to a public repo.
           # Configure at: Settings → Secrets and variables → Actions.
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
           REPAIR_AMENDMENTS: ${{ inputs.repair_amendments || 'false' }}
           FILING_QUARTERS: ${{ inputs.filing_quarters || 4 }}
           FILING_CIK: ${{ inputs.filing_cik || '' }}
         run: |
           set -euo pipefail
-          mode=(--all)
+          # Ordinary updates process the durable recent-feed queue below.
+          # Broad quarterly-index reconciliation runs in overnight maintenance.
+          mode=(--migrations-only)
           value_unit_migration_pending=$(
             python -c '
           import pipeline
@@ -224,7 +260,7 @@ jobs:
           set +e
           # Leave the step-level guard enough room for the bounded local
           # value-unit preflight above plus the checkpoint kill grace.
-          timeout --signal=TERM --kill-after=120s 210m \
+          timeout --signal=TERM --kill-after=120s 180m \
             python pipeline.py "${mode[@]}" --quarters "$FILING_QUARTERS" --defer-regeneration
           pipeline_status=$?
           set -e
@@ -243,12 +279,12 @@ jobs:
         # accession before the registry-backed site data is regenerated. An
         # explicit CIK replay is deliberately kept targeted and skips this pass.
         if: >-
+          steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
           steps.pipeline.outputs.migration_only != 'true' &&
           steps.pipeline.outputs.targeted_cik != 'true'
         timeout-minutes: 20
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
           RECENT_13F_QUARTERS: ${{ inputs.filing_quarters || 4 }}
         run: |
           set -euo pipefail
@@ -263,35 +299,80 @@ jobs:
             exit "$recent_status"
           fi
 
+      - name: Rebuild SEC-only registry-backed site data after legacy restore
+        if: steps.restore_snapshot.outputs.legacy_snapshot == 'true'
+        timeout-minutes: 280
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: |
+          set -euo pipefail
+          echo "Legacy snapshot detected; forcing clean SEC-only rebuild"
+          python scripts/prepare_sec_cold_workspace.py \
+            --root "$GITHUB_WORKSPACE" --discard-derived-stocks
+          set +e
+          timeout --signal=TERM --kill-after=120s 260m \
+            python pipeline.py --regenerate-only --rebuild-security-master --apply-quantity-policy
+          clean_status=$?
+          set -e
+          if [ "$clean_status" -eq 124 ]; then
+            echo "::error::Clean SEC rebuild reached its cooperative time budget; the private checkpoint will be saved for the next run"
+          fi
+          exit "$clean_status"
+
+      - name: Detect reusable SEC cutover work
+        id: clean_checkpoint
+        if: always() && steps.restore_snapshot.outputs.legacy_snapshot == 'true'
+        run: |
+          if [ -f .cache/sec_13f_bulk_rebuild_checkpoint.json ] ||
+             [ -f .cache/sec_13f_bulk_source_state.json ] ||
+             [ -f .cache/sec_13f_bulk_completed_receipt.json ] ||
+             [ -f .cache/sec_13f_bulk_rebuild_checkpoint.accession-discovery.json ] ||
+             [ -f .cache/sec-security-master-rebuild-work/manifest.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save nonpublishable SEC cutover work
+        if: always() && steps.clean_checkpoint.outputs.present == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cache/sec_13f_bulk_rebuild_checkpoint.json
+            .cache/sec_13f_bulk_source_state.json
+            .cache/sec_13f_bulk_completed_receipt.json
+            .cache/sec_13f_bulk_indices/.rebuild-*.sqlite3.partial
+            .cache/sec_13f_bulk_indices/index-*.sqlite3
+            .cache/sec_13f_bulk_rebuild_checkpoint.accession-discovery.json
+            .cache/sec-security-master-rebuild-work/manifest.json
+            .cache/sec-security-master-rebuild-work/edgar-exception-batch-*.json
+          key: >-
+            sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Remove cached Form 13F working set before validation
+        if: >-
+          success() &&
+          steps.restore_snapshot.outputs.legacy_snapshot == 'true'
+        run: |
+          python -c 'from sec_13f_bulk_backfill import cleanup_13f_bulk_working_set; cleanup_13f_bulk_working_set()'
+
       - name: Regenerate registry-backed site data
         id: regenerate
-        # Runs in its own fresh Python process — no deadlocked workers, no
-        # racing the cancel grace window, no retry backoff threads. Reads
-        # every data/funds/*.json, refreshes missing/suspect CUSIP mappings,
-        # rebuilds the private snapshot registry, and rewrites fund/stock/index
-        # display data from that registry.
-        # --retry-unresolved is a targeted pre-pass for recent
-        # Equity/Preferred/Warrant, suspicious-symbol, and option-family
-        # records from the prior ticker-health report. Stable debt and direct
-        # options stay observable but wait for Sunday's full refresh instead
-        # of consuming the same OpenFIGI requests every day.
-        # In the normal case OpenFIGI work is limited to missing/suspect
-        # CUSIPs. The private snapshot restores the durable cache, while this
-        # step retains enough headroom for a larger-than-usual repair set.
-        timeout-minutes: 45
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        # Reuse verified SEC identity evidence and rebuild changed dependencies.
+        # The separate maintenance workflow refreshes sources and reconciles
+        # broad filing indexes overnight; all freshness gates still apply here.
+        timeout-minutes: 90
         env:
-          # Not strictly needed for regenerate-only, but kept for consistency
-          # with the main pipeline step. OPENFIGI_API_KEY enables the higher
-          # OpenFIGI request size, which keeps this repair step fast.
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
-        run: python pipeline.py --regenerate-only --retry-unresolved
+        run: |
+          python scripts/incremental_pipeline.py regenerate
 
       - name: Validate generated data
         id: validate_data
         # Validation runs only after both ingestion paths and regeneration
         # succeed. A failed replay leaves the last published data untouched.
-        run: python validate_data.py
+        run: python validate_data.py --incremental
 
       - name: Run generated-data contract regression tests
         # Run the focused corpus contract here so stale-cache identity losses
@@ -305,11 +386,10 @@ jobs:
         run: node --test tests/test_site_data_loader.mjs
 
       - name: Annotate ticker health report
-        # Non-fatal: always runs, never fails the job. Just surfaces bucket
-        # counts as Actions warnings so maintenance surprises (OpenFIGI
-        # regressions, synthetic identifiers, new uncovered debt CUSIPs) show
-        # up in the run summary instead of being buried in
-        # data/ticker_health.json.
+        # Non-fatal: always runs, never fails the job. It surfaces informational
+        # bucket counts as Actions notices; stale sources, schema changes, and
+        # material coverage regressions are enforced by the fatal SEC-master
+        # acceptance gate instead of becoming a perpetual manual queue.
         if: always()
         continue-on-error: true
         run: python scripts/annotate_ticker_health.py
@@ -337,6 +417,19 @@ jobs:
           GH_TOKEN: ${{ steps.publish-data-app-token.outputs.token }}
           PUBLIC_GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/publish_private_snapshot.sh
+
+      - name: Continue discovered filing backlog after successful publication
+        if: >-
+          success() &&
+          steps.publish_snapshot.outputs.dataset_id != '' &&
+          steps.recent_filings.outputs.processed_accessions != '' &&
+          steps.recent_filings.outputs.processed_accessions != '0' &&
+          steps.recent_filings.outputs.remaining_due != '' &&
+          steps.recent_filings.outputs.remaining_due != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run update-data.yml --ref main
 
   deploy-pages:
     needs: update

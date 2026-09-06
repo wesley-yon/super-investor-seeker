@@ -29,8 +29,14 @@ def composition_holdings_payload(
     holdings: Sequence[Mapping[str, object]],
     *,
     include_holding_type: bool = False,
+    include_reported_identity: bool = False,
 ) -> list[dict[str, object]]:
-    """Return stable SEC-derived fields, excluding mutable display metadata."""
+    """Return stable SEC-derived fields, excluding mutable display metadata.
+
+    Hash protocol v3 binds the immutable values copied from the exact filing
+    row.  They intentionally remain separate from canonical display fields so
+    later issuer/class/ticker cleanup cannot silently rewrite the evidence.
+    """
 
     payload: list[dict[str, object]] = []
     for holding in holdings:
@@ -47,6 +53,17 @@ def composition_holdings_payload(
         }
         if include_holding_type:
             row["holding_type"] = holding_instrument_type(holding)
+        if include_reported_identity:
+            row.update(
+                {
+                    "reported_issuer": holding.get("reported_issuer"),
+                    "reported_class": holding.get("reported_class"),
+                    "reported_cusip": holding.get("reported_cusip"),
+                    "reported_figi": holding.get("reported_figi"),
+                    "accession": holding.get("accession"),
+                    "report_date": holding.get("report_date"),
+                }
+            )
         payload.append(row)
     payload.sort(
         key=lambda row: json.dumps(
@@ -107,6 +124,7 @@ def calculate_composition_hash(
         "holdings": composition_holdings_payload(
             holdings,
             include_holding_type=composition_hash_version >= 2,
+            include_reported_identity=composition_hash_version >= 3,
         ),
     }
     if composition_hash_version >= 2:
@@ -133,11 +151,12 @@ def calculate_quarter_composition_hash(
             sources[source["accession"]] = source
     applied = quarter["applied_accessions"]
     raw_hash_version = quarter.get("composition_hash_version", 1)
+    supported_hash_versions = {1, 2, current_hash_version}
     hash_version = (
         raw_hash_version
         if (
             type(raw_hash_version) is int
-            and raw_hash_version in {1, current_hash_version}
+            and raw_hash_version in supported_hash_versions
         )
         else 1
     )

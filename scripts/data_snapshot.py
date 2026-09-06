@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Create, verify, and restore private data snapshots.
 
-The snapshot format is deliberately small and strict.  It contains the active
-``data/`` tree, excluding explicitly retired subtrees, and only the durable
-cache files named in ``CACHE_FILES``.  The sidecar manifest is the integrity
-boundary used by both local restores and GitHub Actions.
+The snapshot format is deliberately small and strict. It contains only the
+known derived publication files under ``data/`` and the durable cache files
+named in ``CACHE_FILES``. Raw SEC downloads and temporary working directories
+are outside this allowlist. The sidecar manifest is the integrity boundary used
+by both local restores and GitHub Actions.
 """
 
 from __future__ import annotations
@@ -32,7 +33,17 @@ from typing import Any, BinaryIO, Iterable, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_VERSION = 1
+sys.path.insert(0, str(ROOT))
+
+from sec_security_master import (  # noqa: E402
+    SecurityMasterError,
+    load_security_master_pair,
+    save_security_master_pair,
+    security_master_pair_lock,
+)
+
+CONTRACT_VERSION = 2
+LEGACY_CONTRACT_VERSION = 1
 DEFAULT_MAX_ARCHIVE_BYTES = 1_932_735_283
 MAX_MANIFEST_BYTES = 1_000_000
 MAX_API_RESPONSE_BYTES = 10_000_000
@@ -59,14 +70,49 @@ SOURCE_SHA_RE = re.compile(r"[0-9a-f]{40}")
 CREATED_AT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 CACHE_FILES = (
+    Path(".cache/sec_security_master.json"),
+    Path(".cache/sec_source_state.json"),
+)
+QUANTITY_CACHE_FILES = (
+    Path(".cache/quantity_estimation_evidence.json"),
+    Path(".cache/quarter_close_prices.json"),
+    Path(".cache/quarter_close_price_requests.json"),
+)
+OPTIONAL_CACHE_FILES = (*QUANTITY_CACHE_FILES, Path(".cache/validation_cache.sqlite3"))
+PAIR_TRANSACTION_ARTIFACT_PREFIX = ".sec-security-master-pair."
+# Contract v1 is accepted for one migration release. Provider-specific and
+# otherwise unprovenanced cache members are verified as part of the signed
+# archive digest but intentionally not extracted. These provider-neutral files
+# are the only legacy cache state restored before the first v2 SEC rebuild.
+LEGACY_RESTORABLE_CACHE_FILES = (
     Path(".cache/company_tickers_mf.json"),
-    Path(".cache/cusip_map.json"),
-    Path(".cache/cusip_registry.json"),
-    Path(".cache/openfigi_details.json"),
     Path(".cache/sec_fund_names.json"),
+)
+# These files belonged to the retired provider-era registry contract. They are
+# never authoritative after a restore, including when they predate a v2
+# snapshot in the local working tree. Keep common historical spellings here so
+# none can survive and override the SEC-derived data copy.
+RETIRED_PROVIDER_CACHE_FILES = (
+    Path(".cache/cusip_map.json"),
+    Path(".cache/openfigi_details.json"),
+    Path(".cache/cusip_registry.json"),
+    Path(".cache/cusip-map.json"),
 )
 RETIRED_DATA_SUBTREES = frozenset({Path("data/insiders")})
 RETIRED_PRIVATE_DATA_PREFIX = "data/insiders/private"
+DATA_ROOT_FILES = frozenset({
+    Path("data/company_tickers.json"),
+    Path("data/cusip_registry.json"),
+    Path("data/funds-index.json"),
+    Path("data/index.json"),
+    Path("data/pipeline_state.json"),
+    Path("data/security_labels.json"),
+    Path("data/ticker_health.json"),
+})
+DATA_COLLECTION_DIRS = frozenset({
+    Path("data/funds"),
+    Path("data/stocks"),
+})
 
 
 class SnapshotError(ValueError):
@@ -106,6 +152,17 @@ def _validate_positive_limit(value: int) -> None:
         raise SnapshotError("maximum archive size must be a positive integer")
 
 
+def _is_allowed_v2_data_member(name: str, *, is_dir: bool) -> bool:
+    path = Path(name)
+    if is_dir:
+        return path in DATA_COLLECTION_DIRS
+    return path in DATA_ROOT_FILES or (
+        path.parent in DATA_COLLECTION_DIRS
+        and path.suffix == ".json"
+        and not path.name.startswith(".")
+    )
+
+
 def _scan_source(root: Path) -> list[SourceEntry]:
     root = root.resolve()
     data_root = root / "data"
@@ -142,6 +199,10 @@ def _scan_source(root: Path) -> list[SourceEntry]:
                     f"data contains an unsupported entry: {path}"
                 )
             relative = path.relative_to(root).as_posix()
+            if not _is_allowed_v2_data_member(relative, is_dir=True):
+                raise SnapshotError(
+                    f"data contains a non-derived or unexpected entry: {path}"
+                )
             entries.append(
                 SourceEntry(
                     name=relative,
@@ -160,6 +221,10 @@ def _scan_source(root: Path) -> list[SourceEntry]:
                     f"data contains an unsupported entry: {path}"
                 )
             relative = path.relative_to(root).as_posix()
+            if not _is_allowed_v2_data_member(relative, is_dir=False):
+                raise SnapshotError(
+                    f"data contains a non-derived or unexpected entry: {path}"
+                )
             entries.append(
                 SourceEntry(
                     name=relative,
@@ -169,8 +234,10 @@ def _scan_source(root: Path) -> list[SourceEntry]:
                 )
             )
 
-    for relative in CACHE_FILES:
+    for relative in (*CACHE_FILES, *OPTIONAL_CACHE_FILES):
         path = root / relative
+        if relative in OPTIONAL_CACHE_FILES and not path.exists() and not path.is_symlink():
+            continue
         metadata = _regular_file(path, "required cache file")
         entries.append(
             SourceEntry(
@@ -306,6 +373,10 @@ def _manifest_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     dataset = manifest["dataset"]
     archive = manifest["archive"]
     return {
+        "contract_version": manifest["contract_version"],
+        "legacy_snapshot": (
+            manifest["contract_version"] == LEGACY_CONTRACT_VERSION
+        ),
         "created_at": manifest["created_at"],
         "dataset_id": manifest["dataset_id"],
         "dataset_sha256": dataset["sha256"],
@@ -360,7 +431,10 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     )
     if type(manifest["contract_version"]) is not int:
         raise SnapshotError("manifest contract_version must be an integer")
-    if manifest["contract_version"] != CONTRACT_VERSION:
+    if manifest["contract_version"] not in {
+        LEGACY_CONTRACT_VERSION,
+        CONTRACT_VERSION,
+    }:
         raise SnapshotError(
             "unsupported snapshot contract version: "
             f"{manifest['contract_version']}"
@@ -437,21 +511,45 @@ def _validate_member_name(name: str) -> None:
         raise SnapshotError(f"unsafe archive path: {name!r}")
 
 
-def _validate_member_scope(member: tarfile.TarInfo) -> None:
+def _validate_member_scope(
+    member: tarfile.TarInfo,
+    *,
+    contract_version: int,
+) -> None:
     name = member.name
     _validate_member_name(name)
-    cache_names = {path.as_posix() for path in CACHE_FILES}
+    cache_names = {path.as_posix() for path in (*CACHE_FILES, *OPTIONAL_CACHE_FILES)}
     if name == "data":
         if not member.isdir():
             raise SnapshotError("archive data root must be a directory")
     elif name.startswith("data/"):
-        pass
+        if (
+            contract_version != LEGACY_CONTRACT_VERSION
+            and (member.isdir() or member.isfile())
+            and not _is_allowed_v2_data_member(name, is_dir=member.isdir())
+        ):
+            raise SnapshotError(f"unexpected archive member: {name}")
     elif name == ".cache":
         if not member.isdir():
             raise SnapshotError("archive cache root must be a directory")
     elif name in cache_names:
         if not member.isfile():
             raise SnapshotError(f"cache archive member must be a file: {name}")
+    elif (
+        PurePosixPath(name).parent.as_posix() == ".cache"
+        and PurePosixPath(name).name.startswith(
+            PAIR_TRANSACTION_ARTIFACT_PREFIX
+        )
+    ):
+        raise SnapshotError(
+            f"security-master transaction artifact is not publishable: {name}"
+        )
+    elif (
+        contract_version == LEGACY_CONTRACT_VERSION
+        and PurePosixPath(name).parent.as_posix() == ".cache"
+    ):
+        if not member.isfile():
+            raise SnapshotError(f"legacy cache member must be a file: {name}")
     else:
         raise SnapshotError(f"unexpected archive member: {name}")
 
@@ -492,7 +590,10 @@ def _verify_archive_contents(
     try:
         with tarfile.open(archive_path, mode="r:gz") as archive:
             for member in archive:
-                _validate_member_scope(member)
+                _validate_member_scope(
+                    member,
+                    contract_version=manifest["contract_version"],
+                )
                 if member.name in seen_names:
                     raise SnapshotError(
                         f"duplicate archive member: {member.name}"
@@ -561,10 +662,26 @@ def _verify_archive_contents(
                     raise SnapshotError(
                         f"archive member cannot be read: {member.name}"
                     )
-                if extract_root is None:
+                extract_member = (
+                    extract_root is not None
+                    and (
+                        not member.name.startswith(".cache/")
+                        or member.name
+                        in {
+                            path.as_posix()
+                            for path in (
+                                (*CACHE_FILES, *OPTIONAL_CACHE_FILES)
+                                if manifest["contract_version"] == CONTRACT_VERSION
+                                else LEGACY_RESTORABLE_CACHE_FILES
+                            )
+                        }
+                    )
+                )
+                if not extract_member:
                     with source:
                         _copy_exact(source, None, digest, member.size)
                 else:
+                    assert extract_root is not None
                     destination = extract_root.joinpath(*member.name.split("/"))
                     with source, destination.open("xb") as output:
                         _copy_exact(source, output, digest, member.size)
@@ -575,8 +692,13 @@ def _verify_archive_contents(
     except (tarfile.TarError, EOFError, OSError) as error:
         raise SnapshotError(f"archive cannot be read: {error}") from error
 
+    required_cache_files = (
+        CACHE_FILES
+        if manifest["contract_version"] == CONTRACT_VERSION
+        else LEGACY_RESTORABLE_CACHE_FILES
+    )
     required_names = {".cache", "data"} | {
-        path.as_posix() for path in CACHE_FILES
+        path.as_posix() for path in required_cache_files
     }
     missing = sorted(required_names - set(names))
     if missing:
@@ -656,6 +778,64 @@ def verify_snapshot(
     return summary
 
 
+def _capture_locked_snapshot_source(
+    root: Path,
+    output_dir: Path,
+) -> tuple[Path, str, int, int, str, str, Path, Path]:
+    """Materialize one archive while the SEC cache pair is immutable."""
+
+    master_path, source_state_path = (root / relative for relative in CACHE_FILES)
+    try:
+        with security_master_pair_lock(
+            master_path=master_path,
+            source_state_path=source_state_path,
+        ):
+            entries = _scan_source(root)
+            dataset_sha256, file_count, content_bytes = _source_content_digest(
+                entries
+            )
+            archive_name, manifest_name = _manifest_names(dataset_sha256)
+            archive_path = output_dir / archive_name
+            manifest_path = output_dir / manifest_name
+            if archive_path.exists() or archive_path.is_symlink():
+                raise SnapshotError(
+                    f"snapshot archive already exists: {archive_path}"
+                )
+            if manifest_path.exists() or manifest_path.is_symlink():
+                raise SnapshotError(
+                    f"snapshot manifest already exists: {manifest_path}"
+                )
+
+            with tempfile.NamedTemporaryFile(
+                prefix=".data-snapshot-",
+                suffix=ARCHIVE_SUFFIX,
+                dir=output_dir,
+                delete=False,
+            ) as temporary:
+                temporary_archive = Path(temporary.name)
+            temporary_archive.unlink()
+            try:
+                _write_archive(entries, temporary_archive)
+            except BaseException:
+                temporary_archive.unlink(missing_ok=True)
+                raise
+    except SecurityMasterError as error:
+        raise SnapshotError(
+            f"SEC security-master pair is invalid: {error}"
+        ) from error
+
+    return (
+        temporary_archive,
+        dataset_sha256,
+        file_count,
+        content_bytes,
+        archive_name,
+        manifest_name,
+        archive_path,
+        manifest_path,
+    )
+
+
 def pack_snapshot(
     *,
     root: Path,
@@ -684,29 +864,20 @@ def pack_snapshot(
     else:
         output_dir.mkdir(parents=True)
 
-    entries = _scan_source(root)
-    dataset_sha256, file_count, content_bytes = _source_content_digest(entries)
-    dataset_id = dataset_sha256
-    archive_name, manifest_name = _manifest_names(dataset_sha256)
-    archive_path = output_dir / archive_name
-    manifest_path = output_dir / manifest_name
-    if archive_path.exists() or archive_path.is_symlink():
-        raise SnapshotError(f"snapshot archive already exists: {archive_path}")
-    if manifest_path.exists() or manifest_path.is_symlink():
-        raise SnapshotError(f"snapshot manifest already exists: {manifest_path}")
-
     temporary_archive: Optional[Path] = None
     temporary_manifest: Optional[Path] = None
     try:
-        with tempfile.NamedTemporaryFile(
-            prefix=".data-snapshot-",
-            suffix=ARCHIVE_SUFFIX,
-            dir=output_dir,
-            delete=False,
-        ) as temporary:
-            temporary_archive = Path(temporary.name)
-        temporary_archive.unlink()
-        _write_archive(entries, temporary_archive)
+        (
+            temporary_archive,
+            dataset_sha256,
+            file_count,
+            content_bytes,
+            archive_name,
+            manifest_name,
+            archive_path,
+            manifest_path,
+        ) = _capture_locked_snapshot_source(root, output_dir)
+        dataset_id = dataset_sha256
         archive_bytes = temporary_archive.stat().st_size
         if archive_bytes > max_archive_bytes:
             raise SnapshotError(
@@ -1023,26 +1194,69 @@ def _download_asset(
     )
 
 
-def _validate_restore_targets(root: Path) -> None:
+def _validate_restore_targets(
+    root: Path,
+    *,
+    cache_files: tuple[Path, ...],
+) -> None:
     data_target = root / "data"
     if data_target.exists() or data_target.is_symlink():
         _regular_directory(data_target, "existing data target")
     cache_root = root / ".cache"
     if cache_root.exists() or cache_root.is_symlink():
         _regular_directory(cache_root, "existing cache target")
-    for relative in CACHE_FILES:
+    for relative in cache_files:
         target = root / relative
         if target.exists() or target.is_symlink():
             _regular_file(target, "existing cache target")
 
 
-def _replace_payload(root: Path, payload: Path) -> None:
-    """Transactionally replace data and only the allowlisted cache files."""
-    _validate_restore_targets(root)
-    _regular_directory(payload / "data", "extracted data directory")
-    _regular_directory(payload / ".cache", "extracted cache directory")
-    for relative in CACHE_FILES:
-        _regular_file(payload / relative, "extracted cache file")
+def _restore_cache_contract(
+    contract_version: int,
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Return cache files to install and stale cache files to remove."""
+
+    if contract_version == CONTRACT_VERSION:
+        cache_files = CACHE_FILES
+        removal_files = (*RETIRED_PROVIDER_CACHE_FILES, *OPTIONAL_CACHE_FILES)
+    elif contract_version == LEGACY_CONTRACT_VERSION:
+        cache_files = LEGACY_RESTORABLE_CACHE_FILES
+        # A legacy data tree cannot safely share newer SEC evidence. The next
+        # migration rebuild must recreate both v2 files from that tree.
+        removal_files = (*RETIRED_PROVIDER_CACHE_FILES, *CACHE_FILES, *OPTIONAL_CACHE_FILES)
+    else:
+        raise SnapshotError(
+            f"unsupported snapshot contract version: {contract_version}"
+        )
+    return cache_files, tuple(dict.fromkeys(removal_files))
+
+
+def _replace_payload_transaction(
+    root: Path,
+    payload: Path,
+    *,
+    cache_files: tuple[Path, ...],
+    removal_files: tuple[Path, ...],
+    incoming_pair: tuple[dict[str, Any], dict[str, Any]] | None,
+) -> None:
+    """Apply the already-validated payload with rollback on every throwable."""
+
+    # A v2 SEC pair is installed only by the pair transaction below. Keeping
+    # the current targets in place until that final call lets the core helper
+    # recover either the complete old or complete new generation after a kill.
+    generic_cache_files = (
+        tuple(relative for relative in cache_files if relative not in CACHE_FILES)
+        if incoming_pair is not None
+        else cache_files
+    )
+    generic_removal_files = (
+        tuple(relative for relative in removal_files if relative not in CACHE_FILES)
+        if incoming_pair is not None
+        else removal_files
+    )
+    cache_targets = tuple(
+        dict.fromkeys((*generic_cache_files, *generic_removal_files))
+    )
 
     backup = payload.parent / "restore-backup"
     backup.mkdir()
@@ -1056,7 +1270,7 @@ def _replace_payload(root: Path, payload: Path) -> None:
             old_data = backup / "data"
             os.replace(data_target, old_data)
             moved_old.append((old_data, data_target))
-        for relative in CACHE_FILES:
+        for relative in cache_targets:
             target = root / relative
             if target.exists():
                 old_target = backup / relative
@@ -1069,11 +1283,25 @@ def _replace_payload(root: Path, payload: Path) -> None:
         if not cache_root.exists():
             cache_root.mkdir()
             cache_root_created = True
-        for relative in CACHE_FILES:
+        for relative in generic_cache_files:
             target = root / relative
             os.replace(payload / relative, target)
             installed.append(target)
-    except Exception as error:
+        if incoming_pair is not None:
+            incoming_master, incoming_state = incoming_pair
+            master_path, source_state_path = (
+                root / relative for relative in CACHE_FILES
+            )
+            # This is deliberately the last cache mutation. The pair helper
+            # catches BaseException and restores the old pair before our outer
+            # data/retired-cache rollback runs.
+            save_security_master_pair(
+                incoming_master,
+                incoming_state,
+                master_path=master_path,
+                source_state_path=source_state_path,
+            )
+    except BaseException as error:
         rollback_errors = []
         for installed_path in reversed(installed):
             try:
@@ -1095,7 +1323,74 @@ def _replace_payload(root: Path, payload: Path) -> None:
             except OSError:
                 pass
         details = f"; rollback errors: {rollback_errors}" if rollback_errors else ""
+        if not isinstance(error, Exception):
+            if details and hasattr(error, "add_note"):
+                error.add_note(f"snapshot restore{details}")
+            raise
         raise SnapshotError(f"snapshot restore failed: {error}{details}") from error
+
+
+def _replace_payload(
+    root: Path,
+    payload: Path,
+    *,
+    contract_version: int,
+) -> None:
+    """Transactionally replace data, caches, and retired cache state."""
+
+    cache_files, removal_files = _restore_cache_contract(contract_version)
+    if contract_version == CONTRACT_VERSION:
+        cache_files = (*cache_files, *(relative for relative in OPTIONAL_CACHE_FILES if (payload / relative).exists()))
+    cache_targets = tuple(dict.fromkeys((*cache_files, *removal_files)))
+    _validate_restore_targets(root, cache_files=cache_targets)
+    _regular_directory(payload / "data", "extracted data directory")
+    _regular_directory(payload / ".cache", "extracted cache directory")
+    for relative in cache_files:
+        _regular_file(payload / relative, "extracted cache file")
+
+    master_path, source_state_path = (root / relative for relative in CACHE_FILES)
+    if contract_version == CONTRACT_VERSION:
+        extracted_master_path, extracted_state_path = (
+            payload / relative for relative in CACHE_FILES
+        )
+        try:
+            incoming_pair = load_security_master_pair(
+                master_path=extracted_master_path,
+                source_state_path=extracted_state_path,
+            )
+        except (SecurityMasterError, OSError) as error:
+            raise SnapshotError(
+                f"extracted SEC security-master pair is invalid: {error}"
+            ) from error
+        _replace_payload_transaction(
+            root,
+            payload,
+            cache_files=cache_files,
+            removal_files=removal_files,
+            incoming_pair=incoming_pair,
+        )
+        return
+
+    # A legacy restore removes, rather than installs, both SEC targets. Hold
+    # the same lock as pair writers so it cannot capture one target midway
+    # through a concurrent generation change. Both targets may validly be
+    # absent before the one-release migration restore.
+    try:
+        with security_master_pair_lock(
+            master_path=master_path,
+            source_state_path=source_state_path,
+        ):
+            _replace_payload_transaction(
+                root,
+                payload,
+                cache_files=cache_files,
+                removal_files=removal_files,
+                incoming_pair=None,
+            )
+    except SecurityMasterError as error:
+        raise SnapshotError(
+            f"existing SEC security-master pair is invalid: {error}"
+        ) from error
 
 
 def pull_snapshot(
@@ -1179,7 +1474,11 @@ def pull_snapshot(
             max_archive_bytes=max_archive_bytes,
             extract_root=payload,
         )
-        _replace_payload(root, payload)
+        _replace_payload(
+            root,
+            payload,
+            contract_version=summary["contract_version"],
+        )
 
     summary.pop("extract_root", None)
     summary.update(

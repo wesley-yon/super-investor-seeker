@@ -2,7 +2,7 @@
 
 The fixtures are deliberately small and synthetic.  These tests exercise the
 pure primary-document parser and filing-chain reducer without touching SEC,
-OpenFIGI, pipeline state, or generated data.
+SEC evidence, pipeline state, or generated data.
 """
 
 from __future__ import annotations

@@ -36,6 +36,11 @@ from composition_integrity import (
     calculate_quarter_composition_hash as _calculate_quarter_composition_hash,
 )
 from data_contract import DATA_CONTRACT_VERSION
+from quantity_estimation import (
+    cache_dir_for_funds,
+    load_book as load_quantity_evidence,
+    validate_quantity_annotation,
+)
 from quarter_health import (
     add_quarter_peer_observations,
     compile_peer_price_index,
@@ -43,26 +48,41 @@ from quarter_health import (
     same_date_peer_price_references,
     structural_quarter_health_issues,
 )
+from sec_13f_bulk_backfill import (
+    Sec13FBulkError,
+    normalize_sec_identity_source_url,
+)
+from sec_security_master import (
+    MASTER_AUDIT_SCHEMA_VERSION,
+    MASTER_SCHEMA_VERSION,
+    PRODUCTION_MIN_ACTIVE_OFFICIAL_CUSIP_COUNT,
+    PRODUCTION_MIN_CURRENT_SYMBOL_POPULATION_BY_KIND,
+    PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO,
+    SOURCE_STATE_SCHEMA_VERSION,
+    SecurityMasterError,
+    audit_security_master,
+    load_security_master,
+    load_source_state,
+    project_ftd_master_evidence,
+    project_master_audit,
+    security_key as sec_security_key,
+    source_state_sha256,
+)
 from security_identity import (
-    EQUITY_FUND_SECURITY_KINDS as _EQUITY_FUND_SECURITY_KINDS,
-    FUND_IDENTITY_TICKER_SOURCES as _FUND_IDENTITY_TICKER_SOURCES,
+    EQUITY_FUND_SECURITY_KINDS,
     VALID_INSTRUMENT_TYPES,
-    holding_instrument_type,
     is_canonical_security_identifier,
-    is_mutual_fund_ticker,
-    is_synthetic_identifier,
+    is_synthetic_identifier as is_synthetic_identifier,
     normalize_instrument_type,
     normalize_note_security_label,
     normalize_security_kind,
     normalize_security_label,
     normalize_security_identifier,
-    sec_issuer_proof_key,
-    sec_ticker_titles,
+    published_holding_instrument_type,
+    registry_entry_has_trusted_fund_symbol_evidence,
     stock_file_stem,
     stock_filename,
     stock_lookup_id,
-    published_holding_instrument_type,
-    registry_entry_has_equity_fund_identity,
 )
 from value_units import (
     PEER_MIN_SCALE_COUNT_SUPPORT,
@@ -77,8 +97,6 @@ from value_units import (
 # split algorithm in the release gate.
 from pipeline import (
     _FUND_PRODUCT_NAME_KINDS,
-    _registry_fund_symbol,
-    MANUAL_SECURITY_KIND_OVERRIDES,
     infer_proven_split_adjustments,
     normalize_filer_identity_name,
 )
@@ -92,10 +110,83 @@ INDEX_PATH = DATA_DIR / "index.json"
 FUNDS_INDEX_PATH = DATA_DIR / "funds-index.json"
 CUSIP_REGISTRY_PATH = DATA_DIR / "cusip_registry.json"
 SECURITY_LABELS_PATH = DATA_DIR / "security_labels.json"
-COMPANY_TICKERS_PATH = DATA_DIR / "company_tickers.json"
 STATE_PATH = DATA_DIR / "pipeline_state.json"
+SEC_SECURITY_MASTER_PATH = ROOT / ".cache" / "sec_security_master.json"
+SEC_SOURCE_STATE_PATH = ROOT / ".cache" / "sec_source_state.json"
+SEC_TICKER_SOURCES = frozenset({
+    "sec_ftd",
+    "sec_ixbrl",
+})
+SEC_METADATA_SOURCES = frozenset({
+    *SEC_TICKER_SOURCES,
+    "sec_13f_list",
+    "sec_company_tickers",
+    "sec_fund_series",
+    "sec_schedule_13dg",
+    "sec_13f_filer_consensus",
+})
+# Public registry provenance is intentionally narrower than the private
+# security-master evidence vocabulary.  These are the only values emitted by
+# the SEC-only registry builder.  Keeping the allowlists explicit makes a
+# restored vendor-era registry fail publication even when its ticker happens to
+# match the SEC master.
+PUBLIC_REGISTRY_LABEL_SOURCES = frozenset({
+    "sec_13f_list",
+    "sec_13f_filer_consensus",
+    "sec_ftd",
+    "synthetic_identifier",
+})
+PUBLIC_REGISTRY_EVIDENCE_SOURCES = frozenset({
+    "sec_13f_list",
+    "sec_13f_filer_consensus",
+    "sec_company_tickers",
+    "sec_fund_series",
+    "sec_ftd",
+    "sec_ixbrl",
+})
+SEC_MAPPING_STATUSES = frozenset({
+    "resolved",
+    "unresolved",
+    "ambiguous",
+    "no_listed_symbol",
+    "malformed_as_filed",
+})
+SEC_EQUITY_SAFETY_ANCHORS = {
+    "037833100": "AAPL",
+    "30231G102": "XOM",
+    "76954A103": "RIVN",
+}
+SEC_TICKERLESS_NOTE_SAFETY_ANCHORS = frozenset({
+    "090043AF7",
+    "26210CAC8",
+    "26210CAD6",
+    "76954AAD5",
+})
+PRIVATE_SEC_EVIDENCE_FIELDS = frozenset({
+    "candidate_as_of",
+    "candidate_symbols",
+    "candidate_ticker",
+    "confirmation_dates",
+    "effective_from",
+    "effective_to",
+    "fund_series_evidence",
+    "fund_series_name",
+    "mapping_method",
+    "official_13f",
+    "reported_identities",
+    "reported_identity_evidence",
+    "resolution_reason",
+    "sec_edgar_evidence",
+    "source_ticker",
+    "symbol_evidence",
+    "symbol_intervals",
+    "symbol_validation_exchanges",
+    "symbol_validation_sources",
+    "symbol_validation_titles",
+    "ticker_evidence_cusips",
+})
 _AMENDMENT_REDUCER_VERSION = 2
-_COMPOSITION_HASH_VERSION = 2
+_COMPOSITION_HASH_VERSION = 3
 _NEW_HOLDINGS_IDENTITY_VERSION = 1
 _NEW_HOLDINGS_REPLACEMENT_MIN_MATCHED_ROWS = 5
 _NEW_HOLDINGS_REPLACEMENT_COVERAGE_NUMERATOR = 9
@@ -111,18 +202,8 @@ _EXCLUSIVE_ETF_ISSUER_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
-_SCHWAB_STRATEGIC_TR_RE = re.compile(
-    r"SCHWAB\s+STRATEGIC\s+TR",
-    re.IGNORECASE,
-)
-_RBB_FD_INC_RE = re.compile(r"RBB\s+FD\s+INC", re.IGNORECASE)
 _ETN_KIND_RE = re.compile(
     r"\bETNS?\b|\bEXCHANGE[- ]TRADED\s+NOTES?\b",
-    re.IGNORECASE,
-)
-_CONSENSUS_NONCOMMON_CLASS_RE = re.compile(
-    r"\b(?:PREF(?:ERRED)?|PFD|WARRANTS?|WTS?|RIGHTS?|UNITS?|"
-    r"NOTES?|BONDS?|DEBT|DEBENTURES?|CONVERTIBLES?)\b",
     re.IGNORECASE,
 )
 _DEPOSITARY_RECEIPT_RE = re.compile(
@@ -137,21 +218,6 @@ _SUPPORTED_VALUE_UNIT_POLICY_VERSIONS = (
     | {VALUE_UNIT_POLICY_VERSION}
 )
 _COMPOSITION_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
-_SUSPICIOUS_TICKER_RE = re.compile(
-    r"^\d|\s|\d+\.\d+|(?:PERP|PFD|NOTE|WARRANT)$",
-    re.IGNORECASE,
-)
-_DISPLAY_ONLY_SECURITY_CLASS_RE = re.compile(
-    r"\b(?:RIGHT|RIGHTS|WARRANT|WARRANTS|WT|WTS)\b",
-    re.IGNORECASE,
-)
-_DISPLAY_ONLY_TICKER_SUFFIX_RE = re.compile(
-    r"(?:[-./](?:R|RT|RIGHT|RIGHTS|W|WS|WT|WTS))$",
-    re.IGNORECASE,
-)
-_LEGACY_TICKER_CURRENCY_SUFFIX_RE = re.compile(
-    r"^([A-Z0-9][A-Z0-9.-]*?)[0-9]?(?:EUR|GBP|GBX|USD|CHF|CAD|JPY)$"
-)
 _REPORT_QUARTER_BY_MONTH_DAY = {
     (3, 31): 1,
     (6, 30): 2,
@@ -299,6 +365,43 @@ def holding_stock_id(
     )
 
 
+def expected_registry_position_ticker(
+    entry: dict | None,
+    instrument_type: str,
+) -> str | None:
+    """Project the only ticker one public fund holding may retain."""
+
+    if not isinstance(entry, dict):
+        return None
+    normalized_type = normalize_instrument_type(instrument_type)
+    if normalized_type in {"CALL", "PUT", "OPT"}:
+        raw_ticker = entry.get("underlying_ticker")
+        source = entry.get("underlying_ticker_source")
+        as_of = entry.get("underlying_ticker_as_of")
+    else:
+        raw_entry_type = entry.get("type")
+        if (
+            not isinstance(raw_entry_type, str)
+            or raw_entry_type.strip().upper() not in VALID_INSTRUMENT_TYPES
+            or normalize_instrument_type(raw_entry_type) != normalized_type
+        ):
+            return None
+        raw_ticker = entry.get("ticker")
+        if entry.get("mapping_status") != "resolved":
+            return None
+        source = entry.get("ticker_source")
+        as_of = entry.get("ticker_as_of")
+    if source not in SEC_TICKER_SOURCES or not is_strict_iso_date(as_of):
+        return None
+    ticker = str(raw_ticker or "").strip().upper()
+    if not ticker:
+        return None
+    note_label = normalize_note_security_label(ticker)
+    if normalized_type == "NOTE":
+        return note_label
+    return None if note_label else ticker
+
+
 def validate_fund_holding_identity(
     holding: dict,
     context: str,
@@ -438,6 +541,7 @@ def _add_history_observation(
     shares: int | float,
     pct_of_fund: int | float,
     shares_imputed: bool,
+    quantity_unknown: bool = False,
 ) -> None:
     """Add one present fund/security/report observation to an all-history digest."""
     stats["history_count"] += 1
@@ -450,6 +554,7 @@ def _add_history_observation(
         _canonical_number(shares),
         _canonical_number(pct_of_fund),
         "1" if shares_imputed else "0",
+        "1" if quantity_unknown else "0",
     )).encode("utf-8")
     token = int.from_bytes(hashlib.sha256(payload).digest(), "big")
     stats["history_digest"] = (
@@ -511,87 +616,775 @@ def is_strict_utc_timestamp(value: object) -> bool:
     return parsed.strftime("%Y-%m-%dT%H:%M:%SZ") == value
 
 
-def registry_alias_has_sec_proof(
-    entry: dict,
-    sec_titles: dict[str, str],
-) -> bool:
-    """Reconstruct one marker-backed ticker alias from independent SEC data."""
-    if entry.get("type") != "EQUITY":
+def is_strict_iso_date(value: object) -> bool:
+    if not isinstance(value, str):
         return False
-    sources = set(entry.get("sources") or [])
-    if not {"sec_title", "sec_validated_ticker_alias"} <= sources:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
         return False
-
-    raw_source = entry.get("source_ticker")
-    raw_ticker = entry.get("ticker")
-    if not isinstance(raw_source, str) or not isinstance(raw_ticker, str):
-        return False
-    source_ticker = raw_source.strip().upper()
-    ticker = raw_ticker.strip().upper()
-    if (
-        not source_ticker
-        or not ticker
-        or raw_source != source_ticker
-        or raw_ticker != ticker
-        or source_ticker in sec_titles
-    ):
-        return False
-
-    candidates: list[str] = []
-    if "/" in source_ticker:
-        candidates.append(source_ticker.replace("/", "-"))
-    suffix_match = _LEGACY_TICKER_CURRENCY_SUFFIX_RE.fullmatch(
-        source_ticker
-    )
-    if suffix_match:
-        candidates.append(suffix_match.group(1))
-    if ticker not in candidates:
-        return False
-
-    sec_title = sec_titles.get(ticker)
-    if not sec_title:
-        return False
-    if normalize_issuer_key(entry.get("name")) != normalize_issuer_key(
-        sec_title
-    ):
-        return False
-    sec_issuer = sec_issuer_proof_key(sec_title)
-    return bool(
-        sec_issuer
-        and sec_issuer_proof_key(entry.get("dominant_issuer"))
-        == sec_issuer
-    )
+    # The round trip rejects compact dates and ISO week dates accepted by
+    # fromisoformat, without locale-dependent strptime/strftime per holding.
+    return parsed.isoformat() == value
 
 
-def allow_vetted_legacy_registry_ticker(
-    *,
-    cusip: str,
-    ticker: str | None,
-    instrument_type: str,
-    legacy_equity_claims: Counter[str],
-    dominant_class: str | None = None,
-) -> bool:
-    raw_ticker = str(ticker or "").strip().upper()
-    if not raw_ticker:
-        return False
-    if instrument_type != "EQUITY":
-        return False
-    if is_synthetic_identifier(cusip):
-        return False
-    if (
-        _DISPLAY_ONLY_TICKER_SUFFIX_RE.search(raw_ticker)
-        or _DISPLAY_ONLY_SECURITY_CLASS_RE.search(
-            str(dominant_class or "")
+def validate_sec_mapping_provenance(
+    registry: dict[str, dict],
+    errors: list[str],
+) -> None:
+    """Require fail-closed public mapping status and SEC provenance fields."""
+
+    malformed_status: list[str] = []
+    malformed_resolved: list[str] = []
+    malformed_unresolved: list[str] = []
+    for cusip, entry in registry.items():
+        if not isinstance(entry, dict):
+            malformed_status.append(cusip)
+            continue
+        status = entry.get("mapping_status")
+        ticker = entry.get("ticker")
+        source = entry.get("ticker_source")
+        as_of = entry.get("ticker_as_of")
+        missing_mapping_fields = {
+            field
+            for field in ("ticker", "ticker_source", "ticker_as_of")
+            if field not in entry
+        }
+        if status not in SEC_MAPPING_STATUSES:
+            malformed_status.append(cusip)
+            continue
+        if status == "resolved":
+            if (
+                missing_mapping_fields
+                or not isinstance(ticker, str)
+                or not ticker.strip()
+                or ticker != ticker.strip().upper()
+                or source not in SEC_TICKER_SOURCES
+                or not is_strict_iso_date(as_of)
+            ):
+                malformed_resolved.append(cusip)
+        elif (
+            missing_mapping_fields
+            or ticker is not None
+            or source is not None
+            or as_of is not None
+        ):
+            malformed_unresolved.append(cusip)
+
+    if malformed_status:
+        errors.append(
+            "cusip_registry.json has "
+            f"{len(malformed_status)} entries with invalid mapping_status; "
+            f"samples: {', '.join(sorted(malformed_status)[:10])}"
         )
+    if malformed_resolved:
+        errors.append(
+            "cusip_registry.json has "
+            f"{len(malformed_resolved)} resolved mappings without a canonical "
+            "ticker, SEC ticker_source, or YYYY-MM-DD ticker_as_of; samples: "
+            f"{', '.join(sorted(malformed_resolved)[:10])}"
+        )
+    if malformed_unresolved:
+        errors.append(
+            "cusip_registry.json has "
+            f"{len(malformed_unresolved)} non-resolved mappings that publish "
+            "ticker or ticker provenance; samples: "
+            f"{', '.join(sorted(malformed_unresolved)[:10])}"
+        )
+
+
+def validate_public_registry_provenance(
+    registry: dict[str, dict],
+    errors: list[str],
+) -> None:
+    """Reject provenance values the SEC-only registry builder cannot emit."""
+
+    invalid_label_sources: list[str] = []
+    invalid_evidence_sources: list[str] = []
+    for cusip, entry in registry.items():
+        if not isinstance(entry, dict):
+            continue
+        label_source = entry.get("label_source")
+        if label_source not in PUBLIC_REGISTRY_LABEL_SOURCES:
+            invalid_label_sources.append(cusip)
+
+        sources = entry.get("sources")
+        if (
+            not isinstance(sources, list)
+            or not sources
+            or any(
+                type(source) is not str
+                or source not in PUBLIC_REGISTRY_EVIDENCE_SOURCES
+                for source in sources
+            )
+        ):
+            invalid_evidence_sources.append(cusip)
+
+    if invalid_label_sources:
+        errors.append(
+            "cusip_registry.json has "
+            f"{len(invalid_label_sources)} security labels with provenance "
+            "outside the SEC/filer/synthetic allowlist; samples: "
+            f"{', '.join(sorted(invalid_label_sources)[:10])}"
+        )
+    if invalid_evidence_sources:
+        errors.append(
+            "cusip_registry.json has "
+            f"{len(invalid_evidence_sources)} entries with sources outside "
+            "the SEC/filer allowlist; samples: "
+            f"{', '.join(sorted(invalid_evidence_sources)[:10])}"
+        )
+
+
+def validate_sec_safety_anchors(
+    registry: dict[str, dict],
+    master: dict,
+    errors: list[str],
+) -> None:
+    """Lock named high-risk securities to their exact SEC-master identity."""
+
+    records = master.get("records") if isinstance(master, dict) else None
+    if not isinstance(records, dict):
+        errors.append(
+            "private SEC security master cannot validate required safety "
+            "anchors because its records object is missing"
+        )
+        return
+
+    for cusip, ticker in SEC_EQUITY_SAFETY_ANCHORS.items():
+        public_entry = registry.get(cusip)
+        master_entry = records.get(sec_security_key(cusip, "EQUITY"))
+        public_fields_present = isinstance(public_entry, dict) and all(
+            field in public_entry
+            for field in ("ticker", "ticker_source", "ticker_as_of")
+        )
+        master_fields_present = isinstance(master_entry, dict) and all(
+            field in master_entry
+            for field in ("ticker", "ticker_source", "ticker_as_of")
+        )
+        public_ok = (
+            public_fields_present
+            and public_entry.get("type") == "EQUITY"
+            and public_entry.get("mapping_status") == "resolved"
+            and public_entry.get("ticker") == ticker
+            and public_entry.get("ticker_source") in SEC_TICKER_SOURCES
+            and is_strict_iso_date(public_entry.get("ticker_as_of"))
+        )
+        master_ok = (
+            master_fields_present
+            and master_entry.get("cusip") == cusip
+            and master_entry.get("instrument_type") == "EQUITY"
+            and master_entry.get("mapping_status") == "resolved"
+            and master_entry.get("ticker") == ticker
+            and master_entry.get("ticker_source") in SEC_TICKER_SOURCES
+            and is_strict_iso_date(master_entry.get("ticker_as_of"))
+        )
+        fields_agree = public_ok and master_ok and all(
+            public_entry.get(field) == master_entry.get(field)
+            for field in (
+                "mapping_status",
+                "ticker",
+                "ticker_source",
+                "ticker_as_of",
+            )
+        )
+        if not fields_agree:
+            errors.append(
+                f"required SEC safety-case equity {cusip} must resolve "
+                f"exactly to {ticker} in both the public registry and the "
+                "private security master"
+            )
+
+    for cusip in sorted(SEC_TICKERLESS_NOTE_SAFETY_ANCHORS):
+        public_entry = registry.get(cusip)
+        master_entry = records.get(sec_security_key(cusip, "NOTE"))
+        public_mapping_fields_present = isinstance(public_entry, dict) and all(
+            field in public_entry
+            for field in ("ticker", "ticker_source", "ticker_as_of")
+        )
+        master_mapping_fields_present = isinstance(master_entry, dict) and all(
+            field in master_entry
+            for field in ("ticker", "ticker_source", "ticker_as_of")
+        )
+        public_ok = (
+            public_mapping_fields_present
+            and public_entry.get("type") == "NOTE"
+            and public_entry.get("security_kind") == "BOND"
+            and public_entry.get("mapping_status")
+            in SEC_MAPPING_STATUSES - {"resolved"}
+            and all(
+                public_entry.get(field) is None
+                for field in (
+                    "ticker",
+                    "ticker_source",
+                    "ticker_as_of",
+                    "underlying_ticker",
+                    "underlying_ticker_source",
+                    "underlying_ticker_as_of",
+                )
+            )
+        )
+        master_ok = (
+            master_mapping_fields_present
+            and master_entry.get("cusip") == cusip
+            and master_entry.get("instrument_type") == "NOTE"
+            and master_entry.get("mapping_status")
+            in SEC_MAPPING_STATUSES - {"resolved"}
+            and all(
+                master_entry.get(field) is None
+                for field in ("ticker", "ticker_source", "ticker_as_of")
+            )
+        )
+        fields_agree = public_ok and master_ok and all(
+            public_entry.get(field) == master_entry.get(field)
+            for field in (
+                "mapping_status",
+                "ticker",
+                "ticker_source",
+                "ticker_as_of",
+            )
+        )
+        if not fields_agree:
+            errors.append(
+                f"required SEC safety-case debt {cusip} must remain an "
+                "exact tickerless NOTE/BOND in both the public registry and "
+                "the private security master"
+            )
+
+
+def validate_private_sec_security_state(
+    registry: dict[str, dict],
+    errors: list[str],
+    *,
+    master_path: Path | None = None,
+    source_state_path: Path | None = None,
+    enforce_production_source_gates: bool = True,
+) -> None:
+    """Validate private SEC caches and reconcile the public registry to them."""
+
+    resolved_master_path = Path(master_path or SEC_SECURITY_MASTER_PATH)
+    resolved_source_path = Path(source_state_path or SEC_SOURCE_STATE_PATH)
+    for path, label in (
+        (resolved_master_path, "SEC security master"),
+        (resolved_source_path, "SEC source state"),
     ):
-        return False
-    if raw_ticker == str(cusip or "").strip().upper():
-        return False
-    if _SUSPICIOUS_TICKER_RE.search(raw_ticker):
-        return False
-    if legacy_equity_claims.get(raw_ticker, 0) > 1:
-        return False
-    return True
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"missing or invalid private {label}: {path}")
+    if any(
+        path.is_symlink() or not path.is_file()
+        for path in (resolved_master_path, resolved_source_path)
+    ):
+        return
+
+    try:
+        raw_source_state = json.loads(
+            resolved_source_path.read_text(encoding="utf-8")
+        )
+        if not isinstance(raw_source_state, dict):
+            raise SecurityMasterError(
+                "SEC source-state document must be an object"
+            )
+        raw_source_state_schema_version = raw_source_state.get(
+            "schema_version"
+        )
+        master = load_security_master(resolved_master_path)
+        source_state = load_source_state(resolved_source_path)
+        projected_audit = (
+            project_master_audit(master, source_state)
+            if enforce_production_source_gates
+            else None
+        )
+        production_gates = (
+            {
+                "minimum_current_symbol_population_by_kind": (
+                    PRODUCTION_MIN_CURRENT_SYMBOL_POPULATION_BY_KIND
+                ),
+                "minimum_current_symbol_title_ratio": (
+                    PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO
+                ),
+                "minimum_active_official_cusip_count": (
+                    PRODUCTION_MIN_ACTIVE_OFFICIAL_CUSIP_COUNT
+                ),
+                "enforce_latest_completed_official_period": True,
+            }
+            if enforce_production_source_gates
+            else {}
+        )
+        master_audit = audit_security_master(
+            master,
+            as_of=date.today(),
+            enforce_reported_identity_evidence=True,
+            **production_gates,
+        )
+    except (OSError, json.JSONDecodeError, SecurityMasterError) as error:
+        errors.append(f"invalid private SEC security state: {error}")
+        return
+    if not master_audit["ok"]:
+        errors.append(
+            "private SEC security master failed publication gates: "
+            + ", ".join(master_audit["issues"])
+        )
+    if enforce_production_source_gates:
+        schema_mismatches: list[str] = []
+        if (
+            raw_source_state_schema_version
+            != SOURCE_STATE_SCHEMA_VERSION
+        ):
+            schema_mismatches.append("source state")
+        if master.get("schema_version") != MASTER_SCHEMA_VERSION:
+            schema_mismatches.append("security master")
+        if (
+            master.get("source_state_schema_version")
+            != SOURCE_STATE_SCHEMA_VERSION
+        ):
+            schema_mismatches.append("master source-state binding")
+        audit_payload = master.get("audit")
+        if (
+            not isinstance(audit_payload, dict)
+            or audit_payload.get("schema_version")
+            != MASTER_AUDIT_SCHEMA_VERSION
+        ):
+            schema_mismatches.append("master audit")
+        if schema_mismatches:
+            errors.append(
+                "private SEC security state does not use the current "
+                "production schemas: " + ", ".join(schema_mismatches)
+            )
+        if master.get("audit") != projected_audit:
+            errors.append(
+                "private SEC security-master audit claims do not match the "
+                "retained SEC source state and record set"
+            )
+    if master.get("source_state_sha256") != source_state_sha256(source_state):
+        errors.append(
+            "private SEC security master is not bound to the current "
+            "source-state digest"
+        )
+
+    # The state digest alone is not sufficient: the master also carries a
+    # compact projection of the accepted SEC documents used by each record.
+    # Reconcile that projection back to the retained source state so a
+    # well-formed but substituted checksum cannot masquerade as evidence.
+    expected_source_references = {
+        (
+            str(source.get("url") or url),
+            str(source.get("sha256") or ""),
+            str(source.get("kind") or ""),
+        )
+        for url, source in source_state.get("sources", {}).items()
+        if isinstance(source, dict)
+    }
+    edgar_cache = source_state.get("edgar_evidence", {})
+    if isinstance(edgar_cache, dict):
+        expected_source_references.update(
+            (
+                str(source.get("url") or ""),
+                str(source.get("sha256") or ""),
+                str(source.get("kind") or ""),
+            )
+            for source in edgar_cache.get("sources", [])
+            if isinstance(source, dict)
+        )
+    actual_source_references = {
+        (
+            str(source.get("url") or ""),
+            str(source.get("sha256") or ""),
+            str(source.get("kind") or ""),
+        )
+        for source in master.get("sources", [])
+        if isinstance(source, dict)
+    }
+    if actual_source_references != expected_source_references:
+        errors.append(
+            "private SEC security master source checksums do not match the "
+            "current source state"
+        )
+
+    records = master.get("records")
+    if not isinstance(records, dict):
+        errors.append("private SEC security master has no records object")
+        return
+
+    # Reproject the compact stable timeline and its two reversible tail
+    # archives. This proves each published CUSIP/symbol/date against an exact
+    # SEC URL/hash without expanding the all-history corpus in memory.
+    master_cusips = {
+        normalize_security_identifier(entry.get("cusip"))
+        for entry in records.values()
+        if isinstance(entry, dict)
+        and normalize_security_identifier(entry.get("cusip"))
+    }
+    (
+        expected_ftd_evidence,
+        expected_ftd_intervals,
+        _latest_ftd_date,
+    ) = project_ftd_master_evidence(source_state, master_cusips)
+
+    validation_sources_by_symbol: dict[str, set[str]] = defaultdict(set)
+    validation_titles_by_symbol: dict[str, set[str]] = defaultdict(set)
+    validation_exchanges_by_symbol: dict[str, set[str]] = defaultdict(set)
+    validation_kinds = {
+        "sec_company_tickers",
+        "sec_company_exchange_tickers",
+        "sec_fund_tickers",
+    }
+    for source in source_state.get("sources", {}).values():
+        if not isinstance(source, dict) or source.get("kind") not in validation_kinds:
+            continue
+        kind = str(source["kind"])
+        for symbol in source.get("symbols", []):
+            if isinstance(symbol, str) and symbol:
+                validation_sources_by_symbol[symbol].add(kind)
+        for symbol, titles in source.get("symbol_titles", {}).items():
+            if isinstance(symbol, str) and isinstance(titles, list):
+                validation_titles_by_symbol[symbol].update(
+                    title for title in titles if isinstance(title, str)
+                )
+        for symbol, exchanges in source.get("symbol_exchanges", {}).items():
+            if isinstance(symbol, str) and isinstance(exchanges, list):
+                validation_exchanges_by_symbol[symbol].update(
+                    exchange for exchange in exchanges if isinstance(exchange, str)
+                )
+
+    official_candidates = [
+        (str(source.get("list_period") or ""), url, source)
+        for url, source in source_state.get("sources", {}).items()
+        if isinstance(source, dict) and source.get("kind") == "sec_13f_list"
+    ]
+    official_rows_by_cusip: dict[str, list[dict]] = defaultdict(list)
+    official_source_reference: dict[str, str] | None = None
+    if official_candidates:
+        official_period, official_url, official_source = max(
+            official_candidates,
+            key=lambda item: (item[0], item[1]),
+        )
+        official_source_reference = {
+            "period": official_period,
+            "url": official_url,
+            "sha256": str(official_source.get("sha256") or ""),
+        }
+        for row in official_source.get("records", []):
+            if not isinstance(row, dict):
+                continue
+            cusip = normalize_security_identifier(row.get("cusip"))
+            if cusip:
+                official_rows_by_cusip[cusip].append(dict(row))
+        for rows in official_rows_by_cusip.values():
+            rows.sort(
+                key=lambda row: (
+                    row.get("description") or "",
+                    row.get("issuer") or "",
+                    row.get("status") or "",
+                )
+            )
+
+    fund_records_by_symbol: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+    fund_pages_by_cik: dict[str, tuple[str, dict]] = {}
+    for url, source in source_state.get("sources", {}).items():
+        if not isinstance(source, dict):
+            continue
+        if source.get("kind") == "sec_fund_tickers":
+            for row in source.get("fund_records", []):
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("symbol") or "")
+                if symbol:
+                    fund_records_by_symbol[symbol].add(
+                        (
+                            str(row.get("cik") or ""),
+                            str(row.get("series_id") or ""),
+                            str(row.get("class_id") or ""),
+                        )
+                    )
+        elif source.get("kind") == "sec_fund_series":
+            fund_pages_by_cik[str(source.get("cik") or "")] = (url, source)
+    expected_fund_series_by_symbol: dict[str, dict] = {}
+    for symbol, candidates in sorted(fund_records_by_symbol.items()):
+        if len(candidates) != 1:
+            continue
+        cik, series_id, class_id = next(iter(candidates))
+        page = fund_pages_by_cik.get(cik)
+        if page is None:
+            continue
+        url, source = page
+        series_name = " ".join(
+            str(source.get("series_names", {}).get(series_id) or "").split()
+        )
+        class_name = " ".join(
+            str(source.get("class_names", {}).get(class_id) or "").split()
+        )
+        if not series_name:
+            continue
+        if not class_name or class_name.casefold() == series_name.casefold():
+            name = series_name
+        elif series_name.casefold() in class_name.casefold():
+            name = class_name
+        else:
+            name = f"{series_name} — {class_name}"
+        verified_at = source.get(
+            "last_successful_check_at",
+            source.get("accepted_at"),
+        )
+        expected_fund_series_by_symbol[symbol] = {
+            "symbol": symbol,
+            "name": name,
+            "cik": cik,
+            "series_id": series_id,
+            "class_id": class_id,
+            "url": url,
+            "sha256": str(source.get("sha256") or ""),
+            "verified_at": verified_at,
+        }
+
+    ftd_content_mismatches: list[str] = []
+    ftd_interval_mismatches: list[str] = []
+    validation_content_mismatches: list[str] = []
+    official_content_mismatches: list[str] = []
+    fund_series_content_mismatches: list[str] = []
+    edgar_content_mismatches: list[str] = []
+    cached_edgar_records = (
+        edgar_cache.get("records", {}) if isinstance(edgar_cache, dict) else {}
+    )
+    if not isinstance(cached_edgar_records, dict):
+        cached_edgar_records = {}
+    for key, master_entry in records.items():
+        if not isinstance(master_entry, dict):
+            continue
+        cusip = normalize_security_identifier(master_entry.get("cusip"))
+        if not cusip:
+            continue
+        if master_entry.get("symbol_evidence", []) != expected_ftd_evidence.get(
+            cusip, []
+        ):
+            ftd_content_mismatches.append(key)
+        if (
+            master.get("source_state_schema_version")
+            == SOURCE_STATE_SCHEMA_VERSION
+            and master_entry.get("symbol_intervals", [])
+            != expected_ftd_intervals.get(cusip, [])
+        ):
+            ftd_interval_mismatches.append(key)
+        candidate = master_entry.get("candidate_ticker")
+        if (
+            not candidate
+            and master_entry.get("mapping_status") == "resolved"
+            and master_entry.get("ticker_source") == "sec_ftd"
+        ):
+            candidate = master_entry.get("ticker")
+        if isinstance(candidate, str) and candidate:
+            if (
+                master_entry.get("symbol_validation_sources", [])
+                != sorted(validation_sources_by_symbol.get(candidate, set()))
+                or master_entry.get("symbol_validation_titles", [])
+                != sorted(validation_titles_by_symbol.get(candidate, set()))
+                or master_entry.get("symbol_validation_exchanges", [])
+                != sorted(validation_exchanges_by_symbol.get(candidate, set()))
+            ):
+                validation_content_mismatches.append(key)
+        official_rows = official_rows_by_cusip.get(cusip, [])
+        if official_rows and official_source_reference is not None:
+            active_rows = [
+                row
+                for row in official_rows
+                if row.get("status") != "*D*"
+                and str(row.get("description") or "").strip().upper()
+                not in {"CALL", "PUT"}
+            ]
+            official_status = (
+                "active"
+                if active_rows
+                else "deleted"
+                if all(row.get("status") == "*D*" for row in official_rows)
+                else "option_only"
+            )
+            expected_official = {
+                **official_source_reference,
+                "status": official_status,
+                "records": active_rows or official_rows,
+            }
+            if (
+                master_entry.get("official_13f") != expected_official
+                or master_entry.get("official_13f_status") != official_status
+                or master_entry.get("official_13f_as_of")
+                != official_source_reference["period"]
+            ):
+                official_content_mismatches.append(key)
+        elif any(
+            field in master_entry
+            for field in (
+                "official_13f",
+                "official_13f_status",
+                "official_13f_as_of",
+            )
+        ):
+            official_content_mismatches.append(key)
+        expected_fund_evidence = (
+            expected_fund_series_by_symbol.get(str(master_entry.get("ticker") or ""))
+            if master_entry.get("mapping_status") == "resolved"
+            else None
+        )
+        if (
+            master_entry.get("fund_series_evidence") != expected_fund_evidence
+            or master_entry.get("fund_series_name")
+            != (
+                expected_fund_evidence.get("name")
+                if isinstance(expected_fund_evidence, dict)
+                else None
+            )
+        ):
+            fund_series_content_mismatches.append(key)
+        if (
+            master_entry.get("mapping_status") == "resolved"
+            and master_entry.get("ticker_source") == "sec_ixbrl"
+        ):
+            cached = cached_edgar_records.get(cusip)
+            proof = master_entry.get("sec_edgar_evidence")
+            schedule = proof.get("schedule_13dg") if isinstance(proof, dict) else None
+            ixbrl = proof.get("ixbrl") if isinstance(proof, dict) else None
+            if (
+                not isinstance(cached, dict)
+                or master_entry.get("ticker") != cached.get("ticker")
+                or master_entry.get("ticker_as_of") != cached.get("ticker_as_of")
+                or master_entry.get("issuer") != cached.get("issuer_name")
+                or master_entry.get("security_class")
+                != cached.get("security_class")
+                or master_entry.get("exchange") != cached.get("exchange")
+                or master_entry.get("exchanges") != cached.get("exchanges")
+                or not isinstance(proof, dict)
+                or proof.get("issuer_cik") != cached.get("issuer_cik")
+                or not isinstance(schedule, dict)
+                or schedule.get("accession")
+                != cached.get("schedule_13dg_accession")
+                or schedule.get("url") != cached.get("schedule_13dg_url")
+                or schedule.get("as_of") != cached.get("schedule_13dg_as_of")
+                or not isinstance(ixbrl, dict)
+                or ixbrl.get("accession") != cached.get("ixbrl_accession")
+                or ixbrl.get("url") != cached.get("ixbrl_url")
+                or ixbrl.get("as_of") != cached.get("ixbrl_as_of")
+                or ixbrl.get("context_ids")
+                != cached.get("ixbrl_context_ids")
+            ):
+                edgar_content_mismatches.append(key)
+    if ftd_content_mismatches:
+        errors.append(
+            "private SEC security master FTD records do not match retained "
+            "SEC source rows; samples: "
+            + ", ".join(sorted(ftd_content_mismatches)[:10])
+        )
+    if ftd_interval_mismatches:
+        errors.append(
+            "private SEC security master FTD intervals do not match retained "
+            "SEC compact timeline; samples: "
+            + ", ".join(sorted(ftd_interval_mismatches)[:10])
+        )
+    if validation_content_mismatches:
+        errors.append(
+            "private SEC security master symbol validation metadata does not "
+            "match retained SEC source rows; samples: "
+            + ", ".join(sorted(validation_content_mismatches)[:10])
+        )
+    if official_content_mismatches:
+        errors.append(
+            "private SEC security master official-list records do not match "
+            "retained SEC source rows; samples: "
+            + ", ".join(sorted(official_content_mismatches)[:10])
+        )
+    if fund_series_content_mismatches:
+        errors.append(
+            "private SEC security master fund-series records do not match "
+            "retained SEC source rows; samples: "
+            + ", ".join(sorted(fund_series_content_mismatches)[:10])
+        )
+    if edgar_content_mismatches:
+        errors.append(
+            "private SEC security master iXBRL records do not match retained "
+            "SEC filing evidence; samples: "
+            + ", ".join(sorted(edgar_content_mismatches)[:10])
+        )
+
+    missing: list[str] = []
+    mismatched: list[str] = []
+    underlying_mismatched: list[str] = []
+    leaked_private_fields: list[str] = []
+    for cusip, entry in registry.items():
+        if not isinstance(entry, dict):
+            missing.append(cusip)
+            continue
+        if PRIVATE_SEC_EVIDENCE_FIELDS & set(entry):
+            leaked_private_fields.append(cusip)
+        key = sec_security_key(cusip, entry.get("type"))
+        master_entry = records.get(key)
+        if not isinstance(master_entry, dict):
+            missing.append(key)
+            continue
+        fields = ("mapping_status", "ticker", "ticker_source", "ticker_as_of")
+        if any(entry.get(field) != master_entry.get(field) for field in fields):
+            mismatched.append(key)
+        elif entry.get("product_name_source") == "sec_fund_series" and (
+            entry.get("product_name") != master_entry.get("fund_series_name")
+        ):
+            mismatched.append(key)
+
+        underlying_fields = (
+            "underlying_ticker",
+            "underlying_ticker_source",
+            "underlying_ticker_as_of",
+        )
+        present_underlying_fields = {
+            field for field in underlying_fields if field in entry
+        }
+        if present_underlying_fields:
+            equity_proof = records.get(sec_security_key(cusip, "EQUITY"))
+            complete_public_proof = (
+                present_underlying_fields == set(underlying_fields)
+                and expected_registry_position_ticker(entry, "CALL")
+                is not None
+            )
+            if (
+                not complete_public_proof
+                or not isinstance(equity_proof, dict)
+                or equity_proof.get("mapping_status") != "resolved"
+                or equity_proof.get("ticker_source") not in SEC_TICKER_SOURCES
+                or not is_strict_iso_date(equity_proof.get("ticker_as_of"))
+                or any(
+                    entry.get(public_field) != equity_proof.get(master_field)
+                    for public_field, master_field in (
+                        ("underlying_ticker", "ticker"),
+                        ("underlying_ticker_source", "ticker_source"),
+                        ("underlying_ticker_as_of", "ticker_as_of"),
+                    )
+                )
+            ):
+                underlying_mismatched.append(cusip)
+
+    if missing:
+        errors.append(
+            "cusip_registry.json has "
+            f"{len(missing)} entries absent from the exact private SEC "
+            f"security master; samples: {', '.join(sorted(missing)[:10])}"
+        )
+    if mismatched:
+        errors.append(
+            "cusip_registry.json has "
+            f"{len(mismatched)} mappings that differ from private SEC "
+            f"status or ticker provenance; samples: "
+            f"{', '.join(sorted(mismatched)[:10])}"
+        )
+    if underlying_mismatched:
+        errors.append(
+            "cusip_registry.json has "
+            f"{len(underlying_mismatched)} option-underlying mappings that "
+            "lack an exact resolved SEC EQUITY proof; samples: "
+            f"{', '.join(sorted(underlying_mismatched)[:10])}"
+        )
+    if leaked_private_fields:
+        errors.append(
+            "cusip_registry.json exposes private SEC evidence fields for "
+            f"{len(leaked_private_fields)} entries; samples: "
+            f"{', '.join(sorted(leaked_private_fields)[:10])}"
+        )
+    if enforce_production_source_gates:
+        validate_sec_safety_anchors(registry, master, errors)
 
 
 def _validate_v2_source_decision(
@@ -754,7 +1547,7 @@ def validate_amendment_composition(
     hash_version = quarter.get("composition_hash_version", 1)
     if (
         type(hash_version) is not int
-        or hash_version not in {1, _COMPOSITION_HASH_VERSION}
+        or hash_version not in {1, 2, _COMPOSITION_HASH_VERSION}
     ):
         errors.append(
             f"{context} has unsupported composition_hash_version "
@@ -836,6 +1629,104 @@ def validate_amendment_composition(
             f"{context} base_accession is not first in applied_accessions"
         )
 
+    raw_identity_sources = quarter.get("reported_identity_sources")
+    identity_sources: list[dict[str, str]] = []
+    if identity_version == _SECURITY_IDENTITY_VERSION:
+        if not isinstance(raw_identity_sources, list):
+            errors.append(
+                f"{context} security identity proof is missing "
+                "reported_identity_sources"
+            )
+        else:
+            for source_idx, source in enumerate(raw_identity_sources):
+                if not isinstance(source, dict) or set(source) != {
+                    "accession",
+                    "report_date",
+                    "url",
+                    "sha256",
+                }:
+                    errors.append(
+                        f"{context} reported identity source {source_idx} "
+                        "must contain accession, report_date, url, and sha256"
+                    )
+                    continue
+                accession = source.get("accession")
+                report_date = source.get("report_date")
+                url = source.get("url")
+                checksum = source.get("sha256")
+                try:
+                    normalized_url = normalize_sec_identity_source_url(
+                        url,
+                        accession=accession,
+                    )
+                except (Sec13FBulkError, TypeError, ValueError):
+                    normalized_url = None
+                if (
+                    not isinstance(accession, str)
+                    or accession not in applied_accessions
+                    or report_date != quarter.get("report_date")
+                    or not isinstance(url, str)
+                    or normalized_url != url
+                    or not isinstance(checksum, str)
+                    or _COMPOSITION_HASH_RE.fullmatch(checksum) is None
+                ):
+                    errors.append(
+                        f"{context} reported identity source {source_idx} "
+                        "is not canonical exact SEC evidence"
+                    )
+                    continue
+                identity_sources.append(source)
+            canonical_identity_sources = sorted(
+                identity_sources,
+                key=lambda source: (
+                    source["accession"],
+                    source["report_date"],
+                    source["url"],
+                    source["sha256"],
+                ),
+            )
+            if (
+                len(identity_sources) != len(raw_identity_sources)
+                or identity_sources != canonical_identity_sources
+                or len({
+                    (
+                        source["accession"],
+                        source["report_date"],
+                        source["url"],
+                        source["sha256"],
+                    )
+                    for source in identity_sources
+                })
+                != len(identity_sources)
+            ):
+                errors.append(
+                    f"{context} reported_identity_sources are not unique "
+                    "and canonically ordered"
+                )
+            if isinstance(holdings, list):
+                covered_filings = {
+                    (source["accession"], source["report_date"])
+                    for source in identity_sources
+                }
+                missing_evidence = sorted({
+                    (
+                        str(holding.get("accession") or ""),
+                        str(holding.get("report_date") or ""),
+                    )
+                    for holding in holdings
+                    if isinstance(holding, dict)
+                    and (
+                        str(holding.get("accession") or ""),
+                        str(holding.get("report_date") or ""),
+                    )
+                    not in covered_filings
+                })
+                if missing_evidence:
+                    errors.append(
+                        f"{context} reported_identity_sources do not cover "
+                        f"{len(missing_evidence)} holding filing identity(s)"
+                    )
+
     source_filings = quarter.get("source_filings")
     if not isinstance(source_filings, list):
         errors.append(f"{context} composition has non-list source_filings")
@@ -871,6 +1762,16 @@ def validate_amendment_composition(
             )
         elif source["applied"]:
             applied_sources.append(source)
+
+        nested_identity_source = source.get("reported_identity_source")
+        if nested_identity_source is not None and (
+            not isinstance(nested_identity_source, dict)
+            or nested_identity_source not in identity_sources
+        ):
+            errors.append(
+                f"{context} source {accession} has unbound reported "
+                "identity evidence"
+            )
 
         source_hash = source.get("source_hash")
         if not isinstance(source_hash, str) or not _COMPOSITION_HASH_RE.fullmatch(
@@ -1279,7 +2180,7 @@ def validate_amendment_composition(
 
     can_recompute = (
         type(hash_version) is int
-        and hash_version in {1, _COMPOSITION_HASH_VERSION}
+        and hash_version in {1, 2, _COMPOSITION_HASH_VERSION}
         and isinstance(holdings, list)
         and all(isinstance(holding, dict) for holding in holdings)
         and isinstance(raw_applied_accessions, list)
@@ -1308,9 +2209,10 @@ def validate_value_unit_peer_consistency(
         tuple[tuple[float, str], ...],
     ]
     | None = None,
+    *, paths: list[Path] | None = None,
 ) -> None:
     """Reject quarter-wide disagreements with same-security peers."""
-    for fp in sorted(FUNDS_DIR.glob("*.json")):
+    for fp in sorted(FUNDS_DIR.glob("*.json")) if paths is None else sorted(paths):
         try:
             with open(fp) as f:
                 fund = json.load(f)
@@ -1493,6 +2395,11 @@ def validate_funds(
     errors: list[str],
     registry: dict[str, dict] | None = None,
     quality_summary: dict[str, object] | None = None,
+    *,
+    paths: list[Path] | None = None,
+    check_peers: bool = True,
+    peer_observations: dict | None = None,
+    quantity_evidence: dict | None = None,
 ) -> tuple[
     dict[str, Path],
     dict[str, dict[str, set[str]]],
@@ -1510,21 +2417,16 @@ def validate_funds(
     expected_current_stats: dict[
         str, dict[str, int | float | None]
     ] = defaultdict(_empty_current_stats)
-    price_by_report_position: dict[
-        tuple[str, str, str], list[float]
-    ] = defaultdict(list)
-    price_by_position: dict[tuple[str, str], list[float]] = defaultdict(list)
-    quarter_peer_price_index: dict[
-        tuple[str, str, str], dict[str, list[float]]
-    ] = defaultdict(lambda: defaultdict(list))
-    zero_share_rows: list[
-        tuple[str, int, int, str, str, str, float]
-    ] = []
-    imputed_share_rows: list[
-        tuple[str, int, int, str, str, str, float, object]
-    ] = []
+    if quantity_evidence is None:
+        quantity_evidence = load_quantity_evidence(
+            cache_dir_for_funds(FUNDS_DIR) / "quantity_estimation_evidence.json"
+        )
+    quarter_peer_price_index = (
+        defaultdict(lambda: defaultdict(list))
+        if peer_observations is None else peer_observations
+    )
 
-    for fp in sorted(FUNDS_DIR.glob("*.json")):
+    for fp in sorted(FUNDS_DIR.glob("*.json")) if paths is None else sorted(paths):
         fund_files[fp.stem] = fp
         fund = load_json(fp, errors)
         if not isinstance(fund, dict):
@@ -1757,6 +2659,63 @@ def validate_funds(
                 holding_context = (
                     f"fund file {fp.name} quarter {idx} holding {h_idx}"
                 )
+                if "reported_identity_evidence" in holding:
+                    errors.append(
+                        f"{holding_context} contains forbidden holding-local "
+                        "reported_identity_evidence; exact SEC sources belong "
+                        "at the verified quarter level"
+                    )
+                if (
+                    quarter.get("composition_hash_version")
+                    == _COMPOSITION_HASH_VERSION
+                    and quarter.get("security_identity_version")
+                    == _SECURITY_IDENTITY_VERSION
+                ):
+                    # SEC information-table rows can contain a genuinely blank
+                    # as-filed issuer or class.  Presence and string type are
+                    # still part of the immutable v3 identity contract; never
+                    # substitute canonical display metadata for either field.
+                    for field in ("reported_issuer", "reported_class"):
+                        if field not in holding or not isinstance(
+                            holding[field], str
+                        ):
+                            errors.append(
+                                f"{holding_context} is missing or has malformed "
+                                f"immutable SEC field {field}"
+                            )
+                    for field in ("reported_cusip", "accession", "report_date"):
+                        value = holding.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            errors.append(
+                                f"{holding_context} is missing immutable SEC "
+                                f"field {field}"
+                            )
+                    reported_figi = holding.get("reported_figi")
+                    # Explicit null is exact negative SEC evidence, unlike an
+                    # omitted key (a legacy wildcard during backfill). Keep
+                    # that distinction so FIGI/null-FIGI rows verify one-to-one.
+                    if reported_figi is not None and (
+                        not isinstance(reported_figi, str)
+                        or not reported_figi.strip()
+                    ):
+                        errors.append(
+                            f"{holding_context} has invalid optional "
+                            "reported_figi"
+                        )
+                    if holding.get("report_date") != quarter.get("report_date"):
+                        errors.append(
+                            f"{holding_context} report_date does not match its "
+                            "quarter"
+                        )
+                    applied_accessions = quarter.get("applied_accessions")
+                    if (
+                        isinstance(applied_accessions, list)
+                        and holding.get("accession") not in applied_accessions
+                    ):
+                        errors.append(
+                            f"{holding_context} accession is not an applied "
+                            "SEC filing"
+                        )
                 validate_fund_holding_identity(
                     holding,
                     holding_context,
@@ -1776,7 +2735,31 @@ def validate_funds(
                 value = holding.get("value") or 0
                 shares = holding.get("shares") or 0
                 cusip = normalize_security_identifier(holding.get("cusip"))
-                holding_type = holding_instrument_type(holding)
+                registry_entry = registry.get(cusip) if cusip else None
+                published_type = published_holding_instrument_type(
+                    holding,
+                    registry_entry,
+                )
+                if isinstance(registry_entry, dict) and (
+                    holding.get("issuer") != registry_entry.get("name")
+                ):
+                    errors.append(
+                        f"{holding_context} issuer {holding.get('issuer')!r} "
+                        "does not match its canonical SEC registry issuer "
+                        f"{registry_entry.get('name')!r}"
+                    )
+                if isinstance(registry_entry, dict):
+                    expected_ticker = expected_registry_position_ticker(
+                        registry_entry,
+                        published_type,
+                    )
+                    if holding.get("ticker") != expected_ticker:
+                        errors.append(
+                            f"{holding_context} ticker "
+                            f"{holding.get('ticker')!r} does not match its "
+                            "exact SEC registry proof "
+                            f"{expected_ticker!r} for {published_type}"
+                        )
                 has_imputed_marker = "shares_imputed" in holding
                 shares_are_imputed = holding.get("shares_imputed") is True
                 if has_imputed_marker and not shares_are_imputed:
@@ -1795,53 +2778,13 @@ def validate_funds(
                             f"{reported_shares!r}; imputed rows must preserve "
                             "reported zero"
                         )
-                    imputed_share_rows.append(
-                        (
-                            fp.name,
-                            idx,
-                            h_idx,
-                            (
-                                quarter.get("report_date")
-                                if isinstance(quarter.get("report_date"), str)
-                                else ""
-                            ),
-                            cusip,
-                            holding_type,
-                            float(value),
-                            shares,
-                        )
-                    )
                 if cusip:
                     fund_cusips.add(cusip)
-                if (
-                    value > 0
-                    and shares > 0
-                    and not has_imputed_marker
-                    and cusip
+                for issue in validate_quantity_annotation(
+                    holding, quarter.get("report_date", ""), quantity_evidence,
+                    cik=str(cik) if cik is not None else None,
                 ):
-                    price = value / shares
-                    report_date = quarter.get("report_date")
-                    if isinstance(report_date, str) and report_date:
-                        price_by_report_position[
-                            (report_date, cusip, holding_type)
-                        ].append(price)
-                    price_by_position[(cusip, holding_type)].append(price)
-                elif value > 0 and shares == 0 and cusip:
-                    zero_share_rows.append(
-                        (
-                            fp.name,
-                            idx,
-                            h_idx,
-                            (
-                                quarter.get("report_date")
-                                if isinstance(quarter.get("report_date"), str)
-                                else ""
-                            ),
-                            cusip,
-                            holding_type,
-                            float(value),
-                        )
-                    )
+                    errors.append(f"{holding_context} {issue}")
 
                 if lookup_id:
                     if holding.get("cusip"):
@@ -1880,6 +2823,7 @@ def validate_funds(
                         "shares": 0,
                         "pct_of_fund": 0.0,
                         "shares_imputed": False,
+                        "quantity_unknown": False,
                     },
                 )
                 value = holding.get("value", 0) or 0
@@ -1889,6 +2833,9 @@ def validate_funds(
                 position["shares_imputed"] = bool(
                     position["shares_imputed"]
                     or holding.get("shares_imputed")
+                )
+                position["quantity_unknown"] = bool(
+                    position["quantity_unknown"] or holding.get("quantity_unknown")
                 )
                 if total_value > 0:
                     position["pct_of_fund"] += value / total_value * 100.0
@@ -1903,6 +2850,7 @@ def validate_funds(
                     shares=position["shares"],
                     pct_of_fund=pct_of_fund,
                     shares_imputed=bool(position["shares_imputed"]),
+                    quantity_unknown=bool(position["quantity_unknown"]),
                 )
                 if report_index >= 2:
                     continue
@@ -1924,83 +2872,30 @@ def validate_funds(
                     pct_of_fund=pct_of_fund,
                 )
 
-    report_refs = {
-        key: statistics.median(values)
-        for key, values in price_by_report_position.items()
-        if values
-    }
-    position_refs = {
-        key: statistics.median(values)
-        for key, values in price_by_position.items()
-        if values
-    }
-    for (
-        fp_name,
-        q_idx,
-        h_idx,
-        report_date,
-        cusip,
-        holding_type,
-        value,
-        shares,
-    ) in imputed_share_rows:
-        price = report_refs.get(
-            (report_date, cusip, holding_type)
-        ) or position_refs.get((cusip, holding_type))
-        if price is None or price <= 0 or value < price:
-            errors.append(
-                f"fund file {fp_name} quarter {q_idx} holding {h_idx} has "
-                "shares_imputed but no qualifying peer price"
-            )
-            continue
-        expected_shares = round(value / price, 6)
-        if float(expected_shares).is_integer():
-            expected_shares = int(expected_shares)
-        if shares != expected_shares:
-            errors.append(
-                f"fund file {fp_name} quarter {q_idx} holding {h_idx} has "
-                f"imputed shares {shares!r}; expected exactly "
-                f"{expected_shares!r} from the current peer price"
-            )
-    for (
-        fp_name,
-        q_idx,
-        h_idx,
-        report_date,
-        cusip,
-        holding_type,
-        value,
-    ) in zero_share_rows:
-        price = report_refs.get(
-            (report_date, cusip, holding_type)
-        ) or position_refs.get((cusip, holding_type))
-        if price is not None and value >= price:
-            errors.append(
-                f"fund file {fp_name} quarter {q_idx} holding {h_idx} has positive value but zero shares"
-            )
-    compiled_peer_prices = compile_peer_price_index(
-        quarter_peer_price_index,
-        consume=True,
-    )
-    unit_report_refs = {
-        (report_date, cusip): (
-            statistics.median(
-                price for price, _filer_id in observations
-            ),
-            len(observations),
+    if check_peers:
+        compiled_peer_prices = compile_peer_price_index(
+            quarter_peer_price_index,
+            consume=True,
         )
-        for (
-            report_date,
-            cusip,
-            instrument_type,
-        ), observations in compiled_peer_prices.items()
-        if instrument_type == "EQUITY" and len(observations) >= 4
-    }
-    validate_value_unit_peer_consistency(
-        unit_report_refs,
-        errors,
-        compiled_peer_prices,
-    )
+        unit_report_refs = {
+            (report_date, cusip): (
+                statistics.median(
+                    price for price, _filer_id in observations
+                ),
+                len(observations),
+            )
+            for (
+                report_date,
+                cusip,
+                instrument_type,
+            ), observations in compiled_peer_prices.items()
+            if instrument_type == "EQUITY" and len(observations) >= 4
+        }
+        validate_value_unit_peer_consistency(
+            unit_report_refs,
+            errors,
+            compiled_peer_prices,
+        )
     return (
         fund_files,
         stock_groups,
@@ -2044,6 +2939,19 @@ def validate_pipeline_state(
     processed_set = {
         accession for accession in processed if isinstance(accession, str)
     }
+
+    feed_pending = state.get("recent_feed_pending", {})
+    if not isinstance(feed_pending, dict):
+        errors.append("pipeline_state.json has invalid recent_feed_pending")
+    else:
+        for accession, filing in feed_pending.items():
+            if (not isinstance(accession, str)
+                or not re.fullmatch(r"[0-9]{10}-[0-9]{2}-[0-9]{6}", accession)
+                or not isinstance(filing, dict)
+                or filing.get("accession") != accession
+                or type(filing.get("cik")) is not int or filing["cik"] <= 0
+                or accession in processed_set):
+                errors.append(f"pipeline_state.json has invalid pending feed accession {accession!r}")
 
     for accession, target in sorted(pending.items()):
         context = f"pending amendment migration {accession}"
@@ -2443,6 +3351,14 @@ def _exact_registry_issuer_matches(entry: dict, pattern: re.Pattern) -> bool:
 def expected_filer_fund_kind(entry: dict) -> str | None:
     """Independently identify only deterministic filer-side fund evidence."""
 
+    # An issuer name alone cannot override a retained debt/preferred/warrant
+    # identity. The SEC cutover preserves those conflicting as-filed buckets
+    # and withholds unsupported tickers. A published fund kind on such a bucket
+    # is still rejected by the independent non-equity-fund check below.
+    if normalize_instrument_type(entry.get("type")) not in {
+        "EQUITY", "CALL", "PUT", "OPT"
+    }:
+        return None
     issuer_text = " ".join((
         _normalized_registry_text(entry, "name"),
         _normalized_registry_text(entry, "dominant_issuer"),
@@ -2452,127 +3368,45 @@ def expected_filer_fund_kind(entry: dict) -> str | None:
         return None
     if _exact_registry_issuer_matches(entry, _EXCLUSIVE_ETF_ISSUER_RE):
         return "ETF"
-
-    ticker = str(entry.get("ticker") or "").strip().upper()
-    sources = set(entry.get("sources") or [])
-    if (
-        (
-            _exact_registry_issuer_matches(entry, _SCHWAB_STRATEGIC_TR_RE)
-            or _exact_registry_issuer_matches(entry, _RBB_FD_INC_RE)
-        )
-        and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,15}", ticker)
-        and not is_mutual_fund_ticker(ticker)
-        and "ticker_collision_demoted" not in sources
-        and bool(sources & _FUND_IDENTITY_TICKER_SOURCES)
-        and "SELF-DIRECTED ACCOUNT" not in dominant_class
-    ):
-        return "ETF"
     return None
 
 
 def registry_entry_has_fund_evidence(entry: dict | None) -> bool:
+    """Detect listed-fund evidence independently of the recorded type.
+
+    This validator helper must remain type-agnostic so it can flag a fund that
+    was incorrectly published as NOTE, PREF, or WARRANT.  Untyped ticker-only
+    evidence still uses the shared fail-closed SEC proof predicate.
+    """
+
     if not isinstance(entry, dict):
         return False
     if (
         normalize_security_kind(entry.get("security_kind"))
-        in _EQUITY_FUND_SECURITY_KINDS
+        in EQUITY_FUND_SECURITY_KINDS
     ):
         return True
-    probe = dict(entry)
-    probe["type"] = "EQUITY"
-    return registry_entry_has_equity_fund_identity(probe)
+    return registry_entry_has_trusted_fund_symbol_evidence(entry)
 
 
 def validate_registry(
     fund_cusips: set[str],
     errors: list[str],
     registry: dict[str, dict] | None = None,
-    company_tickers: dict | list | None = None,
 ) -> dict[str, dict]:
     if registry is None:
         registry = load_json(CUSIP_REGISTRY_PATH, errors)
     if not isinstance(registry, dict):
         return {}
 
+    validate_sec_mapping_provenance(registry, errors)
+    validate_public_registry_provenance(registry, errors)
+
     missing = sorted(cusip for cusip in fund_cusips if cusip not in registry)
     if missing:
         errors.append(
             f"cusip_registry.json missing {len(missing)} fund CUSIPs; "
             f"samples: {', '.join(missing[:10])}"
-        )
-
-    raw_legacy_sources = sorted(
-        cusip for cusip, entry in registry.items()
-        if "cusip_map" in set(entry.get("sources") or [])
-    )
-    if raw_legacy_sources:
-        errors.append(
-            f"cusip_registry.json still has {len(raw_legacy_sources)} raw cusip_map-sourced entries; "
-            f"samples: {', '.join(raw_legacy_sources[:10])}"
-        )
-
-    vetted_claims: Counter[str] = Counter(
-        str(entry.get("ticker") or "").strip().upper()
-        for entry in registry.values()
-        if (
-            entry.get("type") == "EQUITY"
-            and "cusip_map_vetted" in set(entry.get("sources") or [])
-            and entry.get("ticker")
-        )
-    )
-    bad_vetted = []
-    for cusip, entry in registry.items():
-        sources = set(entry.get("sources") or [])
-        if "cusip_map_vetted" not in sources:
-            continue
-        if not allow_vetted_legacy_registry_ticker(
-            cusip=cusip,
-            ticker=entry.get("ticker"),
-            instrument_type=normalize_instrument_type(entry.get("type")),
-            legacy_equity_claims=vetted_claims,
-            dominant_class=entry.get("dominant_class"),
-        ):
-            bad_vetted.append(cusip)
-    if bad_vetted:
-        errors.append(
-            f"cusip_registry.json has {len(bad_vetted)} vetted legacy entries that fail plausibility checks; "
-            f"samples: {', '.join(bad_vetted[:10])}"
-        )
-
-    bad_note_labels = sorted(
-        cusip
-        for cusip, entry in registry.items()
-        if (
-            (
-                normalize_instrument_type(entry.get("type")) == "NOTE"
-                and entry.get("ticker")
-                and (
-                    normalize_note_security_label(entry.get("ticker"))
-                    != entry.get("ticker")
-                    or "note_label_vetted"
-                    not in set(entry.get("sources") or [])
-                )
-            )
-            or (
-                "note_label_vetted" in set(entry.get("sources") or [])
-                and (
-                    normalize_instrument_type(entry.get("type")) != "NOTE"
-                    or normalize_note_security_label(entry.get("ticker"))
-                    != entry.get("ticker")
-                )
-            )
-            or (
-                normalize_instrument_type(entry.get("type")) != "NOTE"
-                and normalize_note_security_label(entry.get("ticker"))
-            )
-        )
-    )
-    if bad_note_labels:
-        errors.append(
-            "cusip_registry.json has "
-            f"{len(bad_note_labels)} NOTE labels that fail canonical "
-            "format, type, or provenance checks; samples: "
-            f"{', '.join(bad_note_labels[:10])}"
         )
 
     non_note_bonds = sorted(
@@ -2588,28 +3422,6 @@ def validate_registry(
             "cusip_registry.json classifies "
             f"{len(non_note_bonds)} bonds as non-NOTE instruments; samples: "
             f"{', '.join(non_note_bonds[:10])}"
-        )
-
-    manual_kind_mismatches = sorted(
-        f"{cusip}:{expected_kind}"
-        for cusip, raw_expected_kind in MANUAL_SECURITY_KIND_OVERRIDES.items()
-        if cusip in registry
-        and (
-            (expected_kind := normalize_security_kind(raw_expected_kind))
-            != normalize_security_kind(
-                registry[cusip].get("security_kind")
-            )
-            or str(
-                registry[cusip].get("security_kind_source") or ""
-            ).strip()
-            != "manual_verified"
-        )
-    )
-    if manual_kind_mismatches:
-        errors.append(
-            "cusip_registry.json differs from manual security-kind proof for "
-            f"{len(manual_kind_mismatches)} entries; samples: "
-            + ", ".join(manual_kind_mismatches[:10])
         )
 
     non_equity_funds = sorted(
@@ -2645,218 +3457,6 @@ def validate_registry(
             + ", ".join(filer_fund_kind_mismatches[:10])
         )
 
-    consensus_cusips = sorted(
-        cusip
-        for cusip, entry in registry.items()
-        if "option_family_consensus" in set(entry.get("sources") or [])
-    )
-    dangling_consensus_evidence = sorted(
-        cusip
-        for cusip, entry in registry.items()
-        if (
-            entry.get("ticker_evidence_cusips") is not None
-            and "option_family_consensus"
-            not in set(entry.get("sources") or [])
-        )
-    )
-    alias_cusips = sorted(
-        cusip
-        for cusip, entry in registry.items()
-        if "sec_validated_ticker_alias" in set(entry.get("sources") or [])
-    )
-    if (alias_cusips or consensus_cusips) and company_tickers is None:
-        company_tickers = load_json(COMPANY_TICKERS_PATH, errors)
-    sec_titles = sec_ticker_titles(company_tickers)
-
-    malformed_consensus = set(dangling_consensus_evidence)
-    for cusip in consensus_cusips:
-        entry = registry[cusip]
-        ticker = str(entry.get("ticker") or "").strip().upper()
-        target_issuer = sec_issuer_proof_key(
-            entry.get("dominant_issuer") or entry.get("name")
-        )
-        evidence = entry.get("ticker_evidence_cusips")
-        if (
-            normalize_instrument_type(entry.get("type")) != "EQUITY"
-            or not ticker
-            or not target_issuer
-            or is_synthetic_identifier(cusip)
-            or "ticker_collision_demoted"
-            in set(entry.get("sources") or [])
-            or "sec_title" not in set(entry.get("sources") or [])
-            or not isinstance(evidence, list)
-            or evidence != sorted(set(evidence))
-            or len(evidence) < 2
-            or sec_issuer_proof_key(sec_titles.get(ticker))
-            != target_issuer
-        ):
-            malformed_consensus.add(cusip)
-            continue
-
-        expected_evidence = sorted(
-            child_cusip
-            for child_cusip, child in registry.items()
-            if (
-                child_cusip[:6] == cusip[:6]
-                and normalize_instrument_type(child.get("type"))
-                in {"CALL", "PUT", "OPT"}
-                and "derived_option_text"
-                in set(child.get("sources") or [])
-                and sec_issuer_proof_key(
-                    child.get("dominant_issuer") or child.get("name")
-                )
-                == target_issuer
-            )
-        )
-        evidence_entries = [
-            registry.get(child_cusip)
-            for child_cusip in evidence
-        ]
-        linked_targets = {
-            str(child.get("underlying_cusip") or "").strip().upper()
-            for child in evidence_entries
-            if isinstance(child, dict)
-            and str(child.get("underlying_cusip") or "").strip()
-        }
-        has_explicit_target_link = linked_targets == {cusip}
-        evidence_types = {
-            normalize_instrument_type(child.get("type"))
-            for child in evidence_entries
-            if isinstance(child, dict)
-        }
-        target_filer_text = " ".join(
-            str(entry.get(field) or "").strip()
-            for field in ("name", "dominant_issuer", "dominant_class")
-        )
-        target_has_noncommon_identity = (
-            normalize_security_kind(entry.get("security_kind"))
-            not in {None, "COMMON"}
-            or expected_filer_fund_kind(entry) is not None
-            or bool(_ETN_KIND_RE.search(target_filer_text))
-            or bool(
-                _CONSENSUS_NONCOMMON_CLASS_RE.search(
-                    str(entry.get("dominant_class") or "")
-                )
-            )
-        )
-        if (
-            evidence != expected_evidence
-            or not {"CALL", "PUT"}.issubset(evidence_types)
-            or target_has_noncommon_identity
-            or any(
-                not isinstance(child, dict)
-                or str(child.get("ticker") or "").strip().upper() != ticker
-                or str(child.get("last_seen") or "")
-                > str(entry.get("last_seen") or "")
-                or (
-                    child.get("underlying_cusip")
-                    and str(child.get("underlying_cusip")).strip().upper()
-                    != cusip
-                )
-                for child in evidence_entries
-            )
-            or any(
-                other_cusip != cusip
-                and normalize_instrument_type(other.get("type")) == "EQUITY"
-                and str(other.get("ticker") or "").strip().upper() == ticker
-                for other_cusip, other in registry.items()
-            )
-            or any(
-                other_cusip != cusip
-                and other_cusip[:6] == cusip[:6]
-                and normalize_instrument_type(other.get("type")) == "EQUITY"
-                and sec_issuer_proof_key(
-                    other.get("dominant_issuer") or other.get("name")
-                )
-                == target_issuer
-                and (
-                    str(other.get("last_seen") or "")
-                    > str(entry.get("last_seen") or "")
-                    or (
-                        not has_explicit_target_link
-                        and str(other.get("last_seen") or "")
-                        == str(entry.get("last_seen") or "")
-                    )
-                )
-                for other_cusip, other in registry.items()
-            )
-        ):
-            malformed_consensus.add(cusip)
-    if malformed_consensus:
-        errors.append(
-            "cusip_registry.json has "
-            f"{len(malformed_consensus)} option-family ticker derivations "
-            "without complete independent proof; samples: "
-            f"{', '.join(sorted(malformed_consensus)[:10])}"
-        )
-
-    validated_aliases = {
-        cusip
-        for cusip in alias_cusips
-        if registry_alias_has_sec_proof(registry[cusip], sec_titles)
-    }
-    malformed_aliases = sorted(set(alias_cusips) - validated_aliases)
-    if malformed_aliases:
-        errors.append(
-            "cusip_registry.json has "
-            f"{len(malformed_aliases)} SEC-validated ticker aliases that "
-            "fail independent source-ticker, issuer, or SEC-title proof; "
-            f"samples: {', '.join(malformed_aliases[:10])}"
-        )
-
-    equity_claims: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-    for cusip, entry in registry.items():
-        ticker = str(entry.get("ticker") or "").strip().upper()
-        if ticker and entry.get("type") == "EQUITY":
-            equity_claims[ticker].append((cusip, entry))
-
-    collisions: dict[str, list[str]] = {}
-    for ticker, claims in equity_claims.items():
-        if len(claims) <= 1:
-            continue
-        sec_title = sec_titles.get(ticker)
-        sec_issuer = sec_issuer_proof_key(sec_title)
-        same_sec_issuer = bool(
-            sec_title
-            and sec_issuer
-            and any(cusip in validated_aliases for cusip, _entry in claims)
-            and all(
-                normalize_issuer_key(entry.get("name"))
-                == normalize_issuer_key(sec_title)
-                and sec_issuer_proof_key(entry.get("dominant_issuer"))
-                == sec_issuer
-                for _cusip, entry in claims
-            )
-        )
-        if not same_sec_issuer:
-            collisions[ticker] = [
-                cusip for cusip, _entry in claims
-            ]
-    if collisions:
-        samples = ", ".join(
-            f"{ticker}: {','.join(cusips)}"
-            for ticker, cusips in sorted(collisions.items())[:5]
-        )
-        errors.append(
-            f"cusip_registry.json has {len(collisions)} EQUITY ticker "
-            "collision(s) without a same-issuer SEC alias proof; "
-            f"samples: {samples}"
-        )
-
-    apple = registry.get("037833100")
-    if apple and apple.get("ticker") != "AAPL":
-        errors.append("cusip_registry.json should map 037833100 to AAPL")
-
-    typo = registry.get("378331003")
-    if typo and typo.get("ticker"):
-        errors.append("cusip_registry.json should keep 378331003 unresolved")
-
-    for option_cusip in ("99QA1RO84", "7769499XX", "7879869CC"):
-        entry = registry.get(option_cusip)
-        if entry and entry.get("ticker") != "AAPL":
-            errors.append(
-                f"cusip_registry.json should derive {option_cusip} to AAPL"
-            )
     return registry
 
 
@@ -2900,7 +3500,12 @@ def validate_security_labels(
     expected_fund_identities = sorted(
         cusip
         for cusip, entry in registry.items()
-        if registry_entry_has_equity_fund_identity(entry)
+        if registry_entry_has_fund_evidence(entry)
+        # The browser marker identifies fund shares, not explicit options on
+        # those funds. Keep the type-agnostic check for other instrument types
+        # so an incorrectly published NOTE/PREF/WARRANT fund still fails.
+        and normalize_instrument_type(entry.get("type"))
+        not in {"CALL", "PUT", "OPT"}
     )
     if (
         any(
@@ -3046,8 +3651,8 @@ def validate_security_labels(
             registry_entry.get("security_kind_source") or ""
         ).strip()
         if not (
-            source.startswith("openfigi")
-            or source in {"filer_metadata", "manual_verified"}
+            source in SEC_METADATA_SOURCES
+            or source == "filer_metadata"
         ):
             bad_kind_sources.append(cusip)
         filer_text = " ".join(
@@ -3136,12 +3741,10 @@ def validate_security_labels(
             )
         )
         if not (
-            provenance_source.startswith("openfigi")
+            provenance_source in SEC_TICKER_SOURCES
             or provenance_source in {
                 "filer_class",
                 "filer_issuer_class",
-                "manual_name_class",
-                "manual_name_override",
                 "sec_fund_series",
                 "sec_title_class",
             }
@@ -3150,10 +3753,7 @@ def validate_security_labels(
             bad_product_name_sources.append(cusip)
         if entry_kind not in _FUND_PRODUCT_NAME_KINDS:
             invalid_product_name_kinds.append(cusip)
-        symbol = _registry_fund_symbol(
-            identifier=cusip,
-            entry=registry_entry,
-        )
+        symbol = str(registry_entry.get("ticker") or "").strip().upper()
         if symbol:
             product_name_symbols[str(product_name).casefold()].add(symbol)
     dangling_product_name_sources = sorted(
@@ -3251,6 +3851,7 @@ def validate_stocks(
     expected_split_adjustments: dict[str, list[dict]] | None = None,
     *,
     registry: dict[str, dict] | None = None,
+    paths: list[Path] | None = None,
 ) -> dict[str, Path]:
     validate_calendars = fund_calendars is not None
     reconcile_current = (
@@ -3264,7 +3865,7 @@ def validate_stocks(
     seen_stock_ids: set[str] = set()
     bad_fund_non_option_artifacts: list[str] = []
     fund_non_option_types: dict[str, set[str]] = defaultdict(set)
-    for fp in sorted(STOCKS_DIR.glob("*.json")):
+    for fp in sorted(STOCKS_DIR.glob("*.json")) if paths is None else sorted(paths):
         stock_files[fp.stem] = fp
         stock = load_json(fp, errors)
         if not isinstance(stock, dict):
@@ -3308,14 +3909,25 @@ def validate_stocks(
 
         registry_entry = (registry or {}).get(cusip) or {}
         if (
-            registry_entry_has_equity_fund_identity(registry_entry)
+            registry_entry_has_fund_evidence(registry_entry)
             and instrument_type not in {"CALL", "PUT", "OPT"}
         ):
-            fund_non_option_types[cusip].add(instrument_type)
-            if instrument_type != "EQUITY":
-                bad_fund_non_option_artifacts.append(
-                    f"{cusip}|{instrument_type}"
-                )
+            # A CUSIP-wide fund label cannot rewrite an exact retained
+            # NOTE/PREF/WARRANT identity. Such an artifact is permitted only
+            # when the independent fund projection contains its typed history;
+            # the full history reconciliation below must still match exactly.
+            # Missing, invented, merged, or mistickered identities still fail.
+            retained_typed_history = (
+                reconcile_current
+                and instrument_type != "EQUITY"
+                and expected_current_stats.get(stock_id, {}).get("history_count", 0)
+            )
+            if not retained_typed_history:
+                fund_non_option_types[cusip].add(instrument_type)
+                if instrument_type != "EQUITY":
+                    bad_fund_non_option_artifacts.append(
+                        f"{cusip}|{instrument_type}"
+                    )
 
         raw_ticker = stock.get("ticker")
         normalized_note_label = normalize_note_security_label(raw_ticker)
@@ -3333,6 +3945,27 @@ def validate_stocks(
                 f"stock file {fp.name} publishes NOTE label "
                 f"{raw_ticker!r} on instrument_type {instrument_type}"
             )
+
+        if registry is not None and registry_entry:
+            expected_public_ticker = (
+                expected_registry_position_ticker(
+                    registry_entry,
+                    instrument_type,
+                )
+                or cusip
+            )
+            if stock.get("ticker") != expected_public_ticker:
+                errors.append(
+                    f"stock file {fp.name} ticker {stock.get('ticker')!r} "
+                    "does not match its exact SEC registry display ticker "
+                    f"{expected_public_ticker!r}"
+                )
+            if stock.get("issuer") != registry_entry.get("name"):
+                errors.append(
+                    f"stock file {fp.name} issuer {stock.get('issuer')!r} "
+                    "does not match its canonical SEC registry issuer "
+                    f"{registry_entry.get('name')!r}"
+                )
 
         expected_stock_id = stock_lookup_id(cusip, instrument_type)
         if stock_id and stock_id != expected_stock_id:
@@ -3478,6 +4111,8 @@ def validate_stocks(
                         f"{e_idx} has non-numeric position data"
                     )
 
+                if "quantity_unknown" in entry and entry.get("quantity_unknown") is not True:
+                    errors.append(f"stock file {fp.name} has invalid quantity_unknown marker")
                 if (
                     "shares_imputed" in entry
                     and entry.get("shares_imputed") is not True
@@ -3496,6 +4131,7 @@ def validate_stocks(
                         shares=entry["shares"],
                         pct_of_fund=entry["pct_of_fund"],
                         shares_imputed=bool(entry.get("shares_imputed")),
+                        quantity_unknown=bool(entry.get("quantity_unknown")),
                     )
                     if report_date in transition_dates:
                         _add_transition_observation(
@@ -3953,8 +4589,25 @@ def validate_index(
         seen_stock_ids.add(lookup_id)
         indexed_entries_by_stock_id[lookup_id] = entry
         registry_entry = registry.get(cusip) or {}
+        if registry_entry:
+            expected_search_ticker = expected_registry_position_ticker(
+                registry_entry,
+                instrument_type,
+            )
+            if entry.get("ticker") != expected_search_ticker:
+                errors.append(
+                    f"index.json ticker entry {lookup_id} publishes "
+                    f"ticker {entry.get('ticker')!r}, expected exact SEC "
+                    f"registry ticker {expected_search_ticker!r}"
+                )
+            if entry.get("issuer") != registry_entry.get("name"):
+                errors.append(
+                    f"index.json ticker entry {lookup_id} publishes issuer "
+                    f"{entry.get('issuer')!r}, expected canonical SEC "
+                    f"registry issuer {registry_entry.get('name')!r}"
+                )
         if (
-            registry_entry_has_equity_fund_identity(registry_entry)
+            registry_entry_has_fund_evidence(registry_entry)
             and instrument_type not in {"EQUITY", "CALL", "PUT", "OPT"}
         ):
             bad_fund_index_rows.append(lookup_id)
@@ -4011,7 +4664,7 @@ def validate_index(
         cusip
         for cusip, entry in registry.items()
         if (
-            registry_entry_has_equity_fund_identity(entry)
+            registry_entry_has_fund_evidence(entry)
             and str(entry.get("ticker") or "").strip()
             and stock_file_stem(cusip) in stock_files
             and (
@@ -4154,7 +4807,11 @@ def validate_funds_index(
         )
 
 
-def main() -> int:
+def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_cache: bool = False) -> int:
+    cache = None
+    if incremental:
+        from incremental_validation import ValidationCache
+        cache = ValidationCache(sys.modules[__name__], cache_path, reuse=not refresh_cache)
     errors: list[str] = []
     warnings: list[str] = []
     quality_summary: dict[str, object] = {
@@ -4184,7 +4841,8 @@ def main() -> int:
         fund_cusips,
         fund_calendars,
         expected_current_stats,
-    ) = validate_funds(errors, registry, quality_summary)
+    ) = (cache.validate_funds(errors, registry, quality_summary)
+         if cache is not None else validate_funds(errors, registry, quality_summary))
     raw_legacy_month_filing_dates = quality_summary[
         "legacy_month_precision_filing_dates"
     ]
@@ -4218,7 +4876,8 @@ def main() -> int:
         quality_summary,
     )
     expected_split_adjustments: dict[str, list[dict]] = {}
-    stock_files = validate_stocks(
+    stock_validator = cache.validate_stocks if cache is not None else validate_stocks
+    stock_files = stock_validator(
         errors,
         fund_calendars,
         expected_current_stats,
@@ -4227,6 +4886,7 @@ def main() -> int:
     )
     if registry_is_valid:
         registry = validate_registry(fund_cusips, errors, registry)
+        validate_private_sec_security_state(registry, errors)
         validate_security_labels(registry, errors)
 
     index = load_json(INDEX_PATH, errors)
@@ -4318,6 +4978,8 @@ def main() -> int:
         for warning in warnings:
             print(f"  - {warning}")
 
+    if cache is not None:
+        cache.finish(success=not errors)
     if errors:
         print("Validation failed:")
         for error in errors:
@@ -4334,4 +4996,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--incremental", action="store_true", help="Reuse content-bound successful checks; all global gates still run")
+    parser.add_argument("--refresh-cache", action="store_true", help="Run every file check and replace cached results (requires --incremental)")
+    args = parser.parse_args()
+    if args.refresh_cache and not args.incremental:
+        parser.error("--refresh-cache requires --incremental")
+    sys.exit(main(incremental=args.incremental, refresh_cache=args.refresh_cache))

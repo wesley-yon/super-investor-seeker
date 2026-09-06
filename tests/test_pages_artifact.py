@@ -35,7 +35,7 @@ class PagesArtifactTests(unittest.TestCase):
         (source / "data/ticker_health.json").write_text('{"private":true}\n')
         (source / "data/cusip_registry.json").write_text('{"private":true}\n')
         (source / "data/cache").mkdir()
-        (source / "data/cache/openfigi.json").write_text('{"private":true}\n')
+        (source / "data/cache/sec_evidence.json").write_text('{"private":true}\n')
         (source / ".cache").mkdir()
         (source / ".cache/cusip-map.json").write_text('{"private":true}\n')
         (source / "data/funds/1.json").write_text(
