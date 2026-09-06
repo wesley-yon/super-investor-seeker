@@ -612,7 +612,7 @@ gh_mutate_once() {
         refresh = read(".github/workflows/refresh-cusip-registry.yml")
 
         self.assertIn("cron: '23 11-23 * * 1-5'", update)
-        self.assertIn("cron: '23 4 * * 0'", refresh)
+        self.assertIn("cron: '23 4 * * *'", refresh)
         self.assertNotRegex(update, r"(?m)^\s*- cron: '0 ")
         self.assertNotRegex(refresh, r"(?m)^\s*- cron: '0 ")
 
@@ -621,7 +621,7 @@ gh_mutate_once() {
         rebuild = read(".github/workflows/refresh-cusip-registry.yml")
 
         self.assertIn(
-            "pipeline.py --regenerate-only --refresh-security-master",
+            "python scripts/incremental_pipeline.py regenerate",
             update,
         )
         self.assertIn(

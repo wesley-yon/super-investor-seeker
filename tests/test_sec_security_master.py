@@ -3577,6 +3577,31 @@ class AcceptanceAuditTests(unittest.TestCase):
 
 
 class PersistenceAndRefreshTests(unittest.TestCase):
+    def test_offline_new_identity_extension_preserves_proof_and_defers_new_symbols(self):
+        payloads = self.make_payloads()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            prior = master.refresh_security_master(
+                self.universe(), master_path=root / 'master.json', source_state_path=root / 'state.json',
+                fetcher=payloads.__getitem__, now=datetime(2026, 8, 20, 12, tzinfo=timezone.utc),
+                recheck_recent_archives=0)
+            additions = [{'cusip': '594918104', 'instrument_type': 'EQUITY', 'reported_issuer': 'MICROSOFT CORP', 'reported_class': 'COM'},
+                         {'cusip': '037833100', 'instrument_type': 'NOTE', 'reported_issuer': 'APPLE INC', 'reported_class': 'NOTE'}]
+            with mock.patch.object(requests.Session, 'request', side_effect=AssertionError('offline extension must not fetch')):
+                extended = master._retain_prior_mappings_with_unresolved_extensions(
+                    prior.master, prior.state, additions,
+                    new_identity_reason='sec_evidence_refresh_pending_new_identity')
+            self.assertEqual(prior.master['records']['037833100|EQUITY'], extended['records']['037833100|EQUITY'])
+            self.assertEqual('AAPL', extended['records']['037833100|EQUITY']['ticker'])
+            for key in ('594918104|EQUITY', '037833100|NOTE'):
+                self.assertIsNone(extended['records'][key]['ticker'])
+            self.assertEqual('sec_evidence_refresh_pending_new_identity', extended['records']['594918104|EQUITY']['resolution_reason'])
+            self.assertEqual(master.project_master_audit(extended, prior.state), extended['audit'])
+            master.save_security_master_pair(extended, prior.state, master_path=root / 'master.json', source_state_path=root / 'state.json')
+            loaded, source = master.load_security_master_pair(master_path=root / 'master.json', source_state_path=root / 'state.json')
+            self.assertEqual(extended, loaded)
+            self.assertEqual(prior.state, source)
+
     def make_payloads(self) -> dict[str, bytes]:
         ftd_page = f'<a href="{FTD_URL}">August 2026 first half</a>'.encode()
         list_page = f'<a href="{LIST_URL}">TXT</a>'.encode()

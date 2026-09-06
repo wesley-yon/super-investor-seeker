@@ -7059,6 +7059,10 @@ def save_state(state: dict) -> None:
     quarantined = state.get("_quarantined", {})
     out = {
         "processed": sorted(state.get("_processed_set", set())),
+        "recent_feed_pending": {
+            key: filing for key, filing in state.get("recent_feed_pending", {}).items()
+            if key not in state.get("_processed_set", set())
+        },
         "quarantined": {
             accession: quarantined[accession]
             for accession in sorted(quarantined)
@@ -7961,7 +7965,9 @@ def infer_proven_split_adjustments(
 
 
 @_serialize_pipeline_maintenance
-def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
+def regenerate_stock_files_and_index(
+    *, state: dict | None = None, stock_ids: set[str] | None = None,
+) -> None:
     """Rebuild stock files, the full search index, and the fund bootstrap.
 
     Display tickers come only from the provenance-bearing CUSIP registry. A
@@ -7983,6 +7989,9 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
     else:
         log.warning("  no CUSIP registry found; all display tickers will fail closed")
 
+    previous_index = _read_json_object(INDEX_PATH)
+    if stock_ids is not None and not isinstance(previous_index, dict):
+        raise FundDataError("incremental stock generation requires a validated prior index")
     funds_summary: list[dict] = []
     stocks: dict[str, dict] = {}
     registry_fallback_count = 0
@@ -8101,6 +8110,8 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
                     )
 
                 stock_id = stock_lookup_id(stock_key, holding_type)
+                if stock_ids is not None and stock_id not in stock_ids:
+                    continue
                 s = stocks.setdefault(stock_id, {
                     "stock_id": stock_id,
                     "cusip": cusip,
@@ -8181,8 +8192,33 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
             current_reporting_quarter,
         )
 
+        # A reporting-calendar rollover changes current-holder counts even for
+        # otherwise untouched securities. Rebuild all stock metadata in that case.
+        if stock_ids is not None and (
+            _modal_latest_reporting_quarter(previous_index.get("funds", []))
+            != current_reporting_quarter
+        ):
+            log.info("  reporting quarter changed; rebuilding all stock outputs")
+            return regenerate_stock_files_and_index(state=state)
+
         tickers: list[dict] = []
         proven_split_adjustments: dict[str, list[dict]] = {}
+        if stock_ids is not None:
+            # Writes use atomic replacement, so hard-linked unchanged files are
+            # never modified through the staging tree. The existing publisher
+            # retains its all-or-nothing stock/index rollback boundary.
+            for existing in sorted(STOCKS_DIR.glob("*.json")):
+                if existing.is_symlink() or not existing.is_file():
+                    raise FundDataError(f"invalid existing stock file: {existing}")
+                os.link(existing, staged_stocks_dir / existing.name)
+            for stock_id in stock_ids:
+                (staged_stocks_dir / stock_filename(stock_id)).unlink(missing_ok=True)
+            tickers = [dict(row) for row in previous_index.get("tickers", [])
+                       if row.get("stock_id") not in stock_ids]
+            proven_split_adjustments = {
+                key: value for key, value in previous_index.get("proven_split_adjustments", {}).items()
+                if key not in stock_ids
+            }
         for _stock_id, s in stocks.items():
             holders_list = []
             for _cik, holder in s["holders"].items():
@@ -8920,6 +8956,7 @@ def write_security_labels(registry: dict[str, dict]) -> None:
 def canonicalize_fund_files(
     *,
     preserve_position_identity: bool = False,
+    fund_paths: list[Path] | None = None,
 ) -> int:
     """Normalize row type and refresh display metadata in every fund file.
 
@@ -8953,7 +8990,7 @@ def canonicalize_fund_files(
     if not registry:
         log.warning("  no registry; clearing every unproven display ticker")
 
-    fund_paths = sorted(FUNDS_DIR.glob("*.json"))
+    fund_paths = sorted(FUNDS_DIR.glob("*.json")) if fund_paths is None else sorted(fund_paths)
     total = len(fund_paths)
     updated = 0
     ticker_changes = 0

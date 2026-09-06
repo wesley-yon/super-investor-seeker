@@ -73,9 +73,10 @@ Only an accepted
 fails-to-deliver mapping (`sec_ftd`) or an exact Schedule 13D/G-to-periodic-
 filing class bridge (`sec_ixbrl`) can be published as ticker proof; the official
 list, company/fund ticker files, and filer descriptions supply validation and
-display metadata, not a ticker by themselves. The weekday job incrementally
-refreshes this private security master; the weekly job reconstructs the derived
-master deterministically and runs the complete provenance audit. Missing or
+display metadata, not a ticker by themselves. The weekday job replays recent
+filings against the verified private security master. Overnight maintenance
+reconciles four quarterly filing indexes, refreshes SEC evidence, reconstructs
+the derived master deterministically, and runs the complete provenance audit. Missing or
 conflicting evidence stays unresolved instead of
 inheriting an issuer's common-stock ticker.
 
@@ -106,7 +107,7 @@ The first SEC-only rebuild restores immutable `reported_*` holding fields from
 the SEC's quarterly Form 13F data sets, with exact accession filing documents as
 the fallback for periods the bulk files do not cover. That all-history 13F
 verification is a one-time legacy-snapshot cutover unless a clean rebuild is
-explicitly requested with `--rebuild-security-master` or the weekly workflow's
+explicitly requested with `--rebuild-security-master` or the maintenance workflow's
 `rebuild_security_master` manual input. A clean rebuild starts from isolated
 empty SEC state under `.cache/sec-security-master-rebuild-work` and promotes it
 only after every publication gate passes. Clean EDGAR discovery commits compact,
@@ -316,3 +317,37 @@ The private snapshot preserves `.cache/quantity_estimation_evidence.json`,
 `.cache/quarter_close_prices.json`, and `.cache/quarter_close_price_requests.json`
 when present. Older snapshots remain readable and remove stale quantity evidence
 on restore; estimated holdings without their evidence fail data validation.
+
+## Incremental filing updates
+
+The weekday workflow captures a baseline before ingestion, discovers SEC's recent
+13F feed, and processes up to 50 CIK groups in oldest-acceptance order. Discovered
+accessions are saved in `pipeline_state.json.recent_feed_pending` before replay.
+Unfinished and quarantined accessions remain queued across runs, even after they
+age out of the feed. The existing retry cooldowns still apply. The overnight
+index pass catches filings missed during feed outages or beyond its search window.
+
+`scripts/incremental_pipeline.py regenerate` reuses existing SEC mapping decisions.
+A newly reported identity stays tickerless until evidence maintenance resolves
+its exact CUSIP and instrument type. Every source freshness and provenance gate
+still runs; stale evidence can block publication. Registry statistics, quantity
+dependencies, and indexes are reconciled across all local fund data. Stock files
+are rebuilt for changed funds, removed holdings, changed registry identities,
+and changed verification status. A modal reporting-quarter rollover triggers a
+full stock rebuild.
+
+`python validate_data.py --incremental` reuses successful per-file checks only
+when file bytes, checker code, registry identity, quantity evidence, holder
+calendars, and relevant cross-file totals still match. Cross-fund peer evidence
+changes invalidate peer checks. Global source, state, index, and reconciliation
+gates always run. The optional `.cache/validation_cache.sqlite3` travels only in
+the verified private snapshot; missing or damaged entries are checked again.
+Failed validation rolls back new cache entries. Overnight maintenance uses
+`--incremental --refresh-cache` to rerun every check and refresh the cache.
+Plain `python validate_data.py` continues to run the uncached validator.
+
+Publication retains the shared maintenance lock and stale-baseline checks.
+Overnight maintenance can delay filing updates if it overlaps their window.
+This change does not alter GitHub's hourly weekday schedule or guarantee an
+acceptance-to-site latency; snapshot transfer, tests, publication, and deployment
+still contribute to each run's duration.

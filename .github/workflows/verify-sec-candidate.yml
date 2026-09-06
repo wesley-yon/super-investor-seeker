@@ -1,8 +1,8 @@
-name: Verify private SEC candidate without publishing
+name: Verify incremental SEC candidate without publishing
 
 on:
   push:
-    branches: [validation/sec-candidate-20260906]
+    branches: [validation/sec-incremental-candidate-20260906]
 
 permissions:
   contents: read
@@ -13,7 +13,7 @@ concurrency:
 
 env:
   DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
-  CANDIDATE_RELEASE_TAG: candidate-sec-20260906-04
+  CANDIDATE_RELEASE_TAG: candidate-sec-20260906-05
 
 jobs:
   verify:
@@ -90,6 +90,12 @@ jobs:
           print('The restored candidate is ready for the routine update path.')
           PY
 
+      - name: Measure incremental baseline capture
+        run: |
+          python scripts/measure_runner_phase.py --name baseline_capture \
+            --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
+            python scripts/incremental_pipeline.py capture
+
       - name: Measure routine SEC filing ingestion
         timeout-minutes: 240
         env:
@@ -99,8 +105,8 @@ jobs:
           set +e
           python scripts/measure_runner_phase.py --name ingestion \
             --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
-            timeout --signal=TERM --kill-after=120s 210m \
-              python pipeline.py --all --quarters 4 --defer-regeneration
+            timeout --signal=TERM --kill-after=120s 180m \
+              python pipeline.py --migrations-only --quarters 4 --defer-regeneration
           phase_status=$?
           set -e
           if [ "$phase_status" -ne 0 ] && [ "$phase_status" -ne 124 ]; then exit "$phase_status"; fi
@@ -121,32 +127,20 @@ jobs:
           set -e
           if [ "$phase_status" -ne 0 ] && [ "$phase_status" -ne 124 ]; then exit "$phase_status"; fi
 
-      - name: Measure cold workspace preparation and disk gate
-        run: |
-          python scripts/measure_runner_phase.py --name cold_preparation \
-            --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
-            python scripts/prepare_sec_cold_workspace.py \
-              --root "$GITHUB_WORKSPACE" --discard-derived-stocks
-          python - <<'PY'
-          import json
-          from sec_13f_bulk_backfill import ensure_clean_rebuild_disk_space
-          print(json.dumps(ensure_clean_rebuild_disk_space(), sort_keys=True))
-          PY
-
-      - name: Measure SEC refresh and data regeneration
+      - name: Measure incremental data regeneration
         timeout-minutes: 90
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
         run: |
           python scripts/measure_runner_phase.py --name regeneration \
             --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
-            python pipeline.py --regenerate-only --refresh-security-master
+            python scripts/incremental_pipeline.py regenerate
 
-      - name: Measure full generated data validation
+      - name: Measure incremental generated data validation
         run: |
           python scripts/measure_runner_phase.py --name validation \
             --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
-            python validate_data.py
+            python validate_data.py --incremental
 
       - name: Run publication regression checks
         run: |

@@ -78,6 +78,7 @@ QUANTITY_CACHE_FILES = (
     Path(".cache/quarter_close_prices.json"),
     Path(".cache/quarter_close_price_requests.json"),
 )
+OPTIONAL_CACHE_FILES = (*QUANTITY_CACHE_FILES, Path(".cache/validation_cache.sqlite3"))
 PAIR_TRANSACTION_ARTIFACT_PREFIX = ".sec-security-master-pair."
 # Contract v1 is accepted for one migration release. Provider-specific and
 # otherwise unprovenanced cache members are verified as part of the signed
@@ -233,9 +234,9 @@ def _scan_source(root: Path) -> list[SourceEntry]:
                 )
             )
 
-    for relative in (*CACHE_FILES, *QUANTITY_CACHE_FILES):
+    for relative in (*CACHE_FILES, *OPTIONAL_CACHE_FILES):
         path = root / relative
-        if relative in QUANTITY_CACHE_FILES and not path.exists() and not path.is_symlink():
+        if relative in OPTIONAL_CACHE_FILES and not path.exists() and not path.is_symlink():
             continue
         metadata = _regular_file(path, "required cache file")
         entries.append(
@@ -517,7 +518,7 @@ def _validate_member_scope(
 ) -> None:
     name = member.name
     _validate_member_name(name)
-    cache_names = {path.as_posix() for path in (*CACHE_FILES, *QUANTITY_CACHE_FILES)}
+    cache_names = {path.as_posix() for path in (*CACHE_FILES, *OPTIONAL_CACHE_FILES)}
     if name == "data":
         if not member.isdir():
             raise SnapshotError("archive data root must be a directory")
@@ -669,7 +670,7 @@ def _verify_archive_contents(
                         in {
                             path.as_posix()
                             for path in (
-                                (*CACHE_FILES, *QUANTITY_CACHE_FILES)
+                                (*CACHE_FILES, *OPTIONAL_CACHE_FILES)
                                 if manifest["contract_version"] == CONTRACT_VERSION
                                 else LEGACY_RESTORABLE_CACHE_FILES
                             )
@@ -1217,12 +1218,12 @@ def _restore_cache_contract(
 
     if contract_version == CONTRACT_VERSION:
         cache_files = CACHE_FILES
-        removal_files = (*RETIRED_PROVIDER_CACHE_FILES, *QUANTITY_CACHE_FILES)
+        removal_files = (*RETIRED_PROVIDER_CACHE_FILES, *OPTIONAL_CACHE_FILES)
     elif contract_version == LEGACY_CONTRACT_VERSION:
         cache_files = LEGACY_RESTORABLE_CACHE_FILES
         # A legacy data tree cannot safely share newer SEC evidence. The next
         # migration rebuild must recreate both v2 files from that tree.
-        removal_files = (*RETIRED_PROVIDER_CACHE_FILES, *CACHE_FILES, *QUANTITY_CACHE_FILES)
+        removal_files = (*RETIRED_PROVIDER_CACHE_FILES, *CACHE_FILES, *OPTIONAL_CACHE_FILES)
     else:
         raise SnapshotError(
             f"unsupported snapshot contract version: {contract_version}"
@@ -1339,7 +1340,7 @@ def _replace_payload(
 
     cache_files, removal_files = _restore_cache_contract(contract_version)
     if contract_version == CONTRACT_VERSION:
-        cache_files = (*cache_files, *(relative for relative in QUANTITY_CACHE_FILES if (payload / relative).exists()))
+        cache_files = (*cache_files, *(relative for relative in OPTIONAL_CACHE_FILES if (payload / relative).exists()))
     cache_targets = tuple(dict.fromkeys((*cache_files, *removal_files)))
     _validate_restore_targets(root, cache_files=cache_targets)
     _regular_directory(payload / "data", "extracted data directory")

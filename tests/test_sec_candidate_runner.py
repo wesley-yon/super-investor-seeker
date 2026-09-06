@@ -44,7 +44,7 @@ class CandidateRunnerTests(unittest.TestCase):
     def test_test_workflow_has_no_production_publish_capability(self):
         workflow = (Path(__file__).resolve().parents[1] /
                     '.github/workflows/verify-sec-candidate.yml').read_text()
-        self.assertIn('branches: [validation/sec-candidate-20260906]', workflow)
+        self.assertIn('branches: [validation/sec-incremental-candidate-20260906]', workflow)
         self.assertIn('permission-contents: read', workflow)
         for forbidden in ('permission-contents: write', 'pages: write', 'id-token: write',
                           'publish_private_snapshot.sh', 'uses: ./.github/workflows/deploy-pages.yml'):

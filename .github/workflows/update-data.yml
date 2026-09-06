@@ -16,7 +16,7 @@ on:
         default: false
         type: boolean
       filing_quarters:
-        description: Number of SEC filing quarters to inspect
+        description: Filing quarters to inspect for a targeted replay or repair
         required: false
         default: 4
         type: number
@@ -174,6 +174,10 @@ jobs:
           restore-keys: |
             sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-
 
+      - name: Capture validated baseline before ingestion
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: python scripts/incremental_pipeline.py capture
+
       - name: Run pipeline
         id: pipeline
         if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
@@ -195,7 +199,9 @@ jobs:
           FILING_CIK: ${{ inputs.filing_cik || '' }}
         run: |
           set -euo pipefail
-          mode=(--all)
+          # Ordinary updates process the durable recent-feed queue below.
+          # Broad quarterly-index reconciliation runs in overnight maintenance.
+          mode=(--migrations-only)
           value_unit_migration_pending=$(
             python -c '
           import pipeline
@@ -348,30 +354,20 @@ jobs:
       - name: Regenerate registry-backed site data
         id: regenerate
         if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
-        # Runs in its own fresh Python process — no deadlocked workers, no
-        # racing the cancel grace window, no retry backoff threads. Refreshes
-        # the SEC security master from newly available official source files,
-        # then rebuilds the private registry and fund/stock/index display data.
-        # Existing verified mappings remain available when an SEC publication
-        # is temporarily late, while new or conflicting evidence fails closed.
-        # This incremental path is bounded separately from the one-time legacy
-        # rebuild. Match the weekly 90-minute allowance for the full retained
-        # corpus. The 180-minute ingest and 15-minute recent-feed bounds leave
-        # 75 minutes of the six-hour job for setup, validation and publication
-        # (71 minutes after both inner cancellation grace periods). Hosted
-        # candidate verification measured about 45 minutes for restore, full
-        # validation, regression tests and packing; retain publication margin.
+        # Reuse verified SEC identity evidence and rebuild changed dependencies.
+        # The separate maintenance workflow refreshes sources and reconciles
+        # broad filing indexes overnight; all freshness gates still apply here.
         timeout-minutes: 90
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
         run: |
-          python pipeline.py --regenerate-only --refresh-security-master
+          python scripts/incremental_pipeline.py regenerate
 
       - name: Validate generated data
         id: validate_data
         # Validation runs only after both ingestion paths and regeneration
         # succeed. A failed replay leaves the last published data untouched.
-        run: python validate_data.py
+        run: python validate_data.py --incremental
 
       - name: Run generated-data contract regression tests
         # Run the focused corpus contract here so stale-cache identity losses

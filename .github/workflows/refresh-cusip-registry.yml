@@ -4,7 +4,7 @@ on:
   schedule:
     # Preserve the existing 04:00 UTC maintenance window while avoiding the
     # scheduler's heavily loaded top of hour.
-    - cron: '23 4 * * 0'
+    - cron: '23 4 * * *'
   workflow_dispatch:
     inputs:
       rebuild_security_master:
@@ -202,6 +202,26 @@ jobs:
         run: |
           python -c 'from sec_13f_bulk_backfill import cleanup_13f_bulk_working_set; cleanup_13f_bulk_working_set()'
 
+      - name: Reconcile broad SEC filing indexes overnight
+        if: >-
+          steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
+          inputs.rebuild_security_master != true
+        timeout-minutes: 50
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --signal=TERM --kill-after=120s 45m \
+            python pipeline.py --all --quarters 4 --defer-regeneration
+          reconcile_status=$?
+          set -e
+          if [ "$reconcile_status" -eq 124 ]; then
+            echo "::warning::Broad reconciliation reached its checkpoint budget"
+          elif [ "$reconcile_status" -ne 0 ]; then
+            exit "$reconcile_status"
+          fi
+
       - name: Refresh and audit private SEC security master and derived data
         if: >-
           steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
@@ -212,7 +232,7 @@ jobs:
         run: python pipeline.py --regenerate-only --refresh-security-master
 
       - name: Validate generated data
-        run: python validate_data.py
+        run: python validate_data.py --incremental --refresh-cache
 
       - name: Run generated-data contract regression tests
         # Keep known identity and descriptive-name corrections in the publish

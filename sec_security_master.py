@@ -7373,6 +7373,8 @@ def _retain_prior_mappings_with_unresolved_extensions(
         | Iterable[tuple[str, str] | Mapping[str, Any]]
         | None
     ),
+    *,
+    new_identity_reason: str = "sec_source_refresh_failed_new_identity_deferred",
 ) -> dict[str, Any]:
     """Extend a verified master without using evidence from a failed refresh.
 
@@ -7454,9 +7456,7 @@ def _retain_prior_mappings_with_unresolved_extensions(
                 "effective_from": None,
                 "effective_to": None,
                 "exchange": None,
-                "resolution_reason": (
-                    "sec_source_refresh_failed_new_identity_deferred"
-                ),
+                "resolution_reason": new_identity_reason,
             })
             record.pop("exchanges", None)
             record.pop("sec_edgar_evidence", None)
@@ -7470,6 +7470,15 @@ def _retain_prior_mappings_with_unresolved_extensions(
         key: fallback_records[key] for key in sorted(fallback_records)
     }
     fallback["summary"] = summary
+    # Replacing candidate decisions with retained records also changes every
+    # record-derived audit count/checkpoint. Normalize those before the strict
+    # audit projector validates the input master.
+    fallback["audit"]["fund_series_source_checkpoints"] = _fund_series_source_checkpoints(fallback_records)
+    fallback["audit"]["sec_ixbrl_source_checkpoints"] = _sec_ixbrl_source_checkpoints(fallback_records, normalized_state)
+    fallback["audit"]["resolved_mapping_count_by_ticker_source"] = _resolved_mapping_counts(fallback_records)
+    (fallback["audit"]["reported_identity_count"],
+     fallback["audit"]["evidenced_reported_identity_count"]) = _reported_identity_evidence_counts(fallback_records)
+    fallback["audit"] = project_master_audit(fallback, normalized_state)
     _validate_security_master(fallback)
     return fallback
 

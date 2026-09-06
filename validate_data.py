@@ -2209,9 +2209,10 @@ def validate_value_unit_peer_consistency(
         tuple[tuple[float, str], ...],
     ]
     | None = None,
+    *, paths: list[Path] | None = None,
 ) -> None:
     """Reject quarter-wide disagreements with same-security peers."""
-    for fp in sorted(FUNDS_DIR.glob("*.json")):
+    for fp in sorted(FUNDS_DIR.glob("*.json")) if paths is None else sorted(paths):
         try:
             with open(fp) as f:
                 fund = json.load(f)
@@ -2394,6 +2395,11 @@ def validate_funds(
     errors: list[str],
     registry: dict[str, dict] | None = None,
     quality_summary: dict[str, object] | None = None,
+    *,
+    paths: list[Path] | None = None,
+    check_peers: bool = True,
+    peer_observations: dict | None = None,
+    quantity_evidence: dict | None = None,
 ) -> tuple[
     dict[str, Path],
     dict[str, dict[str, set[str]]],
@@ -2411,14 +2417,16 @@ def validate_funds(
     expected_current_stats: dict[
         str, dict[str, int | float | None]
     ] = defaultdict(_empty_current_stats)
-    quantity_evidence = load_quantity_evidence(
-        cache_dir_for_funds(FUNDS_DIR) / "quantity_estimation_evidence.json"
+    if quantity_evidence is None:
+        quantity_evidence = load_quantity_evidence(
+            cache_dir_for_funds(FUNDS_DIR) / "quantity_estimation_evidence.json"
+        )
+    quarter_peer_price_index = (
+        defaultdict(lambda: defaultdict(list))
+        if peer_observations is None else peer_observations
     )
-    quarter_peer_price_index: dict[
-        tuple[str, str, str], dict[str, list[float]]
-    ] = defaultdict(lambda: defaultdict(list))
 
-    for fp in sorted(FUNDS_DIR.glob("*.json")):
+    for fp in sorted(FUNDS_DIR.glob("*.json")) if paths is None else sorted(paths):
         fund_files[fp.stem] = fp
         fund = load_json(fp, errors)
         if not isinstance(fund, dict):
@@ -2864,29 +2872,30 @@ def validate_funds(
                     pct_of_fund=pct_of_fund,
                 )
 
-    compiled_peer_prices = compile_peer_price_index(
-        quarter_peer_price_index,
-        consume=True,
-    )
-    unit_report_refs = {
-        (report_date, cusip): (
-            statistics.median(
-                price for price, _filer_id in observations
-            ),
-            len(observations),
+    if check_peers:
+        compiled_peer_prices = compile_peer_price_index(
+            quarter_peer_price_index,
+            consume=True,
         )
-        for (
-            report_date,
-            cusip,
-            instrument_type,
-        ), observations in compiled_peer_prices.items()
-        if instrument_type == "EQUITY" and len(observations) >= 4
-    }
-    validate_value_unit_peer_consistency(
-        unit_report_refs,
-        errors,
-        compiled_peer_prices,
-    )
+        unit_report_refs = {
+            (report_date, cusip): (
+                statistics.median(
+                    price for price, _filer_id in observations
+                ),
+                len(observations),
+            )
+            for (
+                report_date,
+                cusip,
+                instrument_type,
+            ), observations in compiled_peer_prices.items()
+            if instrument_type == "EQUITY" and len(observations) >= 4
+        }
+        validate_value_unit_peer_consistency(
+            unit_report_refs,
+            errors,
+            compiled_peer_prices,
+        )
     return (
         fund_files,
         stock_groups,
@@ -2930,6 +2939,19 @@ def validate_pipeline_state(
     processed_set = {
         accession for accession in processed if isinstance(accession, str)
     }
+
+    feed_pending = state.get("recent_feed_pending", {})
+    if not isinstance(feed_pending, dict):
+        errors.append("pipeline_state.json has invalid recent_feed_pending")
+    else:
+        for accession, filing in feed_pending.items():
+            if (not isinstance(accession, str)
+                or not re.fullmatch(r"[0-9]{10}-[0-9]{2}-[0-9]{6}", accession)
+                or not isinstance(filing, dict)
+                or filing.get("accession") != accession
+                or type(filing.get("cik")) is not int or filing["cik"] <= 0
+                or accession in processed_set):
+                errors.append(f"pipeline_state.json has invalid pending feed accession {accession!r}")
 
     for accession, target in sorted(pending.items()):
         context = f"pending amendment migration {accession}"
@@ -3829,6 +3851,7 @@ def validate_stocks(
     expected_split_adjustments: dict[str, list[dict]] | None = None,
     *,
     registry: dict[str, dict] | None = None,
+    paths: list[Path] | None = None,
 ) -> dict[str, Path]:
     validate_calendars = fund_calendars is not None
     reconcile_current = (
@@ -3842,7 +3865,7 @@ def validate_stocks(
     seen_stock_ids: set[str] = set()
     bad_fund_non_option_artifacts: list[str] = []
     fund_non_option_types: dict[str, set[str]] = defaultdict(set)
-    for fp in sorted(STOCKS_DIR.glob("*.json")):
+    for fp in sorted(STOCKS_DIR.glob("*.json")) if paths is None else sorted(paths):
         stock_files[fp.stem] = fp
         stock = load_json(fp, errors)
         if not isinstance(stock, dict):
@@ -4784,7 +4807,11 @@ def validate_funds_index(
         )
 
 
-def main() -> int:
+def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_cache: bool = False) -> int:
+    cache = None
+    if incremental:
+        from incremental_validation import ValidationCache
+        cache = ValidationCache(sys.modules[__name__], cache_path, reuse=not refresh_cache)
     errors: list[str] = []
     warnings: list[str] = []
     quality_summary: dict[str, object] = {
@@ -4814,7 +4841,8 @@ def main() -> int:
         fund_cusips,
         fund_calendars,
         expected_current_stats,
-    ) = validate_funds(errors, registry, quality_summary)
+    ) = (cache.validate_funds(errors, registry, quality_summary)
+         if cache is not None else validate_funds(errors, registry, quality_summary))
     raw_legacy_month_filing_dates = quality_summary[
         "legacy_month_precision_filing_dates"
     ]
@@ -4848,7 +4876,8 @@ def main() -> int:
         quality_summary,
     )
     expected_split_adjustments: dict[str, list[dict]] = {}
-    stock_files = validate_stocks(
+    stock_validator = cache.validate_stocks if cache is not None else validate_stocks
+    stock_files = stock_validator(
         errors,
         fund_calendars,
         expected_current_stats,
@@ -4949,6 +4978,8 @@ def main() -> int:
         for warning in warnings:
             print(f"  - {warning}")
 
+    if cache is not None:
+        cache.finish(success=not errors)
     if errors:
         print("Validation failed:")
         for error in errors:
@@ -4965,4 +4996,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--incremental", action="store_true", help="Reuse content-bound successful checks; all global gates still run")
+    parser.add_argument("--refresh-cache", action="store_true", help="Run every file check and replace cached results (requires --incremental)")
+    args = parser.parse_args()
+    if args.refresh_cache and not args.incremental:
+        parser.error("--refresh-cache requires --incremental")
+    sys.exit(main(incremental=args.incremental, refresh_cache=args.refresh_cache))

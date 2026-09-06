@@ -78,7 +78,7 @@ class DataSnapshotTests(unittest.TestCase):
             root = Path(tmpdir)
             source = self.make_source(root)
             target = self.make_source(root, "target")
-            for relative in data_snapshot.QUANTITY_CACHE_FILES:
+            for relative in data_snapshot.OPTIONAL_CACHE_FILES:
                 (source / relative).write_text('{"schema_version":1,"references":{}}')
             summary = self.pack(source, root / "output")
             extracted = root / "payload"
@@ -88,7 +88,7 @@ class DataSnapshotTests(unittest.TestCase):
                 max_archive_bytes=1_000_000, extract_root=extracted,
             )
             data_snapshot._replace_payload(target, extracted, contract_version=data_snapshot.CONTRACT_VERSION)
-            for relative in data_snapshot.QUANTITY_CACHE_FILES:
+            for relative in data_snapshot.OPTIONAL_CACHE_FILES:
                 self.assertEqual((source / relative).read_bytes(), (target / relative).read_bytes())
             older = self.make_source(root, "older")
             old_summary = self.pack(older, root / "old-output")
@@ -100,7 +100,7 @@ class DataSnapshotTests(unittest.TestCase):
                 max_archive_bytes=1_000_000, extract_root=old_payload,
             )
             data_snapshot._replace_payload(target, old_payload, contract_version=data_snapshot.CONTRACT_VERSION)
-            for relative in data_snapshot.QUANTITY_CACHE_FILES:
+            for relative in data_snapshot.OPTIONAL_CACHE_FILES:
                 self.assertFalse((target / relative).exists())
 
     def test_pack_is_deterministic_and_uses_raw_digest_id(self) -> None:
