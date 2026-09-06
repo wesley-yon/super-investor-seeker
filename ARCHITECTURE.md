@@ -42,7 +42,7 @@ live Pages deployment remain unchanged.
 
 1. **GitHub Actions** restores the newest authenticated private snapshot.
 2. Weekday maintenance runs inspect SEC EDGAR throughout the filing day; a
-   separate weekly pass fully refreshes the CUSIP/OpenFIGI registry.
+   separate weekly pass deterministically rebuilds the SEC security master.
 3. The pipeline discovers all 13F filers, fetches new filings, rebuilds derived
    data, and runs complete corpus validation plus regression tests.
 4. Changed data is published as a new private, content-addressed snapshot.
@@ -212,28 +212,176 @@ payloads remain on-demand.
 
 ### CUSIP-to-Ticker Mapping
 
-13F filings report holdings by CUSIP, not ticker. The pipeline needs to map CUSIPs to tickers. Approach:
+13F filings report holdings by CUSIP, not ticker. CUSIP therefore remains the
+canonical security identity; ticker is dated display metadata that is published
+only when official evidence meets a fail-closed mapping rule.
 
-1. Combine retained filing evidence, reviewed overrides, SEC company and fund
-   metadata, and prior validated registry state.
-2. Resolve missing or suspicious current CUSIPs through OpenFIGI. Weekday
-   updates tolerate transient vendor outages; the weekly authenticated full
-   refresh fails closed if any batch is incomplete or malformed.
-3. Store the operational map in `.cache/cusip_map.json` and the display registry
-   in both private snapshot copies used for recovery and publication.
-4. Holdings without a safe ticker retain their CUSIP-based `stock_id`, so they
-   remain distinct, searchable, and displayable without inventing a symbol.
+1. The quarterly official Section 13(f) securities list defines the reportable
+   universe, issuer description, class description, and lifecycle status.
+2. SEC-published fails-to-deliver archives provide direct, settlement-dated
+   CUSIP-symbol observations. A recent repeated pair is the primary mapping
+   signal, but a security is absent when it has no positive fail balance. The
+   historical loader accepts the SEC's quarterly bundles beginning with the
+   first actual observation on March 22, 2004 through June 2009 and the
+   half-month archives published from July 2009 onward. Those files use
+   disjoint date ownership: A owns calendar days 1-14 and B owns day 15 through
+   month-end. The cutover audit verified that boundary across all 411 available
+   half-month archives and 23,458,560 raw rows without an exception or overlap.
+   A clean discovery must be period-continuous through the latest mature
+   boundary. Every parsed
+   settlement date must belong to its URL period except for one machine-checked
+   source anomaly: the `2004q1` ZIP also contains April 1, and its complete
+   normalized April 1 row multiset is an exact duplicate of the April 1 rows in
+   `2004q2`. Both archive inventories retain the same count and SHA-256 boundary
+   proof, independent of the active CUSIP filter. Only after those proofs match
+   is the Q1 copy discarded, leaving Q2 as the sole owner and preventing double
+   counting. February, dates before March 22, any other Q1 spillover, or a
+   missing or unequal proof fails closed. Every later quarterly bundle through
+   2009 Q2 must cover all three calendar months, and every text member in a
+   quarterly bundle is parsed.
+3. SEC company-ticker and fund-series files validate current symbols. Structured
+   Schedules 13D/G prove an exact CUSIP-to-CIK/class relationship, and a
+   periodic filing's same-class inline XBRL context can complete the bridge to a
+   symbol and exchange. Repeated 13F filer descriptions may classify an
+   instrument but cannot by themselves override ambiguity.
+4. Each public registry entry carries `mapping_status`, `ticker_source`, and
+   `ticker_as_of`. `resolved` requires a ticker, one of the approved SEC source
+   enums, and a canonical evidence date. `unresolved`, `ambiguous`,
+   `no_listed_symbol`, and `malformed_as_filed` publish no ticker or ticker
+   provenance.
+5. Durable private state lives in `.cache/sec_security_master.json` and
+   `.cache/sec_source_state.json`. FTD archive entries retain checksummed
+   inventory metadata and an explicit `boundary_date_proofs` list (empty for
+   ordinary archives) rather than per-security rows; a compact per-CUSIP
+   timeline stores symbol-set intervals, aggregate counts, and a first boundary
+   plus the last 32 exact date witnesses. The mapping policy is capped at the
+   exactly retained 31-day window. The two newest archives remain as a
+   reversible mutable tail, while older checksum mutation fails closed. One
+   append-only CUSIP filter log and per-archive high-water marks avoid a full
+   universe copy per archive, and operational ZIP parsing filters rows as a
+   stream. Raw source hashes, fetch cursors, conflicts, and candidate evidence
+   remain private; browser data receives only the fail-closed result.
+6. Holdings without a safe ticker retain their CUSIP-based `stock_id`, so notes,
+   warrants, preferred shares, and unresolved common equity remain distinct and
+   displayable without inheriting an issuer's common-stock symbol.
+
+The only approved `ticker_source` values are `sec_ftd` and `sec_ixbrl`.
+`sec_13f_list`, `sec_company_tickers`, `sec_fund_series`,
+`sec_schedule_13dg`, and `sec_13f_filer_consensus` are corroborating SEC
+metadata sources for identity, issuer, class, kind, labels, or candidate
+validation; none can publish a ticker alone. Weekday runs use
+`--refresh-security-master` to fetch new or changed SEC inputs; the weekly
+workflow uses the same incremental source discovery but runs the complete
+deterministic registry/provenance audit. `--rebuild-security-master` is reserved
+for the one-time legacy cutover or an explicit clean rebuild. The weekly
+workflow exposes that clean path as the manual `rebuild_security_master` input;
+it stages against empty source/master files and promotes the pair only after
+the full acceptance audit passes.
+
+Clean EDGAR exception discovery is transactionally resumable without rewriting
+the large pair per network batch. Each 100-CUSIP batch becomes one atomic,
+SHA-256 hash-chained journal file containing only normalized discovery
+diagnostics and exact filing evidence for those observed securities. On resume,
+the candidate identities and evidence fingerprints must match the journal's
+contiguous prefix. A stale, torn, or tampered prefix is discarded and safely
+refetched before publication. After every batch succeeds, the pipeline performs
+one source-state copy, one deterministic master rebuild and audit, and one
+source-state-first paired write. Hosted jobs cache only the manifest and compact
+filing-scoped journals; the official-list-bearing staged source state and master
+remain process-local.
+
+Before the first clean rebuild, the pipeline reconstructs the immutable
+`reported_issuer`, `reported_class`, `reported_cusip`, optional
+`reported_figi`, accession, and report-date evidence in retained holdings from
+the SEC's quarterly Form 13F data sets. The index is restricted to exact
+retained accessions and CIK/report-date targets. Where the bulk history is not
+sufficient, exact SEC Archives accession XML (or structurally provable legacy
+filing text) supplies the fallback; unresolved rows remain unchanged and block
+a complete cutover rather than being synthesized from canonical metadata.
+The hosted cutover performs a resume-aware free-space preflight, streams target
+collection one fund at a time, and checkpoints completed quarterly ZIPs into a
+private plan-addressed SQLite candidate. Exact-accession fallbacks are inserted
+before that candidate's single finalization, avoiding a second full SQLite copy.
+The checkpoint key binds normalized source URLs, exact target scope, and the
+parser/schema contract; landing-page markup alone cannot invalidate useful
+progress. The complete logical post-backfill corpus is verified before writes,
+then each fund is atomically replaced one at a time. A killed prefix is
+idempotent on retry and cannot be published because validation and snapshot
+publication are later fail-closed steps. Every retained non-placeholder holding
+is covered by a canonical quarter-level `reported_identity_sources` witness
+containing the exact accession, report date, SEC URL, and SHA-256 checksum; the
+post-apply audit binds those compact references to the same SQLite evidence
+before the disposable index can be removed.
+The immutable holding identity fields are covered by composition-hash protocol
+v3; the compact source list is independently schema-validated,
+accession-bound, and checked for complete holding coverage at publication. The
+cutover freezes a provider-neutral public mapping projection before any
+rewrite, compares it with the SEC-only result afterward, and blocks on any
+change to retained fund/quarter/holding counts, values, or position identity.
+The local difference report is excluded from snapshots and workflow artifact
+uploads and is never an input to resolution.
+
+After the direct FTD pass, automatic EDGAR exception discovery examines only
+current official-list gaps, identities first reported during the trailing six
+months, recent exact-FTD/conflict records, due iXBRL revalidations, and retryable
+prior failures. Historical corpus-only gaps remain tickerless. Work is ordered
+with due revalidations, changed fingerprints, and current ambiguities first,
+then bounded to 50 CUSIPs per incremental run or 250 during a clean rebuild.
+Terminal decisions fall out so an exceptional backlog drains deterministically.
+Discovery verifies the exact CUSIP in a structured
+Schedule 13D/G and then requires compatible same-class periodic-filing evidence
+before emitting `sec_ixbrl`. Exact official-list row changes reopen a terminal
+result, but routine quarterly URL/checksum/period churn does not. Accepted
+source hashes and evidence, terminal no-symbol decisions, and retryable
+diagnostics are embedded in
+`.cache/sec_source_state.json`; there is no separate manual exception queue or
+third security-mapping cache.
+
+The publication audit also rejects plausibly decoded but truncated current
+symbol feeds or official lists. It applies conservative clean-build population
+floors, title or fund-series/class identity sanity, a latest-completed-quarter
+check for the official list, and bounded feed/list/resolved-mapping regressions
+against the last verified master. Thus a small valid JSON response cannot erase
+a previously verified ticker while leaving the FTD coverage ratio unchanged.
+The official-list parser treats its normalized five-field rows as set
+membership because SEC-generated files can contain byte-identical repeats.
+Only complete duplicates are collapsed; rows sharing a CUSIP but differing in
+issuer, class, status, or option marker remain separate conflict evidence.
+
+Private snapshot contract v2 requires only the two SEC security-master cache
+files above. During the migration release, restore also accepts contract v1,
+verifies every archived byte, extracts only shared SEC lookup cache members,
+and discards registry and other unprovenanced private cache members.
+A v1 restore must complete a security-master refresh or rebuild before it can
+publish a v2 replacement snapshot; new snapshots are never packed as v1.
+Clean-build checkpoints live only under dedicated ignored `.cache` work paths.
+The maintenance workflows cache those nonpublishable paths after each clean
+attempt, keyed by restored dataset, code revision, operating system, and
+parser-contract version. This includes a completed bulk index, so a failure in
+later SEC-master or derived-output work does not repeat the all-history pass.
+After the cache save succeeds, the runner removes the bulk state and all owned
+SQLite generations before validation and snapshot packing; unknown neighboring
+files are never deleted. Local clean commands retain the same resumable work set
+until the caller explicitly invokes `cleanup_13f_bulk_working_set()`. Thus the
+fresh-run disk peak contains the restored corpus, one filtered SQLite candidate,
+one persistent SEC-master candidate, and only one fund rewrite temporary. It
+does not contain a second bulk generation, a second fund corpus, or a snapshot
+archive. The hosted preflight reserves 8 GiB for that peak, subtracts the size
+of an integrity-checked partial SQLite generation on resume, and preserves a
+1 GiB minimum free-space floor.
 
 ### SEC EDGAR Rate Limiting
 
 - Maximum **8 requests per second** sustained (SEC caps at 10; 8 leaves headroom)
-- **Retry with exponential backoff** (2s, 4s, 8s, 16s, max 60s) on 403, 429, 503
+- **Retry with bounded exponential backoff** (respecting `Retry-After`) on
+  connection/timeout failures and HTTP 403, 429, 500, 502, 503, and 504;
+  authentication, schema, and other permanent HTTP errors fail immediately
 - **User-Agent header required:** must contain a real contact email, format `"YourName your@email.com"`. SEC blocks requests without valid contact info. In production we read this from the `SEC_USER_AGENT` env var, which is populated from a GitHub Actions repo secret — never hard-coded into the workflow file.
 - Accept-Encoding: gzip, deflate
-- **Concurrency:** a thread-safe rate limiter lets a small pool of workers (8
-  by default) issue overlapping requests while still respecting the 8 req/sec
-  cap. This absorbs network round-trip latency without increasing the aggregate
-  SEC request rate.
+- **Concurrency:** a thread-safe rate limiter supports overlapping ingestion
+  callers elsewhere in the pipeline while still respecting the 8 req/sec cap.
+  The bounded EDGAR exception queue itself is processed sequentially so its
+  request fan-out and checkpoints remain deterministic.
 
 ### Key SEC EDGAR Endpoints
 
@@ -244,6 +392,11 @@ payloads remain on-demand.
 | Filing document index | `https://data.sec.gov/Archives/edgar/data/{cik}/{accession_no_dashes}/index.json` |
 | Filing document | `https://data.sec.gov/Archives/edgar/data/{cik}/{accession_no_dashes}/{filename}` |
 | Company tickers | `https://www.sec.gov/files/company_tickers.json` |
+| Company tickers with exchange | `https://www.sec.gov/files/company_tickers_exchange.json` |
+| Mutual-fund series/class tickers | `https://www.sec.gov/files/company_tickers_mf.json` |
+| Fails-to-deliver archive index | `https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data` |
+| Official Section 13(f) list index | `https://www.sec.gov/rules-regulations/staff-guidance/official-list-section-13f-securities` |
+| Quarterly Form 13F data sets | `https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets` |
 
 ---
 
@@ -328,7 +481,7 @@ complete corpus up front.
 - Runs repeatedly during the Monday-Friday 7am-6pm America/New_York filing
   window and supports manual dispatch.
 - Uses a shared `data-maintenance` concurrency group so Update and the weekly
-  CUSIP refresh cannot mutate snapshot state concurrently.
+  security-master rebuild cannot mutate snapshot state concurrently.
 - Checks out live `main`, authenticates to the private data repository with a
   short-lived GitHub App token, and transactionally restores the newest
   validated snapshot.
@@ -342,10 +495,23 @@ complete corpus up front.
 
 ### `refresh-cusip-registry.yml`
 
-- Performs the weekly full OpenFIGI/CUSIP refresh under the same maintenance
-  lock and private-snapshot contract.
-- Requires a configured API key and fails publication if the authenticated full
-  refresh cannot complete reliably.
+- Performs a weekly deterministic SEC security-master refresh and complete
+  registry/provenance audit under the same maintenance lock and private-snapshot
+  contract.
+- A legacy restore reconstructs and verifies every retained immutable holding
+  against SEC Form 13F bulk data and exact accession filings before rebuilding
+  mappings and verifies the provider-neutral cutover difference report. That
+  local report is excluded from snapshots and workflow artifact uploads.
+  Contract-v2 weekly runs
+  reuse the verified corpus and discover only changed SEC security-master
+  sources, so the all-history 13F download remains a one-time migration unless
+  an operator explicitly selects the workflow's `rebuild_security_master`
+  input (or runs the clean CLI rebuild in an equivalent hosted environment).
+- Discovers FTD archives by URL and checksum and runs bounded automatic EDGAR
+  exception discovery from the checkpointed source state.
+- Requires only the declared SEC user agent and fails publication if required
+  SEC source inputs cannot be verified or the resulting mappings violate the
+  provenance contract.
 - Validates and deploys changed derived data through the same exact-target Pages
   workflow.
 
@@ -374,8 +540,7 @@ complete corpus up front.
 
 Required repository configuration:
 
-- `SEC_USER_AGENT`, `OPENFIGI_API_KEY`, and `DATA_ARCHIVE_APP_PRIVATE_KEY`
-  repository secrets.
+- `SEC_USER_AGENT` and `DATA_ARCHIVE_APP_PRIVATE_KEY` repository secrets.
 - `DATA_ARCHIVE_APP_CLIENT_ID` repository variable.
 - GitHub App access restricted to the private data repository, with read access
   for restore and a separately minted write token for publication.
@@ -437,3 +602,31 @@ frontend regression tests.
    rollback retention, and artifact cleanup to succeed.
 5. Reconcile the private manifest and deployment marker, then verify the live
    site through a browser-capable path.
+
+### Quantity evidence independent of security resolution
+
+`quantity_estimation.py` implements a separate derived-quantity policy. Its
+six-process scans collect only explicit, positive, SEC-provenanced reported
+quantities; estimated and unknown rows never vote in peer pricing. The target
+filer is excluded, prices are grouped by exact CUSIP, instrument, quarter, and
+unit, and at least three filers must support an agreed median. Frozen receipts
+retain the complete screening input digest and a compact exact median witness.
+Validation reproduces that witness rather than recalculating a changing median
+from the current database.
+
+An optional Fiscal.ai receipt has priority for a verified USD equity listing and
+exact quarter-end trading session. It binds the dated SEC identity, provider
+listing, response checksum, price, volume, and corporate-action conversion.
+Option receipts use underlying-share quantities while preserving CALL/PUT
+identity. A quote cannot supply a debt principal price or resolve a ticker.
+
+A quantity plan preflights every affected file checksum and holding before any
+fund write. Only derived quantity fields may change, and the reported-economic
+projection must remain identical. Evidence is saved before references to it;
+fund writes are atomic individually, and the operation is safely repeatable.
+A process interruption can leave mixed generations that require reapplying the
+policy before publication. Private snapshot restoration includes all three
+quantity caches in its rollback transaction without weakening the required SEC
+master/source-state pair. `scripts/quantity_policy.py` provides local request,
+import, plan, and apply commands; the scheduled pipeline uses saved market
+receipts, then peer evidence or an explicit unknown quantity.

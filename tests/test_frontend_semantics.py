@@ -1675,14 +1675,31 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual([], result["unknownShares"])
         self.assertEqual([], result["unknownValues"])
 
+    def test_unknown_quantities_suppress_changes_and_exact_totals(self) -> None:
+        result = self.run_javascript("""
+            const unknown = {shares: 0, value: 1000, quantity_unknown: true};
+            const actual = {shares: 10, value: 1000};
+            console.log(JSON.stringify({
+              newChange: positionChange(unknown, null),
+              exitChange: positionChange(null, unknown),
+              currentChange: positionChange(actual, unknown),
+              trend: shareTrendIsComparable([unknown, actual], []),
+              total: exactReportedShareTotal([
+                {state: "CURRENT", shares: 10},
+                {state: "CURRENT", shares: 100, quantityUnknown: true}
+              ])
+            }));
+        """)
+        self.assertEqual({"newChange": None, "exitChange": None, "currentChange": None, "trend": False, "total": 10}, result)
+
     def test_rendering_wires_exclusions_and_estimated_share_labels(self) -> None:
         required_fragments = [
             "currentReportingQuarter = modalLatestReportingQuarter(idx.funds)",
             '"Stale / Excluded Records"',
             '"Withheld / Unverified Records"',
             "Total Exact Shares",
-            "formatShares(h.shares, h.sharesImputed)",
-            "formatShares(h.shares, h.shares_imputed)",
+            "formatShares(h.shares, h.sharesImputed, h.quantityUnknown)",
+            "formatShares(h.shares, h.shares_imputed, h.quantity_unknown)",
             "aggregateEligibleHolderTrends(\n    classified,\n    currentReportingQuarter",
             "Estimated rows are marked with ~",
             "idx?.proven_split_adjustments?.[key]",

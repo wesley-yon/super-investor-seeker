@@ -11,8 +11,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pipeline
 import security_identity
@@ -26,6 +28,18 @@ ORACLE = json.loads((FIXTURE_ROOT / "expectations.json").read_text())
 
 def fixture_bytes(filename: str) -> bytes:
     return (FIXTURE_ROOT / filename).read_bytes()
+
+
+def expected_reported_rows(rows: list[dict]) -> list[dict]:
+    return [
+        {
+            **row,
+            "reported_issuer": row["issuer"],
+            "reported_class": row["class"],
+            "reported_cusip": row["cusip"],
+        }
+        for row in rows
+    ]
 
 
 def parsed_filing(case_name: str) -> tuple[dict, list[dict]]:
@@ -84,7 +98,10 @@ class FrozenSecFixtureOracleTests(unittest.TestCase):
                 information_xml = fixture_bytes(case["information_table"])
 
                 self.assertEqual(case["expected_metadata"], metadata)
-                self.assertEqual(case["expected_rows"], holdings)
+                self.assertEqual(
+                    expected_reported_rows(case["expected_rows"]),
+                    holdings,
+                )
                 self.assertEqual(
                     (
                         metadata["reported_entry_total"],
@@ -96,6 +113,79 @@ class FrozenSecFixtureOracleTests(unittest.TestCase):
                     case["expected_raw_total"],
                     sum(row["value"] for row in holdings),
                 )
+
+    def test_reported_identity_and_provenance_survive_canonicalization(
+        self,
+    ) -> None:
+        xml = b"""<informationTable>
+          <infoTable>
+            <nameOfIssuer>APPLE INC</nameOfIssuer>
+            <titleOfClass>COM</titleOfClass>
+            <cusip>037833100</cusip>
+            <figi>BBG000B9XRY4</figi>
+            <value>100</value>
+            <shrsOrPrnAmt><sshPrnamt>10</sshPrnamt></shrsOrPrnAmt>
+          </infoTable>
+        </informationTable>"""
+        holdings = pipeline.parse_information_table(
+            xml,
+            accession="0001234567-26-000001",
+            report_date="2026-06-30",
+        )
+
+        self.assertIsNotNone(holdings)
+        reported_identity = {
+            "reported_issuer": "APPLE INC",
+            "reported_class": "COM",
+            "reported_cusip": "037833100",
+            "reported_figi": "BBG000B9XRY4",
+            "accession": "0001234567-26-000001",
+            "report_date": "2026-06-30",
+        }
+        self.assertEqual(
+            reported_identity,
+            {key: holdings[0][key] for key in reported_identity},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            funds_dir = root / "funds"
+            funds_dir.mkdir()
+            fund_path = funds_dir / "1234567.json"
+            fund_path.write_text(json.dumps({
+                "cik": 1234567,
+                "quarters": [{
+                    "report_date": "2026-06-30",
+                    "holdings": holdings,
+                }],
+            }))
+            registry_path = root / "cusip_registry.json"
+            registry_path.write_text(json.dumps({
+                "037833100": {
+                    "ticker": "AAPL",
+                    "name": "Apple Inc.",
+                    "type": "EQUITY",
+                },
+            }))
+
+            with mock.patch.multiple(
+                pipeline,
+                FUNDS_DIR=funds_dir,
+                CUSIP_REGISTRY_PATH=registry_path,
+                LEGACY_CUSIP_REGISTRY_PATH=registry_path,
+            ):
+                self.assertEqual(1, pipeline.canonicalize_fund_files())
+
+            canonical = json.loads(fund_path.read_text())["quarters"][0][
+                "holdings"
+            ][0]
+
+        self.assertEqual("AAPL", canonical["ticker"])
+        self.assertEqual("Apple Inc.", canonical["issuer"])
+        self.assertEqual(
+            reported_identity,
+            {key: canonical[key] for key in reported_identity},
+        )
 
     def test_dollar_and_thousands_cases_normalize_to_expected_totals(
         self,

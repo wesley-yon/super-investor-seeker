@@ -47,6 +47,61 @@ class WorkflowResilienceTests(unittest.TestCase):
             "\n  cleanup-public-pages-artifacts:", 1
         )[0]
 
+    def _run_private_repository_guard(
+        self,
+        *,
+        repository_json: str,
+        read_status: int = 0,
+    ) -> tuple[subprocess.CompletedProcess[str], bool, str]:
+        publisher = read(PUBLISHER_SCRIPT)
+        function_start = publisher.index("verify_private_data_repository() {")
+        function_end = publisher.index("\nrelease_state() {", function_start)
+        function_source = publisher[function_start:function_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mutation_path = Path(tmpdir) / "mutation"
+            call_path = Path(tmpdir) / "read-call"
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    'DATA_REPOSITORY="owner/private-data"',
+                    r"""
+gh_read_retry() {
+  printf '%s\n' "$*" > "$GH_CALL_PATH"
+  printf '%s\n' "$REPOSITORY_JSON"
+  return "$GH_READ_STATUS"
+}
+gh_mutate_once() {
+  printf '%s\n' "$*" > "$MUTATION_PATH"
+}
+""",
+                    function_source,
+                    "verify_private_data_repository",
+                    'gh_mutate_once release create "dataset-new"',
+                )
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "GH_CALL_PATH": str(call_path),
+                    "GH_READ_STATUS": str(read_status),
+                    "MUTATION_PATH": str(mutation_path),
+                    "REPOSITORY_JSON": repository_json,
+                }
+            )
+            result = subprocess.run(
+                ["bash"],
+                cwd=ROOT,
+                env=env,
+                input=script,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            mutated = mutation_path.exists()
+            read_call = call_path.read_text(encoding="utf-8").strip()
+        return result, mutated, read_call
+
     def _run_publication_reconciliation(
         self,
         *,
@@ -561,6 +616,151 @@ gh_mutate_once() {
         self.assertNotRegex(update, r"(?m)^\s*- cron: '0 ")
         self.assertNotRegex(refresh, r"(?m)^\s*- cron: '0 ")
 
+    def test_security_master_workflows_use_only_sec_refresh_contracts(self):
+        update = read(".github/workflows/update-data.yml")
+        rebuild = read(".github/workflows/refresh-cusip-registry.yml")
+
+        self.assertIn(
+            "pipeline.py --regenerate-only --refresh-security-master",
+            update,
+        )
+        self.assertIn(
+            "pipeline.py --regenerate-only --rebuild-security-master --apply-quantity-policy",
+            rebuild,
+        )
+        self.assertIn("rebuild_security_master:", rebuild)
+        self.assertIn("inputs.rebuild_security_master == true", rebuild)
+        self.assertIn("inputs.rebuild_security_master != true", rebuild)
+        for workflow in (update, rebuild):
+            self.assertIn("SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}", workflow)
+            lowered = workflow.lower()
+            retired_provider = "open" + "figi"
+            for retired_contract in (
+                retired_provider,
+                "--retry-unresolved",
+                "--full-cusip-refresh",
+            ):
+                self.assertNotIn(retired_contract, lowered)
+
+        self.assertIn(
+            "if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'",
+            update.split("- name: Run pipeline", 1)[1].split(
+                "- name: Refresh recently accepted 13F filings", 1
+            )[0],
+        )
+        self.assertIn(
+            "steps.restore_snapshot.outputs.legacy_snapshot != 'true'",
+            update.split(
+                "- name: Refresh recently accepted 13F filings", 1
+            )[1].split(
+                "- name: Rebuild SEC-only registry-backed site data", 1
+            )[0],
+        )
+        legacy_rebuild = update.split(
+            "- name: Rebuild SEC-only registry-backed site data", 1
+        )[1].split("- name: Regenerate registry-backed site data", 1)[0]
+        self.assertIn(
+            "if: steps.restore_snapshot.outputs.legacy_snapshot == 'true'",
+            legacy_rebuild,
+        )
+        self.assertIn("timeout-minutes: 280", legacy_rebuild)
+        self.assertIn(
+            "timeout --signal=TERM --kill-after=120s 260m",
+            legacy_rebuild,
+        )
+        self.assertIn(
+            "pipeline.py --regenerate-only --rebuild-security-master --apply-quantity-policy",
+            legacy_rebuild,
+        )
+        for workflow in (update, rebuild):
+            self.assertNotIn(
+                "Preserve one-release SEC cutover difference report",
+                workflow,
+            )
+            self.assertNotIn(
+                ".cache/sec_security_master_migration_report.json",
+                workflow,
+            )
+
+    def test_repo_has_no_retired_provider_runtime_or_config_residue(self):
+        """Only deletion code and adversarial fixtures may name the provider."""
+
+        result = subprocess.run(
+            ["git", "ls-files", "-co", "--exclude-standard", "-z"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        )
+        provider = "open" + "figi"
+        expected = {
+            (
+                "scripts/data_snapshot.py",
+                f'Path(".cache/{provider}_details.json"),',
+            ),
+            (
+                "tests/test_sec_provenance_validation.py",
+                f'"label_source": "{provider}",',
+            ),
+            (
+                "tests/test_sec_provenance_validation.py",
+                f'"sources": ["{provider}"],',
+            ),
+            (
+                "tests/test_sec_provenance_validation.py",
+                f'"{provider}"',
+            ),
+        }
+        pattern = re.compile(rf"open[\s_-]*{provider[4:]}", re.IGNORECASE)
+        actual: list[tuple[str, str]] = []
+        for raw_path in result.stdout.split(b"\0"):
+            if not raw_path:
+                continue
+            relative_path = raw_path.decode("utf-8", errors="surrogateescape")
+            path = ROOT / relative_path
+            if not path.is_file() or path.is_symlink():
+                continue
+            if pattern.search(relative_path):
+                actual.append((relative_path, "<path>"))
+            payload = path.read_bytes()
+            if b"\0" in payload:
+                continue
+            for line in payload.decode("utf-8", errors="replace").splitlines():
+                if pattern.search(line):
+                    actual.append((relative_path, line.strip()))
+
+        self.assertEqual(sorted(expected), sorted(actual))
+
+    def test_legacy_snapshot_boolean_parses_true_and_false(self):
+        for path in MAINTENANCE_WORKFLOWS:
+            with self.subTest(workflow=path):
+                workflow = read(path)
+                match = re.search(
+                    r"legacy_snapshot=\$\(jq -er '(.*?)' <<<\"\$restore_json\"\)",
+                    workflow,
+                    re.DOTALL,
+                )
+                self.assertIsNotNone(match)
+                expression = match.group(1)
+                for value, expected in ((True, "true"), (False, "false")):
+                    result = subprocess.run(
+                        ["jq", "-er", expression],
+                        input=f'{{"legacy_snapshot":{str(value).lower()}}}',
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(expected, result.stdout.strip())
+
+                invalid = subprocess.run(
+                    ["jq", "-er", expression],
+                    input='{"legacy_snapshot":"false"}',
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(0, invalid.returncode)
+
     def test_manual_update_can_force_replay_one_cik(self):
         workflow = read(".github/workflows/update-data.yml")
         dispatch = workflow.split("  workflow_dispatch:", 1)[1].split(
@@ -771,7 +971,7 @@ gh_mutate_once() {
         update_job = update.split("\n  update:", 1)[1].split(
             "\n  deploy-pages:", 1
         )[0]
-        refresh_job = refresh.split("\n  refresh-cusips:", 1)[1].split(
+        refresh_job = refresh.split("\n  rebuild_security_master:", 1)[1].split(
             "\n  deploy-pages:", 1
         )[0]
         finalization = pages.split(
@@ -1165,7 +1365,7 @@ gh_mutate_once() {
         mutation_steps = {
             ".github/workflows/update-data.yml": "- name: Run pipeline",
             ".github/workflows/refresh-cusip-registry.yml": (
-                "- name: Fully refresh private CUSIP cache"
+                "- name: Clean-backfill SEC identity and security master"
             ),
         }
         for path, mutation in mutation_steps.items():
@@ -1214,9 +1414,137 @@ gh_mutate_once() {
             with self.subTest(path=path):
                 workflow = read(path)
                 self.assertIn(f"bash {PUBLISHER_SCRIPT}", workflow)
-                self.assertNotIn("actions/cache", workflow)
+
+                # Only checksum-bound Form 13F reconstruction work and compact
+                # exact-EDGAR batch journals may use Actions cache. The large
+                # staged state/master contain normalized official-list rows and
+                # must stay process-local. Generated data and snapshot members
+                # continue to come from the authenticated private release.
+                self.assertEqual(2, workflow.count("uses: actions/cache/"))
+                self.assertIn("actions/cache/restore@v4", workflow)
+                self.assertIn("actions/cache/save@v4", workflow)
+                self.assertIn(
+                    ".cache/sec_13f_bulk_rebuild_checkpoint.json",
+                    workflow,
+                )
+                self.assertIn(
+                    ".cache/sec_13f_bulk_source_state.json",
+                    workflow,
+                )
+                self.assertIn(
+                    ".cache/sec_13f_bulk_completed_receipt.json",
+                    workflow,
+                )
+                self.assertIn(
+                    ".cache/sec_13f_bulk_indices/.rebuild-*.sqlite3.partial",
+                    workflow,
+                )
+                self.assertIn(
+                    ".cache/sec_13f_bulk_indices/index-*.sqlite3",
+                    workflow,
+                )
+                self.assertIn(
+                    ".cache/"
+                    "sec_13f_bulk_rebuild_checkpoint.accession-discovery.json",
+                    workflow,
+                )
+                self.assertNotIn(
+                    ".cache/sec-security-master-rebuild-work/"
+                    "sec_13f_bulk_rebuild_checkpoint.accession-discovery.json",
+                    workflow,
+                )
+                self.assertNotRegex(
+                    workflow,
+                    r"(?m)^\s+\.cache/sec-security-master-rebuild-work\s*$",
+                )
+                self.assertIn(
+                    ".cache/sec-security-master-rebuild-work/manifest.json",
+                    workflow,
+                )
+                self.assertIn(
+                    ".cache/sec-security-master-rebuild-work/"
+                    "edgar-exception-batch-*.json",
+                    workflow,
+                )
+                self.assertNotIn(
+                    ".cache/sec-security-master-rebuild-work/"
+                    "sec_source_state.json",
+                    workflow,
+                )
+                self.assertNotIn(
+                    ".cache/sec-security-master-rebuild-work/"
+                    "sec_security_master.json",
+                    workflow,
+                )
+                self.assertIn("sec-clean-v1-parser1-", workflow)
+                self.assertIn(
+                    "steps.restore_snapshot.outputs.code_sha",
+                    workflow,
+                )
+                clean_cache_lines = [
+                    line
+                    for line in workflow.splitlines()
+                    if "sec-clean-v1-parser1-" in line
+                ]
+                self.assertTrue(clean_cache_lines)
+                self.assertTrue(
+                    all("github.sha" not in line for line in clean_cache_lines)
+                )
+                self.assertNotIn("path: data", workflow)
+                self.assertNotIn("path: .cache/sec_security_master.json", workflow)
                 self.assertIn("permissions:\n  contents: read", workflow)
                 self.assertNotRegex(workflow, r"(?m)^  contents: write$")
+
+    def test_snapshot_publisher_requires_exact_private_repository(self):
+        publisher = read(PUBLISHER_SCRIPT)
+        guard_call = publisher.index("\nverify_private_data_repository\n")
+        for mutation in (
+            'gh_mutate_once release create "$release_tag"',
+            'gh_mutate_once release upload "$release_tag"',
+            'gh_mutate_once release edit "$release_tag"',
+        ):
+            self.assertLess(guard_call, publisher.index(mutation))
+
+        result, mutated, read_call = self._run_private_repository_guard(
+            repository_json=(
+                '{"full_name":"owner/private-data","private":true,'
+                '"visibility":"private"}'
+            )
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(mutated)
+        self.assertEqual("api /repos/owner/private-data", read_call)
+
+        rejected = (
+            (
+                "public",
+                '{"full_name":"owner/private-data","private":false,'
+                '"visibility":"public"}',
+                0,
+            ),
+            (
+                "different repository",
+                '{"full_name":"owner/different-data","private":true,'
+                '"visibility":"private"}',
+                0,
+            ),
+            (
+                "unconfirmed visibility",
+                '{"full_name":"owner/private-data","private":true}',
+                0,
+            ),
+            ("API read failure", "", 22),
+        )
+        for label, repository_json, read_status in rejected:
+            with self.subTest(label=label):
+                result, mutated, read_call = self._run_private_repository_guard(
+                    repository_json=repository_json,
+                    read_status=read_status,
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertFalse(mutated)
+                self.assertEqual("api /repos/owner/private-data", read_call)
+                self.assertIn("::error::", result.stderr)
 
     def test_publishers_output_exact_deployment_identity(self):
         publisher = read(PUBLISHER_SCRIPT)
@@ -1276,11 +1604,101 @@ gh_mutate_once() {
 
     def test_registry_regeneration_has_realistic_timeout_headroom(self):
         workflow = read(".github/workflows/update-data.yml")
+        legacy = workflow.split(
+            "- name: Rebuild SEC-only registry-backed site data", 1
+        )[1].split("- name: Regenerate registry-backed site data", 1)[0]
         regenerate = workflow.split(
             "- name: Regenerate registry-backed site data", 1
         )[1].split("- name: Validate generated data", 1)[0]
 
-        self.assertIn("timeout-minutes: 45", regenerate)
+        self.assertIn("timeout-minutes: 280", legacy)
+        self.assertIn("timeout --signal=TERM --kill-after=120s 260m", legacy)
+        self.assertIn(
+            "Save nonpublishable SEC cutover work",
+            legacy,
+        )
+        self.assertIn(
+            "Remove cached Form 13F working set before validation",
+            legacy,
+        )
+        self.assertIn("timeout-minutes: 60", regenerate)
+        weekly = read(".github/workflows/refresh-cusip-registry.yml")
+        weekly_job = weekly.split("  rebuild_security_master:", 1)[1].split(
+            "\n  deploy-pages:", 1
+        )[0]
+        self.assertIn("timeout-minutes: 360", weekly_job)
+        legacy_step = weekly_job.split(
+            "- name: Clean-backfill SEC identity and security master", 1
+        )[1].split("- name: Refresh and audit private SEC security master", 1)[0]
+        incremental_step = weekly_job.split(
+            "- name: Refresh and audit private SEC security master", 1
+        )[1].split("- name: Validate generated data", 1)[0]
+        self.assertIn("timeout-minutes: 280", legacy_step)
+        self.assertIn(
+            "timeout --signal=TERM --kill-after=120s 260m",
+            legacy_step,
+        )
+        self.assertIn(
+            "Save nonpublishable clean-rebuild work",
+            legacy_step,
+        )
+        self.assertIn(
+            "Remove cached Form 13F working set before validation",
+            legacy_step,
+        )
+        self.assertIn("timeout-minutes: 90", incremental_step)
+        self.assertIn(
+            "steps.restore_snapshot.outputs.legacy_snapshot == 'true' ||",
+            legacy_step,
+        )
+        self.assertIn(
+            "inputs.rebuild_security_master == true",
+            legacy_step,
+        )
+        self.assertIn(
+            "steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&",
+            incremental_step,
+        )
+        self.assertIn(
+            "inputs.rebuild_security_master != true",
+            incremental_step,
+        )
+
+    def test_clean_checkpoint_is_saved_before_disk_cleanup_and_publication(self):
+        cases = (
+            (
+                read(".github/workflows/update-data.yml"),
+                "Restore nonpublishable SEC cutover checkpoint",
+                "Rebuild SEC-only registry-backed site data after legacy restore",
+                "Save nonpublishable SEC cutover work",
+            ),
+            (
+                read(".github/workflows/refresh-cusip-registry.yml"),
+                "Restore nonpublishable clean-rebuild checkpoint",
+                "Clean-backfill SEC identity and security master",
+                "Save nonpublishable clean-rebuild work",
+            ),
+        )
+        for workflow, restore_name, clean_name, save_name in cases:
+            with self.subTest(clean_name=clean_name):
+                restore_at = workflow.index(restore_name)
+                clean_at = workflow.index(clean_name)
+                save_at = workflow.index(save_name)
+                cleanup_at = workflow.index(
+                    "Remove cached Form 13F working set before validation"
+                )
+                validate_at = workflow.index("Validate generated data")
+                publish_at = workflow.index("bash scripts/publish_private_snapshot.sh")
+                self.assertLess(restore_at, clean_at)
+                self.assertLess(clean_at, save_at)
+                self.assertLess(save_at, cleanup_at)
+                self.assertLess(cleanup_at, validate_at)
+                self.assertLess(validate_at, publish_at)
+                save_step = workflow[save_at:cleanup_at]
+                self.assertIn("if: always()", save_step)
+                self.assertIn("${{ github.run_attempt }}", save_step)
+                cleanup_step = workflow[cleanup_at:validate_at]
+                self.assertIn("success()", cleanup_step)
 
     def test_every_snapshot_publisher_runs_contract_tests_first(self):
         command = (
@@ -1524,7 +1942,7 @@ gh_mutate_once() {
         expected_outputs = {
             ".github/workflows/update-data.yml": "needs.update.outputs",
             ".github/workflows/refresh-cusip-registry.yml": (
-                "needs.refresh-cusips.outputs"
+                "needs.rebuild_security_master.outputs"
             ),
         }
         for path, outputs in expected_outputs.items():

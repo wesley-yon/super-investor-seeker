@@ -28,6 +28,8 @@ INSTRUMENT_TYPES = (
 )
 VALID_INSTRUMENT_TYPES = frozenset(INSTRUMENT_TYPES)
 DEFAULT_INSTRUMENT_TYPE = "EQUITY"
+SEC_TICKER_PATTERN = r"^[A-Z][A-Z0-9.\-/^]{0,15}$"
+SEC_TICKER_RE = re.compile(SEC_TICKER_PATTERN)
 SECURITY_KINDS = (
     "COMMON",
     "PREFERRED",
@@ -47,11 +49,9 @@ EQUITY_FUND_SECURITY_KINDS = frozenset({
     "CLOSED-END FUND",
 })
 FUND_IDENTITY_TICKER_SOURCES = frozenset({
-    "cusip_map_vetted",
-    "manual_override",
-    "openfigi_plain_ticker",
-    "openfigi_prior_registry_ticker",
+    "sec_fund_series",
 })
+EXACT_SEC_TICKER_SOURCES = frozenset({"sec_ftd", "sec_ixbrl"})
 
 _UNSAFE_FILENAME_CHARS_RE = re.compile(r"[^A-Z0-9._-]")
 _MUTUAL_FUND_TICKER_RE = re.compile(r"^[A-Z]{4}X$")
@@ -314,7 +314,7 @@ def normalize_security_label(
 ) -> str | None:
     """Return safe, deterministic single-line display metadata.
 
-    Labels deliberately permit punctuation used by OpenFIGI and SEC security
+    Labels deliberately permit punctuation used by SEC security
     descriptions. Control characters, overlong values, and a bare copy of the
     canonical identifier are rejected so callers never mistake a raw CUSIP
     fallback for descriptive metadata.
@@ -434,11 +434,11 @@ def compose_security_label(
 def normalize_note_security_label(label: object | None) -> str | None:
     """Return one structured issuer/terms note label for display.
 
-    OpenFIGI note tickers commonly look like ``RIVN 3.625 10/15/30``. Some
+    Historical note descriptions commonly look like ``RIVN 3.625 10/15/30``. Some
     venues append the maturity year a second time (for example
     ``UBER 0.875 12/01/28 2028``); that redundant suffix is removed. A narrow
     state/issuer/maturity form is also retained for municipal securities whose
-    OpenFIGI ticker omits the coupon.
+    reported descriptions omit the coupon.
     """
 
     normalized = " ".join(str(label or "").strip().upper().split())
@@ -534,7 +534,9 @@ def registry_entry_has_trusted_fund_symbol_evidence(
     sources = set(entry.get("sources") or [])
     if (
         "ticker_collision_demoted" in sources
-        or not (sources & FUND_IDENTITY_TICKER_SOURCES)
+        or entry.get("mapping_status") != "resolved"
+        or entry.get("ticker_source") not in EXACT_SEC_TICKER_SOURCES
+        or not FUND_IDENTITY_TICKER_SOURCES.issubset(sources)
     ):
         return False
     return is_mutual_fund_ticker(entry.get("ticker"))
@@ -544,28 +546,16 @@ def published_holding_instrument_type(
     holding: Mapping[str, object] | None,
     registry_entry: dict | None = None,
 ) -> str:
-    """Return the canonical instrument type used by public stock artifacts.
+    """Preserve the saved position identity in every derived stock artifact.
 
-    Persisted rows retain filing evidence. A stronger registry classification
-    may correct a legacy option parse to debt or collapse a non-option parser
-    bucket to a confirmed listed fund share. Explicit fund options stay
-    separate.
+    One registry entry represents a CUSIP's dominant security. It cannot
+    reclassify a particular saved position, even when its direct-security
+    metadata has exact SEC provenance. Evidence-backed identity repairs belong
+    to filing replay; display regeneration keeps the canonical row identity.
+    The registry argument remains for compatibility with callers.
     """
 
-    raw_type = holding_instrument_type(holding)
-    if (
-        isinstance(registry_entry, dict)
-        and normalize_security_kind(registry_entry.get("security_kind"))
-        == "BOND"
-        and normalize_instrument_type(registry_entry.get("type")) == "NOTE"
-    ):
-        return "NOTE"
-    if (
-        raw_type not in {"CALL", "PUT", "OPT"}
-        and registry_entry_has_equity_fund_identity(registry_entry)
-    ):
-        return "EQUITY"
-    return raw_type
+    return holding_instrument_type(holding)
 
 
 def synthetic_identifier_ticker_hint(identifier: object | None) -> str | None:

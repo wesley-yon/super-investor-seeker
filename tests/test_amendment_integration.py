@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import pipeline
+import validate_data
 
 
 CIK = 1393818
@@ -228,6 +229,130 @@ class FilingComponentTests(unittest.TestCase):
             parsed["value_unit_method"],
         )
         self.assertEqual(1, len(parsed["holdings"]))
+        source = parsed["reported_identity_source"]
+        self.assertEqual(BASE_ACCESSION, source["accession"])
+        self.assertEqual(REPORT_DATE, source["report_date"])
+        self.assertEqual(
+            "https://www.sec.gov/Archives/edgar/data/1393818/"
+            "000119312526054623/information_table.xml",
+            source["url"],
+        )
+        self.assertEqual(
+            hashlib.sha256(self.INFO_TABLE).hexdigest(),
+            source["sha256"],
+        )
+
+    def test_live_filing_identity_source_reaches_master_acceptance(self) -> None:
+        with (
+            mock.patch.object(
+                pipeline.HTTP,
+                "get",
+                side_effect=self.responses(value_total=100),
+            ),
+            mock.patch.object(
+                pipeline,
+                "load_prior_value_unit_context",
+                return_value=(None, None),
+            ),
+        ):
+            component = pipeline.fetch_filing_holdings(
+                CIK,
+                BASE_ACCESSION,
+                filing=BASE_ROW,
+            )
+        quarter = pipeline.compose_quarter_filings([component])
+        self.assertEqual(
+            [component["reported_identity_source"]],
+            quarter["reported_identity_sources"],
+        )
+        universe = pipeline._security_universe_from_holdings(
+            quarter["holdings"],
+            quarter["reported_identity_sources"],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = pipeline.load_source_state(Path(tmpdir) / "missing.json")
+        master = pipeline.rebuild_sec_security_master(state, universe)
+        audit = pipeline._audit_security_master(
+            master,
+            enforce_reported_identity_evidence=True,
+        )
+        self.assertEqual(1, audit["reported_identity_count"])
+        self.assertEqual(1, audit["evidenced_reported_identity_count"])
+        self.assertTrue(audit["reported_identity_evidence_gate_passed"])
+        errors: list[str] = []
+        validate_data.validate_amendment_composition(
+            quarter,
+            "live filing fixture",
+            errors,
+        )
+        self.assertEqual([], errors)
+
+        quarter["reported_identity_sources"][0]["sha256"] = "bad"
+        errors = []
+        validate_data.validate_amendment_composition(
+            quarter,
+            "tampered live filing fixture",
+            errors,
+        )
+        self.assertTrue(any(
+            "reported identity source" in error for error in errors
+        ))
+
+    def test_superseded_component_identity_source_is_not_left_unbound(self) -> None:
+        restatement_accession = "0001193125-26-222222"
+
+        def source(accession: str, filename: str) -> dict[str, str]:
+            compact = accession.replace("-", "")
+            return {
+                "accession": accession,
+                "report_date": REPORT_DATE,
+                "url": (
+                    f"https://www.sec.gov/Archives/edgar/data/{CIK}/"
+                    f"{compact}/{filename}"
+                ),
+                "sha256": hashlib.sha256(filename.encode()).hexdigest(),
+            }
+
+        original = {
+            **BASE_COMPONENT,
+            "reported_identity_source": source(
+                BASE_ACCESSION,
+                "original-information-table.xml",
+            ),
+        }
+        restatement = component(
+            restatement_accession,
+            "RESTATEMENT",
+            "2026-04-01T12:00:00Z",
+            [holding("888888888", 80)],
+            amendment_number=1,
+        )
+        restatement["reported_identity_source"] = source(
+            restatement_accession,
+            "restatement-information-table.xml",
+        )
+
+        quarter = pipeline.compose_quarter_filings([original, restatement])
+
+        self.assertEqual(
+            [restatement["reported_identity_source"]],
+            quarter["reported_identity_sources"],
+        )
+        by_accession = {
+            item["accession"]: item for item in quarter["source_filings"]
+        }
+        self.assertEqual(
+            "SUPERSEDED",
+            by_accession[BASE_ACCESSION]["composition_action"],
+        )
+        self.assertNotIn(
+            "reported_identity_source",
+            by_accession[BASE_ACCESSION],
+        )
+        self.assertEqual(
+            restatement["reported_identity_source"],
+            by_accession[restatement_accession]["reported_identity_source"],
+        )
 
     def test_component_rejects_primary_filer_cik_conflict(self) -> None:
         with mock.patch.object(
@@ -533,23 +658,33 @@ class FilingComponentTests(unittest.TestCase):
                     CIK, BASE_ACCESSION, filing=BASE_ROW
                 )
 
-    def test_nonzero_row_dropped_by_parser_fails_reconciliation(self) -> None:
+    def test_nonzero_malformed_identifier_is_preserved_for_quarantine(self) -> None:
         invalid_nonzero = b"""<informationTable><infoTable>
           <nameOfIssuer>N/A</nameOfIssuer><titleOfClass>NONE</titleOfClass>
           <cusip>000000000</cusip><value>100</value>
           <shrsOrPrnAmt><sshPrnamt>0</sshPrnamt></shrsOrPrnAmt>
         </infoTable></informationTable>"""
-        with mock.patch.object(
-            pipeline.HTTP,
-            "get",
-            side_effect=self.responses(100, invalid_nonzero),
+        with (
+            mock.patch.object(
+                pipeline.HTTP,
+                "get",
+                side_effect=self.responses(100, invalid_nonzero),
+            ),
+            mock.patch.object(
+                pipeline,
+                "load_prior_value_unit_context",
+                return_value=(1, None),
+            ),
         ):
-            with self.assertRaisesRegex(
-                pipeline.FilingParseError, "nonzero information-table rows"
-            ):
-                pipeline.fetch_filing_holdings(
-                    CIK, BASE_ACCESSION, filing=BASE_ROW
-                )
+            parsed = pipeline.fetch_filing_holdings(
+                CIK, BASE_ACCESSION, filing=BASE_ROW
+            )
+
+        self.assertEqual(1, len(parsed["holdings"]))
+        holding = parsed["holdings"][0]
+        self.assertEqual("000000000", holding["reported_cusip"])
+        self.assertEqual("000000000", holding["cusip"])
+        self.assertEqual(100, holding["value"])
 
     def test_zero_placeholder_is_a_complete_empty_portfolio(self) -> None:
         zero_placeholder = b"""<informationTable><infoTable>

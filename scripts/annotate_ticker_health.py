@@ -26,10 +26,10 @@ def main() -> int:
     try:
         report = json.loads(report_path.read_text())
     except (OSError, ValueError) as e:
-        print(f"::warning title=ticker_health::could not read {report_path}: {e}")
+        print(f"::notice title=ticker_health::could not read {report_path}: {e}")
         return 0
     if not isinstance(report, dict):
-        print(f"::warning title=ticker_health::{report_path} did not contain a JSON object")
+        print(f"::notice title=ticker_health::{report_path} did not contain a JSON object")
         return 0
     label_coverage = report.get("label_coverage") or {}
     label_total = int(label_coverage.get("total") or 0)
@@ -38,7 +38,7 @@ def main() -> int:
     if label_missing:
         samples = ", ".join(label_coverage.get("unlabeled_samples") or [])
         print(
-            f"::warning title=security_labels::{label_missing} of "
+            f"::notice title=security_labels::{label_missing} of "
             f"{label_total} CUSIP(s) lack a display label"
             + (f" — samples: {samples}" if samples else "")
         )
@@ -93,7 +93,7 @@ def main() -> int:
                     for entry in actionable[:5]
                 )
                 print(
-                    "::warning title=ticker_health::"
+                    "::notice title=ticker_health::"
                     f"{len(actionable)} current unresolved "
                     "EQUITY/PREF/WARRANT or legacy CUSIP(s)"
                     + (
@@ -117,7 +117,7 @@ def main() -> int:
                 print(
                     f"::notice title=ticker_health_backlog::{len(deferred)} "
                     "stable debt/option, stale, or specialized unresolved "
-                    "CUSIP(s) retained for weekly refresh"
+                    "CUSIP(s) retained for observability"
                     + (f" — {breakdown}" if breakdown else "")
                 )
             continue
@@ -140,7 +140,7 @@ def main() -> int:
                     for entry in actionable[:5]
                 )
                 print(
-                    "::warning title=ticker_health::"
+                    "::notice title=ticker_health::"
                     f"{len(actionable)} current nonzero synthetic identifier(s)"
                     + (
                         f" — top by value: {actionable_examples}"
@@ -157,7 +157,7 @@ def main() -> int:
                 )
             continue
         print(
-            f"::warning title=ticker_health::{count} {bucket} CUSIP(s)"
+            f"::notice title=ticker_health::{count} {bucket} CUSIP(s)"
             + (f" — top by value: {examples}" if examples else "")
         )
     return 0

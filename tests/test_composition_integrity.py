@@ -37,6 +37,12 @@ class CompositionIntegrityCompatibilityTests(unittest.TestCase):
             {
                 "cusip": "222222222",
                 "class": "COM",
+                "reported_issuer": "EXAMPLE TWO INC",
+                "reported_class": "COM",
+                "reported_cusip": "222222222",
+                "reported_figi": "BBG000000002",
+                "accession": "0000000000-26-000001",
+                "report_date": "2026-03-31",
                 "value": 250,
                 "shares": 25,
                 "put_call": None,
@@ -45,6 +51,11 @@ class CompositionIntegrityCompatibilityTests(unittest.TestCase):
             {
                 "cusip": "111111111",
                 "class": "COM",
+                "reported_issuer": "EXAMPLE ONE INC",
+                "reported_class": "COM",
+                "reported_cusip": "111111111",
+                "accession": "0000000000-26-000002",
+                "report_date": "2026-03-31",
                 "value": 100,
                 "shares": 10,
                 "shares_imputed": True,
@@ -120,6 +131,31 @@ class CompositionIntegrityCompatibilityTests(unittest.TestCase):
                 current_hash_version=2,
             ),
         )
+
+    def test_v3_binds_every_immutable_reported_identity_field(self) -> None:
+        fields = (
+            "reported_issuer",
+            "reported_class",
+            "reported_cusip",
+            "reported_figi",
+            "accession",
+            "report_date",
+        )
+        for field in fields:
+            with self.subTest(field=field):
+                quarter = self.quarter(3)
+                original = composition_integrity.calculate_quarter_composition_hash(
+                    quarter,
+                    current_hash_version=3,
+                )
+                quarter["holdings"][0][field] = f"changed-{field}"
+                self.assertNotEqual(
+                    original,
+                    composition_integrity.calculate_quarter_composition_hash(
+                        quarter,
+                        current_hash_version=3,
+                    ),
+                )
 
 
 if __name__ == "__main__":

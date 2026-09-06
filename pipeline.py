@@ -11,15 +11,15 @@ Usage:
     python3 pipeline.py --cik 1067983 --quarters 2  # search 2 for one filer
     python3 pipeline.py --regenerate-only           # rebuild from existing fund
                                                     # files; no SEC filing fetches
-    python3 pipeline.py --regenerate-only --full-cusip-refresh
+    python3 pipeline.py --regenerate-only --rebuild-security-master
                                                     # rebuild from existing fund
                                                     # files, fully refresh the
-                                                    # private CUSIP cache, and
-                                                    # rebuild the snapshot CUSIP
+                                                    # private SEC security
+                                                    # master, and rebuild the
+                                                    # snapshot CUSIP
                                                     # registry + derived outputs
 
 Reads SEC_USER_AGENT from env. SEC requires a real contact email in the UA.
-Optionally reads OPENFIGI_API_KEY for higher-rate CUSIP->ticker lookups.
 """
 
 from __future__ import annotations
@@ -42,9 +42,10 @@ import tempfile
 import threading
 import time
 from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse, urlsplit, urlunsplit
 
 import requests
 from lxml import etree
@@ -63,8 +64,9 @@ from quarter_health import (
     structural_quarter_health_issues,
 )
 from security_identity import (
-    EQUITY_FUND_SECURITY_KINDS as _EQUITY_FUND_SECURITY_KINDS,
     FUND_IDENTITY_TICKER_SOURCES as _FUND_IDENTITY_TICKER_SOURCES,
+    SEC_TICKER_RE,
+    VALID_INSTRUMENT_TYPES,
     compose_security_label,
     holding_instrument_type,
     is_mutual_fund_ticker,
@@ -74,14 +76,65 @@ from security_identity import (
     normalize_security_identifier,
     normalize_security_kind,
     normalize_security_label,
-    sec_issuer_proof_key,
     sec_ticker_titles,
     stock_filename,
     stock_lookup_id,
     published_holding_instrument_type,
     registry_entry_has_equity_fund_identity as _registry_entry_has_equity_fund_identity,
-    registry_entry_has_trusted_fund_symbol_evidence as _entry_has_trusted_fund_symbol_evidence,
     synthetic_identifier_ticker_hint,
+)
+from sec_13f_bulk_backfill import (
+    LEGACY_INDEX_ADOPTION_RECEIPT_SCOPE,
+    build_completed_clean_rebuild_receipt,
+    ensure_clean_rebuild_disk_space,
+    load_completed_clean_rebuild_receipt,
+    normalize_sec_identity_source_url,
+    prepare_unpublished_legacy_index_adoption,
+    rebuild_reported_identity_from_sec,
+    reported_identity_backfill_audit,
+)
+from sec_edgar_evidence import (
+    CACHE_SCHEMA_VERSION as SEC_EDGAR_CACHE_SCHEMA_VERSION,
+    EvidenceSchemaError,
+    discover_sec_edgar_sources,
+    make_sec_discovery_fetcher,
+    merge_sec_edgar_evidence_caches,
+    refresh_sec_edgar_evidence,
+)
+from sec_security_master import (
+    DEFAULT_MASTER_PATH as SEC_SECURITY_MASTER_PATH,
+    DEFAULT_SOURCE_STATE_PATH as SEC_SOURCE_STATE_PATH,
+    MASTER_SCHEMA_VERSION as SEC_SECURITY_MASTER_SCHEMA_VERSION,
+    PRODUCTION_MIN_ACTIVE_OFFICIAL_CUSIP_COUNT,
+    PRODUCTION_MIN_CURRENT_SYMBOL_POPULATION_BY_KIND,
+    PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO,
+    RefreshResult as SecSecurityMasterRefreshResult,
+    SecurityMasterAcceptanceError,
+    SourceParseError,
+    SourceSchemaChangeError,
+    SourceSchemaError,
+    SOURCE_STATE_SCHEMA_VERSION as SEC_SOURCE_STATE_SCHEMA_VERSION,
+    audit_security_master as _audit_security_master,
+    cusip_quarantine_reason,
+    load_security_master,
+    load_security_master_pair,
+    load_source_state,  # noqa: F401 - retained for pipeline API compatibility
+    make_sec_fetcher,
+    rebuild_security_master as rebuild_sec_security_master,
+    recover_security_master_pair,
+    refresh_security_master,
+    resolve_security,
+    save_security_master,  # noqa: F401 - retained for test/caller compatibility
+    save_security_master_pair,
+    save_source_state,  # noqa: F401 - retained for test/caller compatibility
+    sec_fund_series_url,
+    security_key,
+    source_state_sha256,
+)
+from security_master_migration import (
+    build_cutover_difference_report,
+    capture_cutover_projection,
+    write_cutover_difference_report,
 )
 from value_units import (
     VALUE_UNIT_POLICY_VERSION,
@@ -116,11 +169,9 @@ INDEX_PATH = DATA_DIR / "index.json"
 FUNDS_INDEX_PATH = DATA_DIR / "funds-index.json"
 STATE_PATH = DATA_DIR / "pipeline_state.json"
 LEGACY_STATE_PATH = CACHE_DIR / "pipeline_state.json"
-LEGACY_CUSIP_MAP_PATH = DATA_DIR / "cusip_map.json"
-CUSIP_MAP_PATH = CACHE_DIR / "cusip_map.json"
-OPENFIGI_DETAILS_PATH = CACHE_DIR / "openfigi_details.json"
-SEC_FUND_NAMES_PATH = CACHE_DIR / "sec_fund_names.json"
-SEC_FUND_TICKERS_PATH = CACHE_DIR / "company_tickers_mf.json"
+SEC_SECURITY_MASTER_MIGRATION_REPORT_PATH = (
+    CACHE_DIR / "sec_security_master_migration_report.json"
+)
 TICKER_HEALTH_PATH = DATA_DIR / "ticker_health.json"
 SECURITY_LABELS_PATH = DATA_DIR / "security_labels.json"
 # The private cache carries operational evidence, while the snapshot's data
@@ -141,15 +192,18 @@ MAX_RETRIES = 6
 RETRY_BASE = 2.0
 RETRY_MAX = 60.0
 HTTP_TIMEOUT = 30
+MAX_SEC_REDIRECTS = 5
+SEC_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+SEC_HTTP_HOSTS = frozenset({"sec.gov", "www.sec.gov", "data.sec.gov"})
 
 # Concurrent workers. The SEC rate limiter is shared + thread-safe, so all
 # workers collectively stay under MIN_REQUEST_INTERVAL. Parallelism exists
 # purely to absorb network round-trip latency (~200-300ms per SEC request)
 # and to keep forward progress when some workers are blocked in downstream
-# ticker-resolution calls like OpenFIGI.
+# SEC evidence requests.
 WORKER_COUNT = int(os.environ.get("PIPELINE_WORKERS", "8"))
 AMENDMENT_REDUCER_VERSION = 2
-COMPOSITION_HASH_VERSION = 2
+COMPOSITION_HASH_VERSION = 3
 AMENDMENT_MIGRATION_FILING_QUARTERS = 8
 AMENDMENT_MIGRATION_RETRY_INTERVAL_DAYS = 7
 NEW_HOLDINGS_IDENTITY_VERSION = 1
@@ -355,6 +409,34 @@ class FundDataError(RuntimeError):
     """Existing materialized fund data is unsafe to read or replace."""
 
 
+class NonSECRequestURL(ValueError):
+    """A URL could send the contact-bearing SEC user agent off policy."""
+
+
+def _normalize_sec_request_url(value: object) -> str:
+    """Return a canonical HTTPS SEC URL or fail before network access."""
+
+    raw_url = str(value or "").strip()
+    parsed = urlsplit(raw_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise NonSECRequestURL("invalid SEC request URL port") from exc
+    host = (parsed.hostname or "").casefold()
+    if (
+        parsed.scheme.casefold() != "https"
+        or host not in SEC_HTTP_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or parsed.fragment
+        or "\\" in parsed.path
+        or any(part in {".", ".."} for part in parsed.path.split("/"))
+    ):
+        raise NonSECRequestURL("only canonical HTTPS SEC request URLs are allowed")
+    return urlunsplit(("https", host, parsed.path or "/", parsed.query, ""))
+
+
 class RateLimitedSession:
     """Thread-safe global HTTP session. Throttles the rate at which requests
     are *issued* (not in-flight) — multiple workers can have simultaneous
@@ -386,15 +468,56 @@ class RateLimitedSession:
             self._last_request = time.monotonic()
 
     def get(self, url: str, **kwargs) -> requests.Response:
+        canonical_url = _normalize_sec_request_url(url)
+        request_kwargs = dict(kwargs)
+        # This invariant cannot be overridden by a caller: redirect targets
+        # must be validated before the contact-bearing user agent is sent.
+        request_kwargs["allow_redirects"] = False
         delay = RETRY_BASE
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
-            self._claim_slot()
+            request_url = canonical_url
             try:
-                resp = self.session.get(url, timeout=HTTP_TIMEOUT, **kwargs)
+                for redirect_count in range(MAX_SEC_REDIRECTS + 1):
+                    self._claim_slot()
+                    resp = self.session.get(
+                        request_url,
+                        timeout=HTTP_TIMEOUT,
+                        **request_kwargs,
+                    )
+                    response_url = _normalize_sec_request_url(
+                        str(resp.url or request_url)
+                    )
+                    if response_url != request_url:
+                        raise NonSECRequestURL(
+                            "SEC response URL changed without an approved redirect"
+                        )
+                    if resp.status_code not in SEC_REDIRECT_STATUS_CODES:
+                        if 300 <= resp.status_code < 400:
+                            raise NonSECRequestURL(
+                                "unsupported SEC redirect response"
+                            )
+                        break
+                    if redirect_count >= MAX_SEC_REDIRECTS:
+                        raise NonSECRequestURL(
+                            "SEC response exceeded the redirect limit"
+                        )
+                    location = str(
+                        resp.headers.get("Location") or ""
+                    ).strip()
+                    if not location:
+                        raise NonSECRequestURL(
+                            "SEC redirect response has no Location header"
+                        )
+                    # Resolve and validate before Requests receives the target.
+                    # This prevents its session-level private user agent from
+                    # ever being sent to a non-SEC or non-HTTPS destination.
+                    request_url = _normalize_sec_request_url(
+                        urljoin(response_url, location)
+                    )
                 if resp.status_code in (403, 429, 503):
                     log.warning(
-                        f"  HTTP {resp.status_code} on {url} "
+                        f"  HTTP {resp.status_code} on {request_url} "
                         f"(attempt {attempt + 1}/{MAX_RETRIES})"
                     )
                     if attempt < MAX_RETRIES - 1:
@@ -402,26 +525,24 @@ class RateLimitedSession:
                         delay *= 2
                         continue
                 resp.raise_for_status()
+                resp.url = response_url
                 return resp
             except requests.RequestException as e:
                 last_exc = e
                 log.warning(
-                    f"  request error on {url}: {e} "
+                    f"  request error on {canonical_url}: {e} "
                     f"(attempt {attempt + 1}/{MAX_RETRIES})"
                 )
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(min(delay, RETRY_MAX))
                     delay *= 2
                     continue
-        raise RuntimeError(f"GET failed after {MAX_RETRIES} retries: {url}") from last_exc
+        raise RuntimeError(
+            f"GET failed after {MAX_RETRIES} retries: {canonical_url}"
+        ) from last_exc
 
 
 HTTP = RateLimitedSession()
-OPENFIGI_LOCK = threading.Lock()
-# Process-local only: avoid asking OpenFIGI about the same identifier on every
-# replayed quarter. ``None`` records that no ticker string can be returned for
-# this run; durable matched/no-match provenance lives in openfigi_details.json.
-_OPENFIGI_RUN_CACHE: dict[str, str | None] = {}
 
 
 # ----------------------------------------------------------------------------
@@ -1047,6 +1168,7 @@ def load_peer_value_unit_prices(
                             and not isinstance(shares, bool)
                             and shares > 0
                             and not entry.get("shares_imputed")
+                            and not entry.get("quantity_unknown")
                         ):
                             histories[entry_date].append(
                                 (holder_cik, float(value) / float(shares))
@@ -1267,6 +1389,10 @@ def fetch_filing_holdings(
         if name == "primary_doc.xml":
             primary_doc_name = name
         elif name.lower().endswith(".xml"):
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}", name) is None:
+                raise FilingParseError(
+                    f"unsafe filing document name for {cik}/{accession}"
+                )
             candidate_xmls.append(name)
 
     if not primary_doc_name:
@@ -1337,6 +1463,7 @@ def fetch_filing_holdings(
 
     holdings: list[dict] | None = None
     information_bytes: bytes | None = None
+    information_url: str | None = None
     raw_entry_total = 0
     raw_value_total = 0
     effective_entry_total = 0
@@ -1358,7 +1485,11 @@ def fetch_filing_holdings(
             entry_total, value_total = _information_table_totals(xml_resp.content)
         except FilingParseError:
             continue
-        parsed = parse_information_table(xml_resp.content)
+        parsed = parse_information_table(
+            xml_resp.content,
+            accession=accession,
+            report_date=report_date,
+        )
         recognized_empty_placeholder = (
             parsed is None
             and value_total == 0
@@ -1377,6 +1508,7 @@ def fetch_filing_holdings(
         if recognized_empty_placeholder:
             holdings = []
             information_bytes = xml_resp.content
+            information_url = base + fname
             raw_entry_total = entry_total
             raw_value_total = value_total
             effective_entry_total = cover_entries
@@ -1407,6 +1539,7 @@ def fetch_filing_holdings(
         if entry_total == cover_entries and value_total == cover_value:
             holdings = parsed
             information_bytes = xml_resp.content
+            information_url = base + fname
             raw_entry_total = entry_total
             raw_value_total = value_total
             effective_entry_total = entry_total
@@ -1440,6 +1573,7 @@ def fetch_filing_holdings(
             effective_entry_total = raw_entry_total
             effective_value_total = raw_value_total
             cover_reconciliation_status = "MISMATCH_UNIQUE_TABLE"
+            information_url = base + selected_name
             log.warning(
                 "  accepting unique internally complete information table %s "
                 "for %s despite cover mismatch: entries table=%s cover=%s; "
@@ -1507,6 +1641,26 @@ def fetch_filing_holdings(
     source_hash = hashlib.sha256(
         primary_bytes + b"\0" + (information_bytes or b"")
     ).hexdigest()
+    if information_bytes is None or information_url is None:
+        raise FilingParseError(
+            f"selected information table lacks source evidence for "
+            f"{cik}/{accession}"
+        )
+    try:
+        reported_identity_url = normalize_sec_identity_source_url(
+            information_url,
+            accession=accession,
+        )
+    except ValueError as exc:
+        raise FilingParseError(
+            f"selected information-table URL is invalid for {cik}/{accession}"
+        ) from exc
+    reported_identity_source = {
+        "accession": accession,
+        "report_date": report_date,
+        "url": reported_identity_url,
+        "sha256": hashlib.sha256(information_bytes).hexdigest(),
+    }
     return {
         "cik": cik,
         "report_date": report_date,
@@ -1536,6 +1690,7 @@ def fetch_filing_holdings(
         **unit_metadata,
         "security_identity_version": SECURITY_IDENTITY_VERSION,
         "source_hash": source_hash,
+        "reported_identity_source": reported_identity_source,
         "holdings": holdings,
     }
 
@@ -1646,7 +1801,7 @@ def display_ticker_for_holding_type(
     """Return safe display metadata for one persisted holding type.
 
     A structured note label is useful only on a NOTE row. Conversely, a NOTE
-    row should not inherit a plain common-stock symbol when OpenFIGI or the
+    row should not inherit a plain common-stock symbol when SEC evidence or the
     SEC class evidence refers to a different security type.
     """
     raw_ticker = str(ticker or "").strip().upper()
@@ -1699,6 +1854,155 @@ def _component_source_hash(component: dict) -> str:
         ),
         "holdings": component.get("holdings"),
     })
+
+
+def _component_reported_identity_source(
+    component: dict,
+) -> dict[str, str] | None:
+    """Validate the exact SEC document that supplied reported identities."""
+
+    raw = component.get("reported_identity_source")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {
+        "accession",
+        "report_date",
+        "url",
+        "sha256",
+    }:
+        raise FilingChainError(
+            "invalid_component",
+            "reported identity source must contain accession, report_date, "
+            "url, and sha256",
+        )
+    accession = str(raw.get("accession") or "").strip()
+    report_date = str(raw.get("report_date") or "").strip()
+    checksum = str(raw.get("sha256") or "").strip().lower()
+    try:
+        url = normalize_sec_identity_source_url(
+            str(raw.get("url") or "").strip(),
+            accession=accession,
+        )
+    except ValueError as exc:
+        raise FilingChainError(
+            "invalid_component",
+            "reported identity source URL is not an exact SEC filing source",
+        ) from exc
+    if (
+        accession != component.get("accession")
+        or report_date != component.get("report_date")
+        or raw.get("url") != url
+        or raw.get("sha256") != checksum
+        or re.fullmatch(r"[0-9a-f]{64}", checksum) is None
+    ):
+        raise FilingChainError(
+            "invalid_component",
+            "reported identity source does not match its filing component",
+        )
+    return {
+        "accession": accession,
+        "report_date": report_date,
+        "url": url,
+        "sha256": checksum,
+    }
+
+
+def _quarter_has_complete_reported_identity_sources(quarter: dict) -> bool:
+    """Check compact SEC source refs before upgrading immutable hash proof."""
+
+    sources = quarter.get("reported_identity_sources")
+    holdings = quarter.get("holdings")
+    applied = quarter.get("applied_accessions")
+    if (
+        not isinstance(sources, list)
+        or not isinstance(holdings, list)
+        or not isinstance(applied, list)
+    ):
+        return False
+    normalized: list[dict[str, str]] = []
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != {
+            "accession",
+            "report_date",
+            "url",
+            "sha256",
+        }:
+            return False
+        accession = str(source.get("accession") or "").strip()
+        report_date = str(source.get("report_date") or "").strip()
+        checksum = str(source.get("sha256") or "").strip().lower()
+        try:
+            url = normalize_sec_identity_source_url(
+                source.get("url"),
+                accession=accession,
+            )
+        except ValueError:
+            return False
+        canonical = {
+            "accession": accession,
+            "report_date": report_date,
+            "url": url,
+            "sha256": checksum,
+        }
+        if (
+            source != canonical
+            or accession not in applied
+            or report_date != quarter.get("report_date")
+            or re.fullmatch(r"[0-9a-f]{64}", checksum) is None
+        ):
+            return False
+        normalized.append(canonical)
+    canonical_sources = sorted(
+        normalized,
+        key=lambda source: (
+            source["accession"],
+            source["report_date"],
+            source["url"],
+            source["sha256"],
+        ),
+    )
+    if normalized != canonical_sources or len({
+        (
+            source["accession"],
+            source["report_date"],
+            source["url"],
+            source["sha256"],
+        )
+        for source in normalized
+    }) != len(normalized):
+        return False
+    covered = {
+        (source["accession"], source["report_date"])
+        for source in normalized
+    }
+    return all(
+        isinstance(holding, dict)
+        and (
+            str(holding.get("accession") or ""),
+            str(holding.get("report_date") or ""),
+        )
+        in covered
+        for holding in holdings
+    )
+
+
+def _holding_has_hashable_reported_identity(holding: dict) -> bool:
+    """Require explicit SEC fields while allowing canonical as-filed blanks."""
+
+    for field in ("reported_issuer", "reported_class"):
+        value = holding.get(field)
+        if (
+            field not in holding
+            or not isinstance(value, str)
+            or value != value.strip()
+        ):
+            return False
+    return all(
+        isinstance(holding.get(field), str)
+        and bool(holding[field].strip())
+        for field in ("reported_cusip", "accession", "report_date")
+    )
+
 
 def calculate_composition_hash(
     report_date: str,
@@ -1850,6 +2154,11 @@ def compose_quarter_filings(components: list[dict]) -> dict:
             component.get("amendment_kind") or "UNKNOWN"
         ).upper()
         component["source_hash"] = _component_source_hash(component)
+        reported_identity_source = _component_reported_identity_source(
+            component
+        )
+        if reported_identity_source is not None:
+            component["reported_identity_source"] = reported_identity_source
         signature = _canonical_json_hash({
             key: component.get(key)
             for key in (
@@ -1859,6 +2168,7 @@ def compose_quarter_filings(components: list[dict]) -> dict:
                 "normalized_value_total", "value_unit_policy_version",
                 "value_multiplier", "value_unit_method",
                 "value_unit_confidence", "value_unit_evidence", "holdings",
+                "reported_identity_source",
             )
         })
         if accession in deduplicated:
@@ -2016,6 +2326,18 @@ def compose_quarter_filings(components: list[dict]) -> dict:
             else {}
         ),
         "source_hash": component["source_hash"],
+        **(
+            {
+                "reported_identity_source": component[
+                    "reported_identity_source"
+                ]
+            }
+            if (
+                component["accession"] in applied_set
+                and isinstance(component.get("reported_identity_source"), dict)
+            )
+            else {}
+        ),
         "reported_entry_total": component.get("reported_entry_total"),
         "reported_value_total": component.get("reported_value_total"),
         "cover_reported_entry_total": component.get(
@@ -2050,6 +2372,19 @@ def compose_quarter_filings(components: list[dict]) -> dict:
         ),
         "applied": component["accession"] in applied_set,
     } for component in chain]
+    reported_identity_sources = sorted(
+        [
+            component["reported_identity_source"]
+            for component in applied
+            if isinstance(component.get("reported_identity_source"), dict)
+        ],
+        key=lambda source: (
+            source["accession"],
+            source["report_date"],
+            source["url"],
+            source["sha256"],
+        ),
+    )
     total_value = sum(holding.get("value", 0) or 0 for holding in holdings)
     latest = applied[-1]
     effective_base = applied[0]
@@ -2091,6 +2426,11 @@ def compose_quarter_filings(components: list[dict]) -> dict:
         "base_accession": effective_base["accession"],
         "applied_accessions": applied_accessions,
         "source_filings": source_filings,
+        **(
+            {"reported_identity_sources": reported_identity_sources}
+            if reported_identity_sources
+            else {}
+        ),
         "composition_hash": composition_hash,
     }
 
@@ -2495,138 +2835,663 @@ def build_zero_share_price_reference_maps() -> tuple[
     )
 
 
+class CusipRegistry(dict[str, dict]):
+    """Registry result carrying the CUSIP set observed during its build."""
+
+    def __init__(
+        self,
+        registry: dict[str, dict] | None = None,
+        *,
+        observed_cusips: set[str] | frozenset[str] = frozenset(),
+    ) -> None:
+        super().__init__(registry or {})
+        self.observed_cusips = frozenset(observed_cusips)
+
+
+_SEC_REGISTRY_MAPPING_STATUSES = frozenset({
+    "resolved",
+    "unresolved",
+    "ambiguous",
+    "no_listed_symbol",
+    "malformed_as_filed",
+})
+_SEC_REGISTRY_TICKER_SOURCES = frozenset({
+    "sec_ftd",
+    "sec_ixbrl",
+})
+_PRIVATE_MASTER_FIELDS = frozenset({
+    "candidate_as_of",
+    "candidate_symbols",
+    "candidate_ticker",
+    "confirmation_dates",
+    "effective_from",
+    "effective_to",
+    "fund_series_evidence",
+    "fund_series_name",
+    "mapping_method",
+    "official_13f",
+    "resolution_reason",
+    "sec_edgar_evidence",
+    "symbol_evidence",
+    "symbol_intervals",
+    "symbol_validation_exchanges",
+    "symbol_validation_sources",
+    "symbol_validation_titles",
+})
+
+
+def _dominant_registry_value(values: dict | None) -> str:
+    if not values:
+        return ""
+    return max(
+        values,
+        key=lambda value: (values.get(value, 0), str(value)),
+        default="",
+    )
+
+
+def _raw_registry_instrument_type(rec: dict) -> str:
+    """Choose an exact row type without consulting tickers or old metadata."""
+
+    values = rec.get("instrument_type_value") or {}
+    counts = rec.get("instrument_type_count") or {}
+    non_options = {
+        normalize_instrument_type(kind)
+        for kind, count in counts.items()
+        if count and normalize_instrument_type(kind)
+        not in {"CALL", "PUT", "OPT"}
+    }
+    if non_options:
+        return max(
+            non_options,
+            key=lambda kind: (
+                values.get(kind, 0),
+                counts.get(kind, 0),
+                -_HOLDING_TYPE_PRIORITY.get(kind, 99),
+                kind,
+            ),
+        )
+
+    options = {
+        normalize_instrument_type(kind)
+        for kind, count in counts.items()
+        if count and normalize_instrument_type(kind)
+        in {"CALL", "PUT", "OPT"}
+    }
+    if options:
+        return max(
+            options,
+            key=lambda kind: (
+                values.get(kind, 0),
+                counts.get(kind, 0),
+                {"OPT": 0, "PUT": 1, "CALL": 2}[kind],
+            ),
+        )
+
+    # Older fixture objects can predate per-row type counters.
+    call_value = (rec.get("put_call_value") or {}).get("CALL", 0)
+    put_value = (rec.get("put_call_value") or {}).get("PUT", 0)
+    if call_value or put_value:
+        return "CALL" if call_value >= put_value else "PUT"
+    return normalize_instrument_type(_classify_holding({
+        "issuer": _dominant_registry_value(rec.get("issuer_value")),
+        "class": _dominant_registry_value(rec.get("class_value")),
+    }))
+
+
+def _master_record_issuer(record: dict, fallback: str) -> tuple[str, str]:
+    identifier = normalize_security_identifier(record.get("cusip"))
+    official = record.get("official_13f")
+    if isinstance(official, dict):
+        for row in official.get("records") or []:
+            issuer = normalize_security_label(
+                row.get("issuer"), identifier=identifier
+            )
+            if issuer:
+                return issuer, "sec_13f_list"
+    for value in (
+        record.get("reported_issuer"),
+        *((record.get("reported_issuers") or [])),
+    ):
+        issuer = normalize_security_label(value, identifier=identifier)
+        if issuer:
+            return issuer, "sec_13f_filer_consensus"
+    issuer = normalize_security_label(fallback, identifier=identifier)
+    if issuer:
+        return issuer, "sec_13f_filer_consensus"
+    return "", ""
+
+
+def _master_record_class(record: dict, fallback: str) -> str:
+    official = record.get("official_13f")
+    if isinstance(official, dict):
+        for row in official.get("records") or []:
+            description = normalize_security_label(row.get("description"))
+            if description:
+                return description
+    for value in (
+        record.get("reported_class"),
+        *((record.get("reported_classes") or [])),
+    ):
+        security_class = normalize_security_label(value)
+        if security_class:
+            return security_class
+    return normalize_security_label(fallback) or ""
+
+
+def _official_master_class(record: dict) -> str | None:
+    official = record.get("official_13f")
+    if not isinstance(official, dict) or official.get("status") != "active":
+        return None
+    descriptions = {
+        normalize_security_label(row.get("description"))
+        for row in official.get("records") or []
+        if isinstance(row, dict)
+        and row.get("status") != "*D*"
+        and normalize_security_label(row.get("description"))
+    }
+    return next(iter(descriptions)) if len(descriptions) == 1 else None
+
+
+def _registry_instrument_type_from_master(
+    raw_type: str,
+    resolution: dict,
+) -> str:
+    """Let one exact official-list class correct a broad non-option parse."""
+
+    normalized_raw = normalize_instrument_type(raw_type)
+    if normalized_raw in {"CALL", "PUT", "OPT"}:
+        return normalized_raw
+    official_class = _official_master_class(resolution)
+    if not official_class:
+        return normalized_raw
+    return _classify_holding({
+        "class": official_class,
+        "issuer": resolution.get("issuer") or "",
+        "put_call": "",
+    })
+
+
+def _fallback_registry_label(
+    *,
+    cusip: str,
+    issuer: str,
+    security_class: str,
+    instrument_type: str,
+) -> str:
+    base = compose_security_label(
+        issuer,
+        security_class,
+        instrument_type,
+        identifier=cusip,
+    )
+    if is_synthetic_identifier(cusip) and base == f"{instrument_type} SECURITY":
+        base = f"UNIDENTIFIED {instrument_type} SECURITY"
+    # The final fail-closed label includes the as-filed identifier so even an
+    # unresolved security remains unambiguous to the reader.
+    return normalize_security_label(f"{base} — {cusip}", identifier=cusip) or base
+
+
+def _registry_position_ticker(entry: dict | None, instrument_type: str) -> str | None:
+    """Return only an exact ticker or an explicitly proven option underlying."""
+
+    if not isinstance(entry, dict):
+        return None
+    normalized_type = normalize_instrument_type(instrument_type)
+    if normalized_type in {"CALL", "PUT", "OPT"}:
+        ticker = entry.get("underlying_ticker")
+    else:
+        raw_entry_type = entry.get("type")
+        if (
+            not isinstance(raw_entry_type, str)
+            or raw_entry_type.strip().upper() not in VALID_INSTRUMENT_TYPES
+        ):
+            return None
+        entry_type = normalize_instrument_type(raw_entry_type)
+        if normalized_type != entry_type:
+            return None
+        ticker = entry.get("ticker")
+    return display_ticker_for_holding_type(ticker, normalized_type)
+
+
+def _resolve_loaded_security(
+    master: dict,
+    cusip: object,
+    instrument_type: object = "EQUITY",
+) -> dict:
+    """Resolve from an already-validated master without validating it again.
+
+    ``load_security_master`` and every refresh validate the complete document.
+    Re-running that whole-master validation for every holding turns a rewrite of
+    millions of positions into quadratic work.  The compatibility fallback is
+    retained for lightweight test doubles that do not expose ``records``.
+    """
+
+    records = master.get("records") if isinstance(master, dict) else None
+    if not isinstance(records, dict):
+        return resolve_security(master, cusip, instrument_type)
+    normalized_cusip = normalize_security_identifier(cusip)
+    normalized_type = normalize_instrument_type(instrument_type)
+    entry = records.get(security_key(normalized_cusip, normalized_type))
+    if isinstance(entry, dict):
+        return dict(entry)
+    quarantine_reason = cusip_quarantine_reason(normalized_cusip)
+    return {
+        "cusip": normalized_cusip,
+        "instrument_type": normalized_type,
+        "mapping_status": (
+            "malformed_as_filed" if quarantine_reason else "unresolved"
+        ),
+        "ticker": None,
+        "ticker_source": None,
+        "ticker_as_of": None,
+        "resolution_reason": quarantine_reason or "security_not_in_master",
+        "symbol_evidence": [],
+    }
+
+
+def build_cusip_registry(
+    *,
+    full_refresh: bool = False,
+    company_ticker_data: dict | list | None = None,
+    refresh_official_fund_names: bool | None = None,
+) -> CusipRegistry:
+    """Build the public registry exclusively from exact SEC-master evidence."""
+
+    # Retained for call-site compatibility. SEC fund product names now come
+    # only from checksummed fund-series evidence embedded in the master.
+    _ = (full_refresh, refresh_official_fund_names)
+    log.info("Building SEC-only CUSIP registry...")
+    if not FUNDS_DIR.exists():
+        log.info("  no funds directory; skipping registry build")
+        return CusipRegistry()
+
+    evidence = _aggregate_cusip_evidence()
+    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    # Current company/fund symbols and titles are already checksum-bound in the
+    # private SEC source state and copied onto each resolved master record.
+    # The optional payload remains only for callers/tests that already have it;
+    # rebuilding derived data never performs a second implicit network fetch.
+    sec_titles = sec_ticker_titles(company_ticker_data or {})
+    registry: dict[str, dict] = {}
+
+    for cusip, rec in sorted(evidence.items()):
+        dominant_issuer = _dominant_registry_value(rec.get("issuer_value"))
+        dominant_class = _dominant_registry_value(rec.get("class_value"))
+        raw_instrument_type = _raw_registry_instrument_type(rec)
+        resolution = _resolve_loaded_security(
+            master,
+            cusip,
+            raw_instrument_type,
+        )
+        instrument_type = _registry_instrument_type_from_master(
+            raw_instrument_type,
+            resolution,
+        )
+        if instrument_type != raw_instrument_type:
+            resolution = _resolve_loaded_security(
+                master,
+                cusip,
+                instrument_type,
+            )
+
+        mapping_status = resolution.get("mapping_status")
+        if mapping_status not in _SEC_REGISTRY_MAPPING_STATUSES:
+            mapping_status = "unresolved"
+        ticker = (
+            str(resolution.get("ticker") or "").strip().upper() or None
+            if mapping_status == "resolved"
+            else None
+        )
+        ticker_source = (
+            resolution.get("ticker_source") if ticker else None
+        )
+        ticker_as_of = resolution.get("ticker_as_of") if ticker else None
+
+        exact_issuer, issuer_source = _master_record_issuer(
+            resolution,
+            dominant_issuer,
+        )
+        exact_class = _master_record_class(resolution, dominant_class)
+        sources: list[str] = []
+        if issuer_source:
+            sources.append(issuer_source)
+        name = exact_issuer
+        validated_titles = [
+            normalize_security_label(title)
+            for title in resolution.get("symbol_validation_titles", [])
+            if normalize_security_label(title)
+        ]
+        validated_title = (
+            sorted(set(validated_titles), key=lambda value: (len(value), value))[0]
+            if validated_titles
+            else normalize_security_label(sec_titles.get(ticker))
+            if ticker
+            else None
+        )
+        if not name and validated_title:
+            name = validated_title
+            sources.append("sec_company_tickers")
+        if not name:
+            name = f"UNIDENTIFIED {instrument_type} SECURITY"
+            sources.append("sec_13f_filer_consensus")
+        if ticker_source and ticker_source not in sources:
+            sources.append(ticker_source)
+        for validation_source in resolution.get(
+            "symbol_validation_sources",
+            [],
+        ):
+            public_source = {
+                "sec_company_exchange_tickers": "sec_company_tickers",
+                "sec_fund_tickers": "sec_fund_series",
+            }.get(validation_source, validation_source)
+            if public_source in {
+                "sec_company_tickers",
+                "sec_fund_series",
+            }:
+                sources.append(public_source)
+
+        master_label = normalize_security_label(
+            resolution.get("security_label"),
+            identifier=cusip,
+        )
+        if master_label and master_label.partition(" — ")[0].upper() == cusip:
+            # A filer can put its CUSIP in the issuer field. Prefer the safe
+            # issuer selected above over carrying that identifier into the
+            # public display label as though it were a company name.
+            master_label = None
+        if master_label:
+            security_label = master_label
+            label_source = str(
+                resolution.get("security_label_source") or "sec_13f_list"
+            )
+        else:
+            security_label = _fallback_registry_label(
+                cusip=cusip,
+                issuer=name,
+                security_class=exact_class,
+                instrument_type=instrument_type,
+            )
+            label_source = (
+                issuer_source or "sec_13f_filer_consensus"
+                if dominant_issuer or dominant_class
+                else "synthetic_identifier"
+            )
+
+        entry = {
+            "ticker": ticker,
+            "ticker_source": ticker_source,
+            "ticker_as_of": ticker_as_of,
+            "mapping_status": mapping_status,
+            "name": name,
+            "type": instrument_type,
+            "dominant_issuer": dominant_issuer,
+            "dominant_class": dominant_class,
+            "holder_count": len(rec.get("holder_ciks") or ()),
+            "total_value": rec.get("total_value", 0),
+            "first_seen": rec.get("first_seen") or "",
+            "last_seen": rec.get("last_seen") or "",
+            "security_label": security_label,
+            "label_source": label_source,
+            "sources": sorted(set(sources)),
+        }
+
+        official_class = _official_master_class(resolution)
+        kind = {
+            "NOTE": "BOND",
+            "PREF": "PREFERRED",
+            "WARRANT": "WARRANT",
+        }.get(instrument_type)
+        kind_source = (
+            "sec_13f_list"
+            if kind and official_class
+            else "sec_13f_filer_consensus"
+            if kind
+            else None
+        )
+        if kind is None:
+            classification_entry = (
+                {**entry, "dominant_class": official_class}
+                if official_class
+                else entry
+            )
+            kind = _filer_security_kind(classification_entry)
+            if kind in {"ETF", "MUTUAL FUND", "CLOSED-END FUND"} and (
+                "sec_fund_series" in sources
+            ):
+                kind_source = "sec_fund_series"
+            elif kind and official_class:
+                kind_source = "sec_13f_list"
+            elif kind == "COMMON" and "sec_company_tickers" in sources:
+                kind_source = "sec_company_tickers"
+            else:
+                kind_source = "filer_metadata" if kind else None
+        if kind:
+            entry["security_kind"] = kind
+            entry["security_kind_source"] = kind_source
+
+        observed_option_types = {
+            normalize_instrument_type(kind)
+            for kind, count in (
+                rec.get("instrument_type_count") or {}
+            ).items()
+            if count
+            and normalize_instrument_type(kind) in {"CALL", "PUT", "OPT"}
+        }
+        if observed_option_types:
+            underlying = _resolve_loaded_security(master, cusip, "EQUITY")
+            if underlying.get("mapping_status") == "resolved":
+                entry.update({
+                    "underlying_ticker": underlying.get("ticker"),
+                    "underlying_ticker_source": underlying.get("ticker_source"),
+                    "underlying_ticker_as_of": underlying.get("ticker_as_of"),
+                })
+        fund_series_name = normalize_security_label(
+            resolution.get("fund_series_name"),
+            identifier=cusip,
+        )
+        if (
+            fund_series_name
+            and normalize_security_kind(entry.get("security_kind"))
+            in {"ETF", "MUTUAL FUND", "CLOSED-END FUND"}
+        ):
+            entry["product_name"] = fund_series_name
+            entry["product_name_source"] = "sec_fund_series"
+            entry["sources"] = sorted({
+                *(entry.get("sources") or []),
+                "sec_fund_series",
+            })
+        registry[cusip] = entry
+
+    save_cusip_registry(registry)
+    resolved = sum(entry["mapping_status"] == "resolved" for entry in registry.values())
+    log.info(
+        "  wrote %s SEC-only entries (%s resolved, %s tickerless)",
+        len(registry),
+        resolved,
+        len(registry) - resolved,
+    )
+    return CusipRegistry(registry, observed_cusips=set(evidence))
+
+
+def validate_cusip_registry(
+    *,
+    current_cusips: set[str] | frozenset[str] | None = None,
+) -> list[str]:
+    """Validate exact SEC provenance and fail-closed public metadata."""
+
+    issues: list[str] = []
+    registry = load_cusip_registry()
+    if not registry:
+        issues.append("registry is empty")
+    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    master_records = master.get("records") or {}
+
+    if not LEGACY_CUSIP_REGISTRY_PATH.exists():
+        issues.append(
+            f"snapshot data copy missing at {LEGACY_CUSIP_REGISTRY_PATH.name}"
+        )
+    else:
+        snapshot_registry = _read_json_object(LEGACY_CUSIP_REGISTRY_PATH)
+        if snapshot_registry != registry:
+            issues.append(
+                f"snapshot data copy {LEGACY_CUSIP_REGISTRY_PATH.name} differs "
+                "from cache registry"
+            )
+
+    missing_master: list[str] = []
+    mismatched_master: list[str] = []
+    unsafe_entries: list[str] = []
+    private_leaks: list[str] = []
+    for cusip, entry in registry.items():
+        if not isinstance(entry, dict):
+            unsafe_entries.append(cusip)
+            continue
+        key = f"{normalize_security_identifier(cusip)}|{normalize_instrument_type(entry.get('type'))}"
+        master_entry = master_records.get(key)
+        if not isinstance(master_entry, dict):
+            missing_master.append(key)
+        elif any(
+            entry.get(field) != master_entry.get(field)
+            for field in (
+                "mapping_status",
+                "ticker",
+                "ticker_source",
+                "ticker_as_of",
+            )
+        ):
+            mismatched_master.append(key)
+        elif entry.get("product_name_source") == "sec_fund_series" and (
+            entry.get("product_name") != master_entry.get("fund_series_name")
+        ):
+            mismatched_master.append(key)
+
+        status = entry.get("mapping_status")
+        ticker = entry.get("ticker")
+        source = entry.get("ticker_source")
+        as_of = entry.get("ticker_as_of")
+        resolved_ok = (
+            status == "resolved"
+            and isinstance(ticker, str)
+            and bool(_SEC_PLAIN_TICKER_RE.fullmatch(ticker))
+            and source in _SEC_REGISTRY_TICKER_SOURCES
+            and isinstance(as_of, str)
+            and bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of))
+        )
+        unresolved_ok = (
+            status in _SEC_REGISTRY_MAPPING_STATUSES - {"resolved"}
+            and ticker is None
+            and source is None
+            and as_of is None
+        )
+        safe_label = normalize_security_label(
+            entry.get("security_label"), identifier=cusip
+        )
+        if not (
+            resolved_ok or unresolved_ok
+        ) or not entry.get("name") or not safe_label or not entry.get("label_source"):
+            unsafe_entries.append(cusip)
+        if _PRIVATE_MASTER_FIELDS & set(entry):
+            private_leaks.append(cusip)
+
+        if normalize_instrument_type(entry.get("type")) == "NOTE" and ticker:
+            unsafe_entries.append(cusip)
+        underlying = entry.get("underlying_ticker")
+        if underlying:
+            proof = master_records.get(f"{cusip}|EQUITY") or {}
+            if any(
+                entry.get(public_field) != proof.get(master_field)
+                for public_field, master_field in (
+                    ("underlying_ticker", "ticker"),
+                    ("underlying_ticker_source", "ticker_source"),
+                    ("underlying_ticker_as_of", "ticker_as_of"),
+                )
+            ) or proof.get("mapping_status") != "resolved":
+                unsafe_entries.append(cusip)
+
+    for label, values in (
+        ("entries absent from the exact SEC master", missing_master),
+        ("entries that differ from exact SEC master provenance", mismatched_master),
+        ("unsafe or incomplete registry entries", unsafe_entries),
+        ("entries leaking private SEC evidence", private_leaks),
+    ):
+        if values:
+            issues.append(f"{len(set(values))} {label}; samples: {sorted(set(values))[:5]}")
+
+    if current_cusips is None:
+        current_cusips = set(_aggregate_cusip_evidence())
+    missing_current = sorted(set(current_cusips) - set(registry))
+    if missing_current:
+        issues.append(
+            f"{len(missing_current)} fund-file CUSIPs missing from registry; "
+            f"samples: {missing_current[:5]}"
+        )
+
+    for cusip, ticker in (
+        ("037833100", "AAPL"),
+        ("30231G102", "XOM"),
+        ("76954A103", "RIVN"),
+    ):
+        entry = registry.get(cusip)
+        if entry is None:
+            issues.append(f"required safety-case equity {cusip} is missing")
+        elif entry.get("ticker") != ticker:
+            issues.append(f"{cusip} should resolve to ticker {ticker}")
+    for cusip in ("76954AAD5", "090043AF7", "26210CAC8", "26210CAD6"):
+        entry = registry.get(cusip)
+        if entry is None:
+            issues.append(f"required safety-case debt {cusip} is missing")
+        elif (
+            normalize_instrument_type(entry.get("type")) != "NOTE"
+            or normalize_security_kind(entry.get("security_kind")) != "BOND"
+            or entry.get("mapping_status") == "resolved"
+            or any(
+                entry.get(field) is not None
+                for field in ("ticker", "ticker_source", "ticker_as_of")
+            )
+        ):
+            issues.append(
+                f"{cusip} is debt and must remain a tickerless NOTE/BOND"
+            )
+    return issues
+
+
 @_serialize_pipeline_maintenance
 def repair_zero_share_holdings_in_place() -> int:
-    """Impute obvious missing share counts using cross-filer quarter prices.
-
-    Some filers report a positive market value with sshPrnamt rounded down to
-    zero. When the row's value is at least one plausible share at the quarter's
-    median price for that CUSIP and instrument type, estimate the share count
-    from that price while preserving the original reported zero.
-
-    Existing imputations are reset in a complete first pass before reference
-    prices are rebuilt. This makes the repair self-healing when canonical
-    identity or peer evidence changes: stale derived shares cannot vote on
-    their own replacement, and rows without a current reference fail closed
-    to their reported zero."""
-    log.info("Repairing zero-share holdings in place...")
+    """Apply the evidence-bound quantity policy without changing reported data."""
+    from quantity_estimation import apply_plan, build_plan, cache_dir_for_funds
 
     if not FUNDS_DIR.exists():
-        log.info("  no funds directory; nothing to repair")
         return 0
-
-    fund_paths = sorted(FUNDS_DIR.glob("*.json"))
-    total = len(fund_paths)
-    reset_files = 0
-    reset_rows = 0
-    by_report_position: dict[tuple[str, str, str], list[float]] = defaultdict(list)
-    by_position: dict[tuple[str, str], list[float]] = defaultdict(list)
-
-    # Phase 1: restore every derived row to its immutable reported value before
-    # any peer reference is calculated. Persist this pass so a later crash
-    # leaves conservative reported zeros rather than stale derived shares.
-    for fp in fund_paths:
-        try:
-            with open(fp) as f:
-                fund = json.load(f)
-        except json.JSONDecodeError:
-            continue
-
-        changed = False
-        for quarter in fund.get("quarters", []):
-            for holding in quarter.get("holdings", []):
-                if holding.get("shares_imputed") is not True:
-                    continue
-                holding["shares"] = 0
-                holding["reported_shares"] = 0
-                del holding["shares_imputed"]
-                changed = True
-                reset_rows += 1
-            _collect_zero_share_price_references(
-                quarter,
-                by_report_position,
-                by_position,
-            )
-
-        if changed:
-            _atomic_write_json(fp, fund)
-            reset_files += 1
-
-    if reset_rows:
-        log.info(
-            f"  reset {reset_rows} prior imputations in {reset_files}/{total} "
-            "fund files"
-        )
-
-    # Phase 2: finalize references only after the complete reset pass has
-    # succeeded, then reproduce each still-qualifying estimate. Reference
-    # observations were collected during that pass to avoid rereading the
-    # complete fund corpus.
-    report_refs, position_refs = _median_zero_share_price_references(
-        by_report_position,
-        by_position,
+    cache = cache_dir_for_funds(FUNDS_DIR)
+    evidence_path = cache / "quantity_estimation_evidence.json"
+    plan = build_plan(
+        FUNDS_DIR,
+        evidence_path=evidence_path,
+        market_path=cache / "quarter_close_prices.json",
     )
-    if not report_refs and not position_refs:
-        log.info(
-            "  no price references available; prior imputations remain "
-            "at reported zero"
-        )
-        return 0
-
-    updated_files = 0
-    imputed_rows = 0
-
-    for idx, fp in enumerate(fund_paths):
-        if idx % 2000 == 0 and idx > 0:
-            log.info(
-                f"    zero-share repair progress: {idx}/{total} files "
-                f"({updated_files} changed, {imputed_rows} rows imputed)"
-            )
-        try:
-            with open(fp) as f:
-                fund = json.load(f)
-        except json.JSONDecodeError:
-            continue
-
-        changed = False
-        for quarter in fund.get("quarters", []):
-            report_date = quarter.get("report_date") or ""
-            for holding in quarter.get("holdings", []):
-                value = holding.get("value") or 0
-                shares = holding.get("shares") or 0
-                if value <= 0 or shares != 0:
-                    continue
-                cusip = str(holding.get("cusip") or "").strip().upper()
-                if not cusip:
-                    continue
-                holding_type = classify_saved_holding(holding)
-                price = report_refs.get(
-                    (report_date, cusip, holding_type)
-                ) or position_refs.get((cusip, holding_type))
-                if price is None or price <= 0 or value < price:
-                    continue
-                imputed = round(value / price, 6)
-                if imputed <= 0:
-                    continue
-                holding["reported_shares"] = 0
-                holding["shares"] = int(imputed) if float(imputed).is_integer() else imputed
-                holding["shares_imputed"] = True
-                changed = True
-                imputed_rows += 1
-
-        if changed:
-            _atomic_write_json(fp, fund)
-            updated_files += 1
-
-    log.info(
-        f"  zero-share repair updated {updated_files}/{total} fund files "
-        f"and imputed {imputed_rows} rows"
+    result = apply_plan(
+        plan,
+        FUNDS_DIR,
+        evidence_path=evidence_path,
+        request_path=cache / "quarter_close_price_requests.json",
     )
-    return imputed_rows
+    log.info("Quantity policy: %s", result)
+    return result["estimated_rows"]
 
 
-def parse_information_table(xml_bytes: bytes) -> list[dict] | None:
+def parse_information_table(
+    xml_bytes: bytes,
+    *,
+    accession: str | None = None,
+    report_date: str | None = None,
+) -> list[dict] | None:
     """Parse the 13F informationTable XML into a list of holding dicts.
+
+    Retain SEC-reported identity fields alongside mutable display metadata so
+    later canonicalization cannot erase the source row. Filing provenance is
+    attached when the caller supplies it.
+
     Returns None if the XML doesn't appear to be an information table."""
     try:
         tree = etree.fromstring(xml_bytes)
@@ -2654,7 +3519,10 @@ def parse_information_table(xml_bytes: bytes) -> list[dict] | None:
             elif ctag == "titleOfClass":
                 h["class"] = text
             elif ctag == "cusip":
+                h["reported_cusip"] = text
                 h["cusip"] = text.upper()
+            elif ctag.casefold() == "figi":
+                h["reported_figi"] = text
             elif ctag == "value":
                 parsed_value = parse_numeric_text(text)
                 if parsed_value is not None:
@@ -2673,7 +3541,19 @@ def parse_information_table(xml_bytes: bytes) -> list[dict] | None:
                 h["other_manager"] = text
 
         cusip = h.get("cusip", "")
-        if cusip in ("000000000", "000000NAN", "N/A", ""):
+        if not cusip:
+            continue
+        # SEC confidential-treatment filings sometimes contain one all-zero
+        # dummy row to represent an empty portfolio.  Suppress only that exact
+        # zero-value placeholder.  Every nonzero malformed or synthetic value
+        # remains visible as filed and is quarantined by the security master.
+        empty_placeholder = (
+            cusip in {"000000000", "000000NAN", "N/A"}
+            and int(h.get("value", 0) or 0) == 0
+            and str(h.get("issuer") or "").strip().upper() in {"", "N/A", "NONE"}
+            and str(h.get("class") or "").strip().upper() in {"", "N/A", "NONE"}
+        )
+        if empty_placeholder:
             continue
         if "cusip" in h and "value" in h:
             holding_type = _classify_holding(h)
@@ -2682,10 +3562,19 @@ def parse_information_table(xml_bytes: bytes) -> list[dict] | None:
                 "issuer": h.get("issuer", ""),
                 "cusip": h["cusip"],
                 "class": h.get("class", ""),
+                "reported_issuer": h.get("issuer", ""),
+                "reported_class": h.get("class", ""),
+                "reported_cusip": h.get("reported_cusip", h["cusip"]),
                 "value": h["value"],
                 "shares": h.get("shares", 0),
                 "holding_type": holding_type,
             }
+            if h.get("reported_figi"):
+                entry["reported_figi"] = h["reported_figi"]
+            if accession:
+                entry["accession"] = str(accession).strip()
+            if report_date:
+                entry["report_date"] = str(report_date).strip()
             if h.get("share_amount_type"):
                 entry["share_amount_type"] = h["share_amount_type"]
             if h.get("put_call"):
@@ -2839,55 +3728,17 @@ CLASS_MARKERS_RE = re.compile(
 # Slash-wrapped state codes like "/DE/", "/NEW/", or trailing "/CA"
 SLASH_MARKER_RE = re.compile(r"/[A-Z]{1,10}/?")
 
-# Stocks where different share classes trade under different tickers but
-# normalize to the same issuer name (so name-only lookup in company_tickers.json
-# can't distinguish them). We disambiguate via the 13F filing's titleOfClass
-# field, which typically contains "CL A", "CL B", "CLASS A", etc.
-#
-# Keys are normalized issuer names as produced by normalize_name() below.
-# Values map the class letter to the correct ticker.
-MULTI_CLASS_DISPATCH: dict[str, dict[str, str]] = {
-    "BERKSHIREHATHAWAY":        {"A": "BRK-A", "B": "BRK-B"},
-    "ALPHABET":                 {"A": "GOOGL", "C": "GOOG"},
-    "FOXCORPORATION":           {"A": "FOXA",  "B": "FOX"},
-    "FOX":                      {"A": "FOXA",  "B": "FOX"},
-    "LIBERTYMEDIA":             {"A": "LSXMA", "B": "LSXMB", "K": "LSXMK"},
-    "LIBERTYBROADBAND":         {"A": "LBRDA", "C": "LBRDK"},
-    "LIBERTYLATINAMERICA":      {"A": "LILA",  "C": "LILAK"},
-    "LIBERTYLIVE":              {"A": "LLYVA", "C": "LLYVK"},
-    "LIBERTYGLOBAL":            {"A": "LBTYA", "B": "LBTYB", "C": "LBTYK"},
-    "NEWSCORP":                 {"A": "NWSA",  "B": "NWS"},
-    "NEWSCORPORATION":          {"A": "NWSA",  "B": "NWS"},
-    "DISCOVERY":                {"A": "DISCA", "B": "DISCB", "C": "DISCK"},
-    "ZILLOWGROUP":              {"A": "ZG",    "C": "Z"},
-    "LENNAR":                   {"A": "LEN",   "B": "LEN-B"},
-    "VIACOMCBS":                {"A": "PARAA", "B": "PARA"},
-    "PARAMOUNT":                {"A": "PARAA", "B": "PARA"},
-    "MOOG":                     {"A": "MOG-A", "B": "MOG-B"},
-}
-
-CLASS_LETTER_RE = re.compile(r"\bCL(?:ASS)?\s*([A-K])\b", re.IGNORECASE)
-
-
-def resolve_multi_class(normalized_issuer: str, title_of_class: str) -> str | None:
-    """For a known multi-class security, look at titleOfClass to figure out
-    which share class this holding is (A/B/C/K) and return the matching ticker.
-    Returns None if the issuer isn't in MULTI_CLASS_DISPATCH or the class
-    letter can't be extracted from the title."""
-    dispatch = MULTI_CLASS_DISPATCH.get(normalized_issuer)
-    if not dispatch:
-        return None
-    m = CLASS_LETTER_RE.search(title_of_class or "")
-    if not m:
-        return None
-    letter = m.group(1).upper()
-    return dispatch.get(letter)
-
-
+# Ticker-health diagnostics compare a registry issuer with the current SEC
+# company title after removing harmless filing abbreviations. This normalized
+# text is never an identity key and can never publish or resolve a ticker.
 def normalize_name(name: str) -> str:
-    """Normalize an issuer name into a tight key for fuzzy CUSIP->ticker matching.
-    Collapses away entity suffixes, share classes, state markers, and common
-    13F abbreviations, then joins tokens without spaces for robust matching."""
+    """Normalize issuer text for a non-authoritative health-report comparison.
+
+    Collapses entity suffixes, share classes, state markers, and common 13F
+    abbreviations. Exact CUSIP-backed SEC evidence remains the sole ticker
+    authority; this helper only suppresses a false-positive diagnostic for a
+    symbol whose SEC title is compatible with the published registry label.
+    """
     if not name:
         return ""
     s = name.upper()
@@ -2909,118 +3760,25 @@ def normalize_name(name: str) -> str:
     return "".join(tokens)
 
 
-def _ticker_preference_key(ticker: str) -> tuple:
-    """Sort key for picking the "primary" ticker when multiple share classes
-    or preferreds all normalize to the same company name. Prefer plain
-    tickers (no dash or dot) first, then shorter, then alphabetical."""
-    has_special = ("-" in ticker) or ("." in ticker)
-    return (has_special, len(ticker), ticker)
-
-
-def _load_company_tickers_data() -> dict | list:
-    """Fetch SEC's raw company_tickers payload, falling back to the cached copy."""
-    url = "https://www.sec.gov/files/company_tickers.json"
-    cache_path = DATA_DIR / "company_tickers.json"
-    log.info("Fetching company_tickers.json")
-    data = None
-    try:
-        data = HTTP.get(url).json()
-        DATA_DIR.mkdir(exist_ok=True)
-        with open(cache_path, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        log.warning(f"  remote fetch failed: {e}")
-        if cache_path.exists():
-            try:
-                with open(cache_path) as f:
-                    data = json.load(f)
-                log.info(f"  using cached copy from {cache_path}")
-            except Exception as e2:
-                log.warning(f"  cache read failed: {e2}")
-
-    if not data:
-        log.warning("  no ticker data available — CUSIPs will not resolve on this run")
-        return {}
-
-    return data
-
-
-def load_sec_fund_name_cache() -> dict[str, dict]:
-    """Load private SEC series/class names keyed by listed fund symbol."""
-
-    if not SEC_FUND_NAMES_PATH.exists():
-        return {}
-    try:
-        payload = json.loads(SEC_FUND_NAMES_PATH.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        log.warning(f"  SEC fund-name cache read failed: {exc}")
-        return {}
-    if not isinstance(payload, dict):
-        log.warning("  SEC fund-name cache was not an object; ignoring")
-        return {}
-    return {
-        str(symbol).strip().upper(): entry
-        for symbol, entry in payload.items()
-        if (
-            _OPENFIGI_PLAIN_TICKER_RE.fullmatch(
-                str(symbol).strip().upper()
-            )
-            and isinstance(entry, dict)
-            and normalize_security_label(entry.get("name"))
-        )
-    }
-
-
-def _sec_fund_name_map(cache: dict[str, dict]) -> dict[str, str]:
-    """Return only validated symbol -> official-name cache values."""
-
-    names: dict[str, str] = {}
-    for symbol, entry in cache.items():
-        name = normalize_security_label(entry.get("name"))
-        if name:
-            names[symbol] = name
-    return names
-
-
-def _load_sec_fund_tickers_data() -> dict:
-    """Fetch SEC's fund-symbol map, falling back to a private cached copy."""
-
-    url = "https://www.sec.gov/files/company_tickers_mf.json"
-    data = None
-    try:
-        data = HTTP.get(url).json()
-        if isinstance(data, dict):
-            _atomic_write_json(SEC_FUND_TICKERS_PATH, data)
-    except Exception as exc:
-        log.warning(f"  SEC fund-symbol fetch failed: {exc}")
-        if SEC_FUND_TICKERS_PATH.exists():
-            try:
-                data = json.loads(SEC_FUND_TICKERS_PATH.read_text())
-                log.info(
-                    f"  using cached copy from {SEC_FUND_TICKERS_PATH}"
-                )
-            except (OSError, json.JSONDecodeError) as cache_exc:
-                log.warning(
-                    f"  SEC fund-symbol cache read failed: {cache_exc}"
-                )
-    return data if isinstance(data, dict) else {}
-
-
 def _parse_sec_fund_series_page(
     page_text: str,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Parse official series and class names from one registrant page."""
 
-    if not page_text:
-        return {}, {}
+    if not isinstance(page_text, str) or not page_text.strip():
+        raise SourceParseError("SEC fund-series response was empty")
     try:
         document = lxml_html.fromstring(page_text)
-    except (etree.ParserError, ValueError):
-        return {}, {}
+    except (etree.ParserError, ValueError) as exc:
+        raise SourceParseError(
+            "SEC fund-series response was not complete HTML"
+        ) from exc
 
     series_names: dict[str, str] = {}
     class_names: dict[str, str] = {}
     conflicts: set[str] = set()
+    recognized_identifiers: set[str] = set()
+    parsed_identifiers: set[str] = set()
 
     def expanded_cells(row: etree._Element) -> list[etree._Element]:
         cells: list[etree._Element] = []
@@ -3042,6 +3800,14 @@ def _parse_sec_fund_series_page(
         return identifier if re.fullmatch(r"[SC]\d+", identifier) else None
 
     for table in document.xpath("//table"):
+        table_identifiers = {
+            identifier
+            for anchor in table.xpath(".//a[@href]")
+            if (identifier := anchor_identifier(anchor)) is not None
+        }
+        recognized_identifiers.update(table_identifiers)
+        if not table_identifiers:
+            continue
         name_columns: set[int] = set()
         for row in table.xpath(".//tr"):
             if any(
@@ -3074,6 +3840,7 @@ def _parse_sec_fund_series_page(
             )
             if not name:
                 continue
+            parsed_identifiers.add(identifier)
             target = (
                 series_names
                 if identifier.startswith("S")
@@ -3085,300 +3852,40 @@ def _parse_sec_fund_series_page(
                 target.pop(identifier, None)
             elif identifier not in conflicts:
                 target[identifier] = name
+    if not recognized_identifiers:
+        visible_text = " ".join(document.text_content().casefold().split())
+        transient_markers = (
+            "busy",
+            "temporarily unavailable",
+            "service unavailable",
+            "request rate threshold",
+            "access denied",
+        )
+        error_type = (
+            SourceParseError
+            if any(marker in visible_text for marker in transient_markers)
+            else SourceSchemaError
+        )
+        raise error_type(
+            "SEC fund-series response contained no series/class identifiers"
+        )
+    if conflicts:
+        raise SourceSchemaError(
+            "SEC fund-series page assigned conflicting names to: "
+            + ", ".join(sorted(conflicts))
+        )
+    missing_identifiers = sorted(recognized_identifiers - parsed_identifiers)
+    if not series_names or missing_identifiers:
+        detail = (
+            "; unparsed identifiers: " + ", ".join(missing_identifiers[:10])
+            if missing_identifiers
+            else ""
+        )
+        raise SourceSchemaError(
+            "SEC fund-series page no longer matches the expected Name-column "
+            f"layout{detail}"
+        )
     return series_names, class_names
-
-
-def _sec_official_fund_name(
-    series_name: str | None,
-    class_name: str | None,
-) -> str | None:
-    """Compose one full SEC series/class name without duplicating the series."""
-
-    series = normalize_security_label(series_name)
-    class_contract = normalize_security_label(class_name)
-    if not series:
-        return None
-    if (
-        not class_contract
-        or class_contract.casefold() == series.casefold()
-    ):
-        return series
-    if series.casefold() in class_contract.casefold():
-        return class_contract
-    return normalize_security_label(f"{series} — {class_contract}")
-
-
-def refresh_sec_fund_names(tickers: set[str]) -> dict[str, str]:
-    """Resolve selected fund symbols to official SEC series/class names.
-
-    SEC publishes symbol -> registrant/series/class IDs in
-    company_tickers_mf.json. One registrant-level EDGAR page then supplies all
-    official series and class names for that sponsor, so this remains bounded
-    even for large same-name ETF families.
-    """
-
-    cache = load_sec_fund_name_cache()
-    names = _sec_fund_name_map(cache)
-    requested = {
-        str(ticker).strip().upper()
-        for ticker in tickers
-        if _OPENFIGI_PLAIN_TICKER_RE.fullmatch(
-            str(ticker).strip().upper()
-        )
-    }
-    if not requested:
-        return names
-
-    ticker_data = _load_sec_fund_tickers_data()
-    fields = ticker_data.get("fields")
-    rows = ticker_data.get("data")
-    if not (
-        isinstance(fields, list)
-        and isinstance(rows, list)
-        and {"cik", "seriesId", "classId", "symbol"}.issubset(fields)
-    ):
-        log.warning("  SEC fund-symbol payload has an unsupported shape")
-        for symbol in requested:
-            names.pop(symbol, None)
-        return names
-    indexes = {field: fields.index(field) for field in fields}
-    records_by_symbol: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
-    for row in rows:
-        if not isinstance(row, list) or len(row) < len(fields):
-            continue
-        symbol = str(row[indexes["symbol"]] or "").strip().upper()
-        if symbol not in requested:
-            continue
-        cik = str(row[indexes["cik"]] or "").strip()
-        series_id = str(row[indexes["seriesId"]] or "").strip().upper()
-        class_id = str(row[indexes["classId"]] or "").strip().upper()
-        if (
-            cik.isdigit()
-            and re.fullmatch(r"S\d+", series_id)
-            and re.fullmatch(r"C\d+", class_id)
-        ):
-            records_by_symbol[symbol].add(
-                (cik.zfill(10), series_id, class_id)
-            )
-
-    unique_records = {
-        symbol: next(iter(records))
-        for symbol, records in records_by_symbol.items()
-        if len(records) == 1
-    }
-    pending: set[str] = set()
-    fallback_names: dict[str, str] = {}
-    cache_changed = False
-    for symbol in requested:
-        names.pop(symbol, None)
-        current_record = unique_records.get(symbol)
-        cached_entry = cache.get(symbol)
-        cached_record = None
-        if isinstance(cached_entry, dict):
-            cached_cik = str(cached_entry.get("cik") or "").strip()
-            cached_series_id = str(
-                cached_entry.get("series_id") or ""
-            ).strip().upper()
-            cached_class_id = str(
-                cached_entry.get("class_id") or ""
-            ).strip().upper()
-            if (
-                cached_cik.isdigit()
-                and re.fullmatch(r"S\d+", cached_series_id)
-                and re.fullmatch(r"C\d+", cached_class_id)
-            ):
-                cached_record = (
-                    cached_cik.zfill(10),
-                    cached_series_id,
-                    cached_class_id,
-                )
-        cached_name = normalize_security_label(
-            cached_entry.get("name")
-            if isinstance(cached_entry, dict)
-            else None
-        )
-        if (
-            current_record
-            and cached_record == current_record
-            and cached_name
-        ):
-            # Re-fetch the bounded registrant page so a same-series rename is
-            # observed. The tuple-matched cache is only an availability
-            # fallback when the SEC page cannot be fetched or parsed.
-            fallback_names[symbol] = cached_name
-        elif symbol in cache:
-            cache.pop(symbol, None)
-            cache_changed = True
-        if current_record:
-            pending.add(symbol)
-
-    by_cik: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
-    for symbol in pending:
-        cik, series_id, class_id = unique_records[symbol]
-        by_cik[cik].append((symbol, series_id, class_id))
-
-    added = 0
-    for cik, records in sorted(by_cik.items()):
-        url = (
-            "https://www.sec.gov/cgi-bin/browse-edgar"
-            f"?scd=series&CIK={cik}&action=getcompany"
-        )
-        try:
-            page_text = HTTP.get(url).text
-        except Exception as exc:
-            log.warning(
-                f"  SEC fund series lookup failed for CIK {cik}: {exc}"
-            )
-            for symbol, _series_id, _class_id in records:
-                if fallback_name := fallback_names.get(symbol):
-                    names[symbol] = fallback_name
-            continue
-        series_names, class_names = _parse_sec_fund_series_page(page_text)
-        for symbol, series_id, class_id in records:
-            name = _sec_official_fund_name(
-                series_names.get(series_id),
-                class_names.get(class_id),
-            )
-            if not name:
-                if fallback_name := fallback_names.get(symbol):
-                    names[symbol] = fallback_name
-                continue
-            cache_entry = {
-                "cik": cik,
-                "class_id": class_id,
-                "name": name,
-                "series_id": series_id,
-            }
-            if cache.get(symbol) != cache_entry:
-                cache[symbol] = cache_entry
-                cache_changed = True
-                added += 1
-            names[symbol] = name
-
-    if added or cache_changed:
-        _atomic_write_json(SEC_FUND_NAMES_PATH, cache, sort_keys=True)
-    if added:
-        log.info(
-            f"  cached {added} new or updated SEC fund series/class name(s)"
-        )
-    return names
-
-
-def fetch_company_ticker_maps() -> tuple[dict[str, str], dict[str, set[str]]]:
-    """Build both normalized-name -> ticker and ticker -> normalized-name maps.
-
-    When multiple tickers normalize to the same name, use a plain/short ticker
-    only when it is the unique structural preference. Equally plausible plain
-    tickers are intentionally omitted from issuer-name fallback."""
-    data = _load_company_tickers_data()
-    if not data:
-        return {}, {}
-
-    buckets: dict[str, set[str]] = {}
-    ticker_to_norms: dict[str, set[str]] = defaultdict(set)
-    entries = data.values() if isinstance(data, dict) else data
-    for entry in entries:
-        ticker = (entry.get("ticker") or "").upper()
-        title = entry.get("title") or ""
-        if not (ticker and title):
-            continue
-        norm = normalize_name(title)
-        if norm:
-            buckets.setdefault(norm, set()).add(ticker)
-            ticker_to_norms[ticker].add(norm)
-
-    name_to_ticker: dict[str, str] = {}
-    ambiguous_dispatched = 0
-    ambiguous_resolved = 0
-    ambiguous_unresolved = 0
-    for norm, tickers in buckets.items():
-        if len(tickers) == 1:
-            name_to_ticker[norm] = next(iter(tickers))
-            continue
-        if norm in MULTI_CLASS_DISPATCH:
-            ambiguous_dispatched += 1
-            continue
-        # A common ticker can be structurally distinct from its preferred or
-        # warrant suffixes (BAC versus BAC-PB). If multiple candidates tie on
-        # that structural preference (PRU versus PFH), issuer text alone is not
-        # independent proof and must fail closed.
-        ranked = sorted(
-            tickers,
-            key=_ticker_preference_key,
-        )
-        best_shape = _ticker_preference_key(ranked[0])[:2]
-        best = [
-            ticker
-            for ticker in ranked
-            if _ticker_preference_key(ticker)[:2] == best_shape
-        ]
-        if len(best) != 1:
-            ambiguous_unresolved += 1
-            continue
-        name_to_ticker[norm] = best[0]
-        ambiguous_resolved += 1
-
-    log.info(
-        f"  loaded {len(name_to_ticker)} unique normalized names "
-        f"({ambiguous_dispatched} multi-class via dispatch, "
-        f"{ambiguous_resolved} resolved by unique preference, "
-        f"{ambiguous_unresolved} left ambiguous)"
-    )
-    return name_to_ticker, ticker_to_norms
-
-
-MIN_PREFIX_LEN = 8
-
-
-def prefix_lookup(
-    norm: str,
-    name_to_ticker: dict[str, str],
-    _cache: dict[str, str | None] | None = None,
-) -> str | None:
-    """Return a ticker when ``norm`` is a unique truncated prefix of one name.
-
-    This intentionally only allows the issuer name from the filing to be
-    *shorter* than the canonical SEC company title. The reverse direction
-    (`norm.startswith(known)`) caused false positives like mapping
-    "SOUTHERN MO BANCORP" to "SO" (Southern Co) just because both names start
-    with "SOUTHERN". Min 8 chars to avoid broad fuzzy matches."""
-    if _cache is not None and norm in _cache:
-        return _cache[norm]
-    if len(norm) < MIN_PREFIX_LEN:
-        if _cache is not None:
-            _cache[norm] = None
-        return None
-    matches = []
-    for known in name_to_ticker:
-        if known.startswith(norm):
-            matches.append(known)
-            if len(matches) > 1:
-                break
-    result = name_to_ticker[matches[0]] if len(matches) == 1 else None
-    if _cache is not None:
-        _cache[norm] = result
-    return result
-
-
-def resolve_ticker_from_name(
-    issuer: str | None,
-    title_of_class: str | None,
-    name_to_ticker: dict[str, str],
-    *,
-    prefix_cache: dict[str, str | None] | None = None,
-) -> str | None:
-    """Resolve a ticker from issuer/class text using exact + safe-prefix rules."""
-    norm = normalize_name(issuer or "")
-    if not norm:
-        return None
-    multi = resolve_multi_class(norm, title_of_class or "")
-    if multi:
-        return multi
-    return name_to_ticker.get(norm) or prefix_lookup(
-        norm,
-        name_to_ticker,
-        prefix_cache,
-    )
 
 
 def _fsync_directory(path: Path) -> None:
@@ -3403,11 +3910,26 @@ def _atomic_write_json(
     the old file or the new file — never a half-flushed one that
     json.load() would reject."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Sibling temp file to guarantee same filesystem (os.replace is atomic
-    # only within a filesystem).
-    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    # mkstemp provides an unpredictable, O_EXCL-created sibling on the same
+    # filesystem. The private mode prevents another local account from reading
+    # a partially rendered cache or substituting a symlink target.
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    tmp = Path(temporary_name)
+    descriptor_open = True
     try:
-        with open(tmp, "w") as f:
+        os.fchmod(descriptor, _SEC_PRIVATE_FILE_MODE)
+        output = os.fdopen(
+            descriptor,
+            "w",
+            encoding="utf-8",
+            newline="\n",
+        )
+        descriptor_open = False
+        with output as f:
             json.dump(
                 payload,
                 f,
@@ -3421,14 +3943,24 @@ def _atomic_write_json(
         if fsync_parent:
             _fsync_directory(path.parent)
     except BaseException:
-        removed = False
+        if descriptor_open:
+            try:
+                os.close(descriptor)
+            except BaseException:
+                pass
         try:
             tmp.unlink()
-            removed = True
-        except FileNotFoundError:
+        except BaseException:
+            # Cleanup is best-effort.  In particular, do not replace the
+            # original write interruption with a secondary unlink failure.
             pass
-        if removed:
-            _fsync_directory(path.parent)
+        else:
+            try:
+                _fsync_directory(path.parent)
+            except BaseException:
+                # Preserve the primary failure even if persisting the temp
+                # file removal is itself interrupted or unavailable.
+                pass
         raise
 
 
@@ -3688,7 +4220,7 @@ def _load_json_dict_with_fallback(
                 payload = json.load(f)
         except json.JSONDecodeError as e:
             # A corrupted map would otherwise silently return {}, forcing a
-            # multi-hour OpenFIGI re-resolve on the next run. Rename the bad
+            # multi-hour SEC evidence re-resolve on the next run. Rename the bad
             # file out of the way so it's visible and the pipeline can rebuild
             # a fresh copy, rather than overwriting the evidence.
             size = path.stat().st_size if path.exists() else -1
@@ -3718,199 +4250,75 @@ def _load_json_dict_with_fallback(
     return {}
 
 
-def _merge_committed_registry_display_metadata(
-    private_registry: dict,
-    committed_registry: dict,
-) -> dict:
-    """Use snapshot display metadata as a floor for a stale private cache.
+def load_cusip_map() -> dict[str, str]:
+    """Return the compatibility CUSIP->ticker view of the SEC master.
 
-    The private cache carries current operational/filing evidence, but it can
-    predate display enrichments already present in the snapshot's data copy.
-    Merge only reader-facing identity fields so a restored cache cannot
-    silently erase a known kind, label, or descriptive fund name.
+    The persisted authority is the provenance-bearing, type-keyed security
+    master.  This compact view exists only for older ingestion call sites that
+    still pass a mutable mapping through replay functions; it is never written
+    to a separate unprovenanced cache.
     """
 
-    merged = {
-        identifier: (
-            dict(entry) if isinstance(entry, dict) else entry
-        )
-        for identifier, entry in private_registry.items()
+    candidates: dict[str, set[str]] = defaultdict(set)
+    for record in load_security_master(SEC_SECURITY_MASTER_PATH).get(
+        "records", {}
+    ).values():
+        if not isinstance(record, dict) or record.get("mapping_status") != "resolved":
+            continue
+        cusip = normalize_security_identifier(record.get("cusip"))
+        ticker = str(record.get("ticker") or "").strip().upper()
+        if cusip and ticker:
+            candidates[cusip].add(ticker)
+    return {
+        cusip: next(iter(tickers))
+        for cusip, tickers in candidates.items()
+        if len(tickers) == 1
     }
-    for identifier, committed_entry in committed_registry.items():
-        if not isinstance(committed_entry, dict):
-            continue
-        private_entry = merged.get(identifier)
-        if not isinstance(private_entry, dict):
-            merged[identifier] = dict(committed_entry)
-            continue
-
-        entry = dict(private_entry)
-        committed_label = normalize_security_label(
-            committed_entry.get("security_label"),
-            identifier=identifier,
-        )
-        private_label = normalize_security_label(
-            entry.get("security_label"),
-            identifier=identifier,
-        )
-        if committed_label and not private_label:
-            entry["security_label"] = committed_label
-            committed_source = str(
-                committed_entry.get("label_source") or ""
-            ).strip()
-            if committed_source:
-                entry["label_source"] = committed_source
-        elif (
-            committed_label
-            and private_label == committed_label
-            and not str(entry.get("label_source") or "").strip()
-        ):
-            committed_source = str(
-                committed_entry.get("label_source") or ""
-            ).strip()
-            if committed_source:
-                entry["label_source"] = committed_source
-
-        committed_kind = normalize_security_kind(
-            committed_entry.get("security_kind")
-        )
-        private_kind = normalize_security_kind(entry.get("security_kind"))
-        if committed_kind and not private_kind:
-            entry["security_kind"] = committed_kind
-            committed_source = str(
-                committed_entry.get("security_kind_source") or ""
-            ).strip()
-            if committed_source:
-                entry["security_kind_source"] = committed_source
-        elif (
-            committed_kind
-            and private_kind == committed_kind
-            and not str(entry.get("security_kind_source") or "").strip()
-        ):
-            committed_source = str(
-                committed_entry.get("security_kind_source") or ""
-            ).strip()
-            if committed_source:
-                entry["security_kind_source"] = committed_source
-
-        committed_product = normalize_security_label(
-            committed_entry.get("product_name"),
-            identifier=identifier,
-        )
-        private_product = normalize_security_label(
-            entry.get("product_name"),
-            identifier=identifier,
-        )
-        committed_product_source = str(
-            committed_entry.get("product_name_source") or ""
-        ).strip()
-        private_product_source = str(
-            entry.get("product_name_source") or ""
-        ).strip()
-        committed_fund_symbol = _registry_fund_symbol(
-            identifier=identifier,
-            entry=committed_entry,
-        )
-        private_fund_symbol = _registry_fund_symbol(
-            identifier=identifier,
-            entry=entry,
-        )
-        authoritative_case_only_product = bool(
-            committed_product
-            and private_product
-            and committed_product.casefold() == private_product.casefold()
-            and committed_fund_symbol
-            and committed_fund_symbol == private_fund_symbol
-            and committed_product_source.startswith("sec_fund_")
-            and (
-                not private_product_source
-                or private_product_source.startswith("openfigi")
-            )
-        )
-        aliases = (
-            identifier,
-            entry.get("ticker"),
-            entry.get("security_label"),
-            committed_entry.get("ticker"),
-            committed_entry.get("security_label"),
-        )
-        if committed_product and (
-            not private_product
-            or authoritative_case_only_product
-            or _fund_product_name_degrades_existing(
-                committed_product,
-                private_product,
-                aliases=aliases,
-            )
-        ):
-            entry["product_name"] = committed_product
-            if committed_product_source:
-                entry["product_name_source"] = committed_product_source
-            else:
-                entry.pop("product_name_source", None)
-        elif (
-            committed_product
-            and private_product == committed_product
-            and not str(entry.get("product_name_source") or "").strip()
-        ):
-            if committed_product_source:
-                entry["product_name_source"] = committed_product_source
-
-        merged[identifier] = entry
-    return merged
-
-
-def load_cusip_map() -> dict[str, str]:
-    return _load_json_dict_with_fallback(
-        CUSIP_MAP_PATH,
-        LEGACY_CUSIP_MAP_PATH,
-        sort_keys=True,
-    )
 
 
 def save_cusip_map(cusip_map: dict[str, str]) -> None:
-    _atomic_write_json(CUSIP_MAP_PATH, cusip_map, sort_keys=True)
+    """Compatibility no-op; mappings persist only with SEC provenance."""
+
+    _ = cusip_map
 
 
-def load_openfigi_details() -> dict[str, dict]:
-    """Load private per-identifier OpenFIGI metadata, if available."""
+def load_sec_security_details() -> dict[str, dict]:
+    """Return one deterministic descriptive SEC-master record per CUSIP."""
 
-    if not OPENFIGI_DETAILS_PATH.exists():
-        return {}
-    payload = _load_json_dict_with_fallback(
-        OPENFIGI_DETAILS_PATH,
-        OPENFIGI_DETAILS_PATH,
-        sort_keys=True,
-    )
-    return {
-        str(identifier).strip().upper(): detail
-        for identifier, detail in payload.items()
-        if (
-            str(identifier).strip()
-            and isinstance(detail, dict)
-            and detail.get("status") in {"matched", "no_match"}
-        )
+    type_priority = {
+        "EQUITY": 0,
+        "PREF": 1,
+        "WARRANT": 2,
+        "NOTE": 3,
+        "CALL": 4,
+        "PUT": 5,
+        "OPT": 6,
     }
-
-
-def save_openfigi_details(details: dict[str, dict]) -> None:
-    """Persist selected OpenFIGI metadata without publishing the private map."""
-
-    _atomic_write_json(OPENFIGI_DETAILS_PATH, details, sort_keys=True)
+    selected: dict[str, tuple[int, dict]] = {}
+    records = load_security_master(SEC_SECURITY_MASTER_PATH).get("records", {})
+    for record in records.values():
+        if not isinstance(record, dict):
+            continue
+        cusip = normalize_security_identifier(record.get("cusip"))
+        if not cusip:
+            continue
+        instrument_type = normalize_instrument_type(
+            record.get("instrument_type")
+        )
+        priority = type_priority.get(instrument_type, 99)
+        current = selected.get(cusip)
+        if current is None or priority < current[0]:
+            selected[cusip] = (priority, dict(record))
+    return {cusip: record for cusip, (_priority, record) in selected.items()}
 
 
 def load_cusip_registry() -> dict:
-    private_registry = _load_json_dict_with_fallback(
-        CUSIP_REGISTRY_PATH,
+    """Load one registry copy without merging stale provider-era metadata."""
+
+    return _load_json_dict_with_fallback(
         LEGACY_CUSIP_REGISTRY_PATH,
+        CUSIP_REGISTRY_PATH,
         sort_keys=True,
-    )
-    committed_registry = _read_json_object(
-        LEGACY_CUSIP_REGISTRY_PATH
-    ) or {}
-    return _merge_committed_registry_display_metadata(
-        private_registry,
-        committed_registry,
     )
 
 
@@ -3919,32 +4327,7 @@ def save_cusip_registry(registry: dict) -> None:
         _atomic_write_json(path, registry, sort_keys=True)
 
 
-OPENFIGI_URL = "https://api.openfigi.com/v3/mapping"
-OPENFIGI_FREE_BATCH = 10
-OPENFIGI_KEYED_BATCH = 100
-OPENFIGI_FREE_INTERVAL = 2.5
-OPENFIGI_KEYED_INTERVAL = 0.3
-_OPENFIGI_DETAIL_FIELDS = (
-    "ticker",
-    "name",
-    "securityDescription",
-    "marketSector",
-    "securityType",
-    "securityType2",
-    "exchCode",
-)
-_OPENFIGI_PLAIN_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,15}$")
-_OPENFIGI_DISPLAY_TICKER_RE = re.compile(
-    r"^[A-Z][A-Z0-9.-]{0,15}(?:/(?:W|WS|RT))?$"
-)
-_DISPLAY_ONLY_SECURITY_CLASS_RE = re.compile(
-    r"\b(?:RIGHT|RIGHTS|WARRANT|WARRANTS|WT|WTS)\b",
-    re.IGNORECASE,
-)
-_DISPLAY_ONLY_TICKER_SUFFIX_RE = re.compile(
-    r"(?:[-./](?:R|RT|RIGHT|RIGHTS|W|WS|WT|WTS))$",
-    re.IGNORECASE,
-)
+_SEC_PLAIN_TICKER_RE = SEC_TICKER_RE
 _FILER_CLOSED_END_KIND_RE = re.compile(
     r"\bCLOSED[- ]END(?:\s+FUNDS?)?\b",
     re.IGNORECASE,
@@ -4030,744 +4413,2579 @@ _FILER_COMMON_ISSUER_EXCLUSION_RE = re.compile(
     r")\b|EXCHANGE[- ]TRADED",
     re.IGNORECASE,
 )
-_FUND_KIND_DISCOVERY_RE = re.compile(
-    r"\bETFS?\b|\bETNS?\b|\bFUNDS?\b|\bFDS\b|\bPORTFOLIOS?\b|"
-    r"EXCHANGE[ -]TRADED|MONEY MARKET|\bINDEX FDS\b|"
-    r"\bTRUST\b|\bUNITS?\b",
-    re.IGNORECASE,
-)
 _FUND_PRODUCT_NAME_KINDS = frozenset({
     "ETF",
     "ETN",
     "MUTUAL FUND",
     "CLOSED-END FUND",
 })
-_FUND_PRODUCT_CLASS_GENERIC_TOKENS = frozenset({
-    "ADR",
-    "BEN",
-    "BENEFICIAL",
-    "BENEF",
-    "BENF",
-    "BENFIN",
-    "BD",
-    "BOND",
-    "BONDS",
-    "CALL",
-    "CL",
-    "CLASS",
-    "CLOSED",
-    "CEF",
-    "CEM",
-    "CREATION",
-    "CM",
-    "CMN",
-    "CO",
-    "COM",
-    "COMPANY",
-    "COMMON",
-    "CORP",
-    "CORPORATION",
-    "END",
-    "EQ",
-    "EQUITY",
-    "EQUITIES",
-    "ETF",
-    "ETFS",
-    "ETP",
-    "EXCHANGE",
-    "FD",
-    "FDS",
-    "FND",
-    "FNDS",
-    "FEN",
-    "FRACTI",
-    "FRACTIONAL",
-    "FUND",
-    "FUNDS",
-    "GROUP",
-    "HLDG",
-    "HLDGS",
-    "HOLDINGS",
-    "INT",
-    "IDX",
-    "INC",
-    "INCORPORATED",
-    "ISHARES",
-    "LOAD",
-    "LLC",
-    "LIMITED",
-    "LP",
-    "LTD",
-    "M",
-    "MF",
-    "MFA",
-    "MFB",
-    "MFC",
-    "MFD",
-    "MMF",
-    "MPL",
-    "MONEY",
-    "MARKET",
-    "MUTL",
-    "MUT",
-    "MUTUAL",
-    "NEW",
-    "NON",
-    "NTF",
-    "OF",
-    "OPEN",
-    "OPT",
-    "OPTION",
-    "OPTIONS",
-    "OTHER",
-    "ORD",
-    "ORDINARY",
-    "PORTFOLIO",
-    "PORTFOLIOS",
-    "PLC",
-    "PUT",
-    "REP",
-    "REPRESENT",
-    "RET",
-    "SBI",
-    "SER",
-    "SERIES",
-    "SH",
-    "SHARE",
-    "SHARES",
-    "SHS",
-    "SOLUTIONS",
-    "SPD",
-    "SPDR",
-    "STATE",
-    "STK",
-    "STOCK",
-    "STREET",
-    "SWEEP",
-    "TAXABLE",
-    "THE",
-    "TR",
-    "TRD",
-    "TRADED",
-    "ADDED",
-    "UIT",
-    "UNIT",
-    "UNITS",
-    "UNDIVIDED",
-    "UNI",
-    "USD",
-    "UT",
-})
-_FUND_PRODUCT_SHORT_SPECIFIC_TOKENS = frozenset({
-    "AI",
-    "AU",
-    "CA",
-    "CN",
-    "DM",
-    "EM",
-    "EU",
-    "FX",
-    "HY",
-    "IG",
-    "JP",
-    "KR",
-    "UK",
-    "US",
-})
-_FUND_PRODUCT_VEHICLE_TOKENS = frozenset({
-    "ETF",
-    "ETFS",
-    "EXCHANGE",
-    "FD",
-    "FDS",
-    "FUND",
-    "FUNDS",
-    "INC",
-    "LLC",
-    "PORTFOLIO",
-    "PORTFOLIOS",
-    "SER",
-    "SERIES",
-    "TR",
-    "TRADED",
-    "TRUST",
-})
-_FUND_PRODUCT_ABBREVIATION_NOISE_TOKENS = frozenset({
-    "ADM",
-    "ADMIRAL",
-    "AND",
-    "INST",
-    "INSTITUTIONAL",
-    "INV",
-    "INVESTOR",
-    "OF",
-    "THE",
-})
-_OPENFIGI_COMPACT_NAME_LIMIT = 28
-_FUND_PRODUCT_NAME_GENERIC_TOKENS = (
-    _FUND_PRODUCT_CLASS_GENERIC_TOKENS
-    | frozenset({
-        "ACTIVE",
-        "I",
-        "II",
-        "III",
-        "IV",
-        "INDEX",
-        "TRUST",
-        "V",
-        "VI",
-    })
-)
-_OPENFIGI_TICKER_LIKE_TOKEN_RE = re.compile(
-    r"^[A-Z0-9][A-Z0-9./*-]{0,31}$",
-    re.IGNORECASE,
-)
-_OPENFIGI_STRUCTURED_TERMS_RE = re.compile(
-    r"(?:\bPERP\b|\b(?:FLT|VAR)\b|\d)",
-    re.IGNORECASE,
-)
-_OPENFIGI_US_EXCHANGE_CODES = frozenset({
-    "US",
-    "UN",
-    "UA",
-    "UB",
-    "UC",
-    "UD",
-    "UM",
-    "UW",
-    "UQ",
-    "UF",
-    "UP",
-    "UR",
-    "UX",
-    "NEW YORK",
-    "NYSE ARCA",
-    "NYSE AMERICAN",
-    "BATS",
-    "IEX",
-    "OTC US",
-})
-
-# Verified historical exceptions that current live resolvers miss.
-# These keep obvious non-obscure names from regressing to raw CUSIPs when a
-# company is later acquired/delisted or absent from SEC's company_tickers file.
-MANUAL_CUSIP_TICKER_OVERRIDES: dict[str, str] = {
-    # DTCC OTC Important Notice 044 (2015-03-06):
-    # https://www.dtcc.com/globals/pdfs/2015/march/06/otc-044
-    "45669R701": "IACH",
-    "G9001E110": "LILAK",
-    "M2682V108": "CYBR",
-}
-MANUAL_CUSIP_NAME_OVERRIDES: dict[str, str] = {
-    "45669R701": "INFORMATION ARCHITECTS CORP",
-    # Official Schwab product page:
-    # https://www.schwabassetmanagement.com/products/swgxx
-    # Some retained 13F rows misstate the issuer as APPLE INC; keep that raw
-    # dominant_issuer for provenance while using the CUSIP-specific fund name.
-    "808515209": "SCHWAB GOVERNMENT MONEY FUND - SWEEP SHARES",
-    # SEC 13F: IONQ INC, *W EXP 10/01/202, CUSIP 46222L116.
-    # https://www.sec.gov/Archives/edgar/data/1819275/000108514623002289/xslForm13F_X02/infotable.xml
-    "46222L116": "IONQ INC",
-    # SEC prospectus: existing Innoviz warrants expire April 5, 2026.
-    # https://www.sec.gov/Archives/edgar/data/1835654/000117891322002295/zk2227957.htm
-    "M5R635116": "INNOVIZ TECHNOLOGIES LTD",
-    # SEC 13F: https://www.sec.gov/Archives/edgar/data/2024532/000139834425009327/xslForm13F_X02/fp0093565-1_13fhr-table.xml
-    "714920113": "PERSHING SQUARE SPARC HOLDINGS, LTD.",
-    # SEC 13G: https://www.sec.gov/Archives/edgar/data/2025396/000110465924099307/tm2423867d1_sc13g.htm
-    "G93Y09123": "VINE HILL CAPITAL INVESTMENT CORP.",
-}
-MANUAL_SECURITY_LABEL_OVERRIDES: dict[str, str] = {
-    # These are malformed/synthetic identifiers preserved in historical
-    # filings. There is no issuer identity to resolve, so state that explicitly
-    # instead of displaying the raw identifier or placeholder filer text.
-    "056517388": "UNIDENTIFIED EQUITY SECURITY",
-    "056517389": "UNIDENTIFIED EQUITY SECURITY",
-    "464287294": "UNIDENTIFIED PUT SECURITY",
-    "MONEYMRKT": "MONEY MARKET FUND",
-    "OOOOOOOOO": "UNIDENTIFIED EQUITY SECURITY",
-}
-MANUAL_VERIFIED_SECURITY_LABEL_OVERRIDES: dict[str, str] = {
-    "46222L116": "IONQ/WS — WARRANT EXP 10/01/26",
-    "M5R635116": "INVZW — WARRANT EXP 04/05/26",
-    # SEC final term sheet: 4.125% Junior Subordinated Notes due 2060,
-    # CUSIP 744320 888, listed on the NYSE under symbol PFH.
-    # https://www.sec.gov/Archives/edgar/data/1137774/000119312520223799/d91345dfwp.htm
-    "744320888": "PFH — 4.125% JUNIOR SUBORDINATED NOTES DUE 2060",
-}
-MANUAL_SECURITY_KIND_OVERRIDES: dict[str, str] = {
-    "46222L116": "WARRANT",
-    # SEC issuer materials identify these iPath products as exchange-traded
-    # notes. OpenFIGI's broad ETP classification otherwise presents them as
-    # ETFs.
-    # https://www.sec.gov/Archives/edgar/data/312070/000119312512299581/d377519dfwp.htm
-    "06738C786": "ETN",
-    # https://www.sec.gov/Archives/edgar/data/312070/000119312512401196/d417380dfwp.htm
-    "06740C527": "ETN",
-    # https://www.sec.gov/Archives/edgar/data/312070/000095010325006107/dp228819_424b2-vxxvxzetnps.htm
-    "06748M188": "ETN",
-    # SEC 10-K: INDEXPLUS Trust Certificates Series 2003-1 represent
-    # interests in a portfolio of underlying debt obligations.
-    "590188108": "BOND",
-    # SEC final term sheet: 4.125% Junior Subordinated Notes due 2060,
-    # CUSIP 744320 888. Retained 13F rows and OpenFIGI misclassify the
-    # exchange-listed debt as common/preferred equity.
-    # https://www.sec.gov/Archives/edgar/data/1137774/000119312520223799/d91345dfwp.htm
-    "744320888": "BOND",
-    # SEC 8-K: WINVR is a right to acquire 1/15 of one common share.
-    "97655B125": "RIGHT",
-    # SEC 12(b) data: IMAQR is the issuer's listed acquisition right.
-    "459867123": "RIGHT",
-    # Repeated retained 13F rows identify these W-suffixed securities as
-    # warrants even though a higher-value filer row mislabeled the class COM.
-    "09032H113": "WARRANT",
-    "128745114": "WARRANT",
-    "74319X116": "WARRANT",
-}
+SEC_SECURITY_REFRESH_LOCK = threading.Lock()
 
 
-def _response_excerpt(resp: requests.Response, limit: int = 300) -> str:
-    text = (resp.text or "").strip().replace("\n", " ")
-    if len(text) > limit:
-        return text[: limit - 3] + "..."
-    return text or "<empty body>"
+class SecurityMasterRefreshError(RuntimeError):
+    """Raised when no verified SEC security master can be produced."""
 
 
-def manual_cusip_ticker_overrides(cusips: set[str] | list[str]) -> dict[str, str]:
-    return {
-        cusip: MANUAL_CUSIP_TICKER_OVERRIDES[cusip]
-        for cusip in cusips
-        if cusip in MANUAL_CUSIP_TICKER_OVERRIDES
-    }
+def _reported_descriptor_text(
+    holding: dict,
+    reported_field: str,
+) -> str:
+    """Return the SEC descriptor with only whitespace normalized."""
+
+    raw_value = holding.get(reported_field)
+    return " ".join(str(raw_value or "").split())
 
 
-def get_openfigi_api_key() -> str:
-    return os.environ.get("OPENFIGI_API_KEY", "").strip()
+def _security_universe_from_holdings(
+    holdings,
+    reported_identity_sources=None,
+) -> list[dict[str, object]]:
+    """Return exact identity records plus immutable SEC filing descriptors."""
 
-
-def openfigi_batch_size() -> int:
-    return OPENFIGI_KEYED_BATCH if get_openfigi_api_key() else OPENFIGI_FREE_BATCH
-
-
-def openfigi_target_interval() -> float:
-    return OPENFIGI_KEYED_INTERVAL if get_openfigi_api_key() else OPENFIGI_FREE_INTERVAL
-
-
-def _openfigi_headers() -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    api_key = get_openfigi_api_key()
-    if api_key:
-        headers["X-OPENFIGI-APIKEY"] = api_key
-    return headers
-
-
-def _parse_openfigi_rate_limit(resp: requests.Response) -> tuple[int | None, float | None]:
-    remaining_text = resp.headers.get("ratelimit-remaining")
-    reset_text = resp.headers.get("ratelimit-reset")
-    try:
-        remaining = int(remaining_text) if remaining_text is not None else None
-    except (TypeError, ValueError):
-        remaining = None
-    try:
-        reset = float(reset_text) if reset_text is not None else None
-    except (TypeError, ValueError):
-        reset = None
-    return remaining, reset
-
-
-def _openfigi_pause_seconds(
-    resp: requests.Response | None,
-    fallback: float,
-) -> float:
-    if resp is None:
-        return fallback
-    remaining, reset = _parse_openfigi_rate_limit(resp)
-    if remaining is None or reset is None or reset <= 0:
-        return fallback
-    if remaining <= 1:
-        return max(reset, fallback)
-    return max(reset / remaining, 0.0)
-
-
-def _openfigi_post(payload: list[dict]) -> requests.Response | None:
-    """POST to OpenFIGI with bounded retry on rate limits and transient 5xx."""
-    for attempt in range(5):
-        try:
-            resp = requests.post(
-                OPENFIGI_URL, json=payload,
-                headers=_openfigi_headers(),
-                timeout=30,
+    sources_by_filing: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(
+        list
+    )
+    for source in reported_identity_sources or []:
+        if not isinstance(source, dict):
+            continue
+        sources_by_filing[
+            (
+                str(source.get("accession") or "").strip(),
+                str(source.get("report_date") or "").strip(),
             )
-            if resp.status_code == 429:
-                _, reset = _parse_openfigi_rate_limit(resp)
-                wait = max(reset or 0, 30 * (attempt + 1))
-                log.warning(f"    rate-limited; waiting {wait}s (attempt {attempt + 1}/5)")
-                time.sleep(wait)
+        ].append(source)
+
+    universe: dict[tuple[str, str, str, str], dict[str, object]] = {}
+
+    def merge(record: dict[str, object]) -> None:
+        identity = (
+            str(record["cusip"]),
+            str(record["instrument_type"]),
+            str(record["issuer"]),
+            str(record["security_class"]),
+        )
+        existing = universe.setdefault(identity, record)
+        combined = {
+            json.dumps(item, sort_keys=True, separators=(",", ":")): item
+            for item in [
+                *(existing.get("reported_identity_evidence") or []),
+                *(record.get("reported_identity_evidence") or []),
+            ]
+            if isinstance(item, dict)
+        }
+        if combined:
+            existing["reported_identity_evidence"] = [
+                combined[min(combined)]
+            ]
+
+    for holding in holdings:
+        cusip = normalize_security_identifier(
+            holding.get("reported_cusip") or holding.get("cusip")
+        )
+        if not cusip:
+            continue
+        # Master keys must use the same preserved position identity as ticker
+        # refresh, registry aggregation, and the economic-invariant gate.
+        # Descriptive class text is evidence for resolution, not permission
+        # to replace a persisted instrument type during this refresh.
+        instrument_type = holding_instrument_type(holding)
+        record = {
+            "cusip": cusip,
+            "instrument_type": instrument_type,
+            "issuer": _reported_descriptor_text(
+                holding,
+                "reported_issuer",
+            ),
+            "security_class": _reported_descriptor_text(
+                holding,
+                "reported_class",
+            ),
+        }
+        evidence = (
+            sources_by_filing.get(
+                (
+                    str(holding.get("accession") or "").strip(),
+                    str(holding.get("report_date") or "").strip(),
+                ),
+                [],
+            )
+            if _holding_has_hashable_reported_identity(holding)
+            else []
+        )
+        if evidence:
+            record["reported_identity_evidence"] = [
+                {
+                    **source,
+                    "reported_cusip": cusip,
+                    "reported_issuer": record["issuer"],
+                    "reported_class": record["security_class"],
+                }
+                for source in evidence
+                if isinstance(source, dict)
+            ]
+        merge(record)
+        # Form 13F options report the underlying security's identifier. Keep
+        # the option position identity while allowing the exact underlying
+        # Equity record to provide display metadata.
+        if instrument_type in {"CALL", "PUT", "OPT"}:
+            equity_record = {**record, "instrument_type": "EQUITY"}
+            merge(equity_record)
+    return [universe[key] for key in sorted(universe)]
+
+
+def collect_security_master_universe(
+    extra_holdings: list[dict] | None = None,
+) -> list[dict[str, object]]:
+    """Collect all persisted and newly parsed security identities once."""
+
+    universe: dict[tuple[str, str, str, str], dict[str, object]] = {}
+
+    def merge_holdings(holdings, reported_identity_sources) -> None:
+        for record in _security_universe_from_holdings(
+            holdings,
+            reported_identity_sources,
+        ):
+            key = (
+                record["cusip"],
+                record["instrument_type"],
+                record["issuer"],
+                record["security_class"],
+            )
+            existing = universe.setdefault(key, record)
+            evidence = {
+                json.dumps(item, sort_keys=True, separators=(",", ":")): item
+                for item in [
+                    *(existing.get("reported_identity_evidence") or []),
+                    *(record.get("reported_identity_evidence") or []),
+                ]
+                if isinstance(item, dict)
+            }
+            if evidence:
+                existing["reported_identity_evidence"] = [
+                    evidence[min(evidence)]
+                ]
+
+    if FUNDS_DIR.exists():
+        for fund_path in sorted(FUNDS_DIR.glob("*.json")):
+            try:
+                fund = json.loads(fund_path.read_text())
+            except (OSError, json.JSONDecodeError):
                 continue
-            if resp.status_code in {500, 502, 503, 504}:
-                if attempt == 4:
-                    log.warning(
-                        f"    OpenFIGI HTTP {resp.status_code} after 5 attempts: "
-                        f"{_response_excerpt(resp)}"
-                    )
-                    return resp
-                wait = min(2 ** attempt, 16)
-                log.warning(
-                    f"    OpenFIGI HTTP {resp.status_code}; retrying in "
-                    f"{wait}s (attempt {attempt + 1}/5)"
+            for quarter in fund.get("quarters", []):
+                merge_holdings(
+                    quarter.get("holdings", []),
+                    quarter.get("reported_identity_sources", []),
                 )
-                time.sleep(wait)
-                continue
-            if resp.status_code != 200:
-                log.warning(
-                    f"    OpenFIGI HTTP {resp.status_code}: {_response_excerpt(resp)}"
-                )
-            return resp
-        except Exception as e:
-            log.warning(f"    request error: {e}")
-            time.sleep(10)
-    return None
+    if extra_holdings:
+        merge_holdings(extra_holdings, [])
+    return [universe[key] for key in sorted(universe)]
 
 
-def _openfigi_identifier_type(identifier: str) -> str:
-    """Use CINS for letter-leading identifiers and CUSIP otherwise."""
-
-    return "ID_CINS" if identifier[:1].isalpha() else "ID_CUSIP"
-
-
-def _select_openfigi_candidate(candidates: list[dict]) -> dict | None:
-    """Select one mapping result while preserving historical ticker behavior."""
-
-    for candidate in candidates:
-        if candidate.get("ticker") and _openfigi_is_us_exchange(candidate):
-            return candidate
-    for candidate in candidates:
-        if candidate.get("ticker"):
-            return candidate
-    return candidates[0] if candidates else None
-
-
-def _openfigi_detail(candidate: dict) -> dict:
-    """Return the compact, normalized metadata retained for one match."""
-
-    detail: dict[str, str | None] = {"status": "matched"}
-    for field in _OPENFIGI_DETAIL_FIELDS:
-        value = candidate.get(field)
-        if isinstance(value, str):
-            value = " ".join(value.strip().split()) or None
-        else:
-            value = None
-        if field == "ticker" and value:
-            value = value.upper()
-        detail[field] = value
-    return detail
+_SEC_EDGAR_DISCOVERY_TYPES = frozenset({"EQUITY", "PREF", "WARRANT"})
+_SEC_EDGAR_DISCOVERY_STATUSES = frozenset({"unresolved", "ambiguous"})
+_SEC_EDGAR_RESOLVED_RECHECK_DAYS = 30
+# A newly reported holding can precede the next official-list publication.  A
+# six-month window covers one complete 13F reporting cycle plus the filing lag,
+# without turning the repository's full historical corpus into an EDGAR queue.
+_SEC_EDGAR_NEW_REPORTED_IDENTITY_DAYS = 183
+# One unresolved CUSIP can fan out to many Schedule documents and periodic
+# filings. Bound each unattended run; terminal results fall out of the queue,
+# so an exceptional backlog drains deterministically over subsequent runs.
+_SEC_EDGAR_INCREMENTAL_CANDIDATE_LIMIT = 50
+_SEC_EDGAR_CLEAN_CANDIDATE_LIMIT = 250
+_SEC_EDGAR_CLEAN_CHUNK_SIZE = 100
+_SEC_EDGAR_JOURNAL_SCHEMA_VERSION = 1
+_SEC_EDGAR_JOURNAL_FILE_RE = re.compile(
+    r"^edgar-exception-batch-(?P<sequence>\d{6})\.json$"
+)
+_SEC_EDGAR_JOURNAL_TEMP_FILE_RE = re.compile(
+    r"^\.edgar-exception-batch-\d{6}\.json\.[A-Za-z0-9_-]+\.tmp$"
+)
+_SEC_EDGAR_JOURNAL_FILE_PREFIX = "edgar-exception-batch-"
+_SEC_PRIVATE_DIRECTORY_MODE = 0o700
+_SEC_PRIVATE_FILE_MODE = 0o600
+_SEC_SECURITY_MASTER_PAIR_LOCK_NAME = ".sec-security-master-pair.lock"
+SEC_SECURITY_MASTER_REBUILD_WORK_ROOT = (
+    CACHE_DIR / "sec-security-master-rebuild-work"
+)
+_SEC_SECURITY_MASTER_REBUILD_MANIFEST_SCHEMA_VERSION = 2
+_SEC_SECURITY_MASTER_REBUILD_PLAN_VERSION = 2
 
 
-def _openfigi_is_definitive_no_match(entry: dict) -> bool:
-    """Whether one per-identifier response is safe to persist as no-match."""
+def _is_sec_edgar_journal_managed_file(path: Path) -> bool:
+    """Whether *path* is one of the rebuild workspace's private journals."""
 
-    warning = entry.get("warning")
-    if isinstance(warning, str) and warning.strip():
-        return True
-    error = str(entry.get("error") or "").strip().lower().rstrip(".")
-    return error in {
-        "invalid idvalue format",
-        "no identifier found",
+    name = Path(path).name
+    return bool(
+        _SEC_EDGAR_JOURNAL_FILE_RE.fullmatch(name)
+        or _SEC_EDGAR_JOURNAL_TEMP_FILE_RE.fullmatch(name)
+        or (
+            name.startswith(_SEC_EDGAR_JOURNAL_FILE_PREFIX)
+            and ".json.tmp." in name
+        )
+    )
+
+
+def _is_sec_edgar_journal_temp_file(path: Path) -> bool:
+    """Whether *path* is an interrupted old or current journal temp file."""
+
+    name = Path(path).name
+    return bool(
+        _SEC_EDGAR_JOURNAL_TEMP_FILE_RE.fullmatch(name)
+        or (
+            name.startswith(_SEC_EDGAR_JOURNAL_FILE_PREFIX)
+            and ".json.tmp." in name
+        )
+    )
+
+
+def _set_and_verify_private_mode(
+    path: Path,
+    mode: int,
+    *,
+    description: str,
+) -> None:
+    """Tighten one already type-checked private path and verify the result."""
+
+    try:
+        Path(path).chmod(mode)
+        actual_mode = Path(path).stat().st_mode & 0o7777
+    except OSError as exc:
+        raise SecurityMasterRefreshError(
+            f"could not secure {description}"
+        ) from exc
+    if actual_mode != mode:
+        raise SecurityMasterRefreshError(
+            f"{description} must have mode {mode:04o}"
+        )
+
+
+def audit_security_master(*args, **kwargs):
+    """Apply production completeness gates at every publication boundary."""
+
+    kwargs.setdefault(
+        "minimum_current_symbol_population_by_kind",
+        PRODUCTION_MIN_CURRENT_SYMBOL_POPULATION_BY_KIND,
+    )
+    kwargs.setdefault(
+        "minimum_current_symbol_title_ratio",
+        PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO,
+    )
+    kwargs.setdefault(
+        "minimum_active_official_cusip_count",
+        PRODUCTION_MIN_ACTIVE_OFFICIAL_CUSIP_COUNT,
+    )
+    kwargs.setdefault("enforce_latest_completed_official_period", True)
+    kwargs.setdefault("enforce_reported_identity_evidence", True)
+    return _audit_security_master(*args, **kwargs)
+
+
+def _security_master_pair_fingerprint(
+    master: dict,
+    state: dict,
+) -> dict[str, str]:
+    """Bind one production or staged master/state pair by canonical content."""
+
+    components = {
+        "master_sha256": _canonical_json_hash(master),
+        "source_state_sha256": _canonical_json_hash(state),
+    }
+    return {
+        **components,
+        "pair_sha256": _canonical_json_hash(components),
     }
 
 
-class OpenFIGIFullRefreshError(RuntimeError):
-    """Raised when a full OpenFIGI refresh cannot verify every batch."""
+def _valid_security_master_pair_fingerprint(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "master_sha256",
+        "source_state_sha256",
+        "pair_sha256",
+    }:
+        return False
+    components = {
+        "master_sha256": value.get("master_sha256"),
+        "source_state_sha256": value.get("source_state_sha256"),
+    }
+    return (
+        all(
+            isinstance(digest, str)
+            and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+            for digest in value.values()
+        )
+        and value.get("pair_sha256") == _canonical_json_hash(components)
+    )
 
 
-def _openfigi_batch_failure(
-    message: str,
-    *,
-    strict: bool,
-) -> None:
-    """Log a batch failure, raising when the caller requires completeness."""
+def _has_published_sec_security_state(master: dict, state: dict) -> bool:
+    """Whether an explicit rebuild starts from an established SEC master.
 
-    if strict:
-        raise OpenFIGIFullRefreshError(message)
-    log.warning(message)
-
-
-def resolve_cusips_via_openfigi(
-    cusips: list[str],
-    *,
-    force_refresh: bool = False,
-) -> dict[str, str]:
-    """Batch-resolve CUSIPs to tickers via the OpenFIGI API.
-
-    Returns the historical ``identifier -> ticker`` shape for compatibility,
-    while separately persisting the selected candidate's descriptive and type
-    metadata. Letter-leading identifiers are submitted as CINS; numeric-leading
-    identifiers retain the CUSIP route. When OPENFIGI_API_KEY is present we use
-    the keyed request size and pace more aggressively; otherwise we honor the
-    lower public limits. Durable matched/no-match details short-circuit routine
-    retries. ``force_refresh`` is reserved for the weekly full refresh and is
-    therefore also strict: every requested identifier must receive a complete,
-    structurally valid batch response or the refresh fails rather than silently
-    succeeding with retained stale mappings. Routine resolution remains
-    best-effort so a transient OpenFIGI outage cannot block daily SEC updates.
+    A legacy snapshot has neither cache file, so its default empty pair may
+    safely reuse a completed, fingerprinted cutover stage after a downstream
+    workflow failure. Once any SEC master has been published, an explicit
+    rebuild is an independent reproducibility run and must start fresh.
     """
-    if not cusips:
-        return {}
-    with OPENFIGI_LOCK:
-        requested = list(dict.fromkeys(
-            str(cusip or "").strip().upper()
-            for cusip in cusips
-            if str(cusip or "").strip()
-        ))
-        details = load_openfigi_details()
-        if not force_refresh:
-            for cusip in requested:
-                if cusip in _OPENFIGI_RUN_CACHE:
+
+    return bool(
+        master.get("records")
+        or isinstance(master.get("audit"), dict)
+        or master.get("generated_at") is not None
+        or state.get("sources")
+        or state.get("updated_at") is not None
+    )
+
+
+def _security_master_universe_sha256(
+    universe: list[dict[str, str]],
+) -> str:
+    universe_bytes = json.dumps(
+        {"securities": universe},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(universe_bytes).hexdigest()
+
+
+def _security_master_rebuild_manifest(
+    universe: list[dict[str, str]],
+    *,
+    production_master: dict,
+    production_state: dict,
+) -> dict[str, object]:
+    parser_hashes = {
+        name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+        for name in (
+            "pipeline.py",
+            "sec_security_master.py",
+            "sec_edgar_evidence.py",
+            "security_identity.py",
+        )
+    }
+    plan = {
+        "plan_version": _SEC_SECURITY_MASTER_REBUILD_PLAN_VERSION,
+        "master_schema_version": SEC_SECURITY_MASTER_SCHEMA_VERSION,
+        "source_state_schema_version": SEC_SOURCE_STATE_SCHEMA_VERSION,
+        "edgar_cache_schema_version": SEC_EDGAR_CACHE_SCHEMA_VERSION,
+        "ftd_history_start": "2004-03-22",
+        "ftd_lookback_months": None,
+        "edgar_chunk_size": _SEC_EDGAR_CLEAN_CHUNK_SIZE,
+        "edgar_clean_candidate_limit": _SEC_EDGAR_CLEAN_CANDIDATE_LIMIT,
+        "edgar_journal_schema_version": _SEC_EDGAR_JOURNAL_SCHEMA_VERSION,
+        "parser_sha256": parser_hashes,
+    }
+    plan_bytes = json.dumps(
+        plan,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "schema_version": _SEC_SECURITY_MASTER_REBUILD_MANIFEST_SCHEMA_VERSION,
+        "plan": plan,
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "universe_sha256": _security_master_universe_sha256(universe),
+        "base_production": _security_master_pair_fingerprint(
+            production_master,
+            production_state,
+        ),
+    }
+
+
+def _reported_identity_resume_receipt_for_in_progress_rebuild(
+    universe: list[dict[str, str]],
+) -> dict[str, object] | None:
+    """Return the exact 13F receipt owned by one interrupted master build.
+
+    An in-progress workspace and a completed-but-not-yet-promoted stage both
+    belong to the same interrupted attempt. A completed stage is eligible only
+    while production still equals its recorded base; after promotion, invoking
+    ``--rebuild-security-master`` again must perform a new independent 13F
+    reconstruction. The stored parser hash need only be internally valid so a
+    downstream parser fix can reuse the immutable 13F generation; the universe
+    and production rollback boundary still have to match the live inputs.
+    """
+
+    root = SEC_SECURITY_MASTER_REBUILD_WORK_ROOT
+    manifest_path = root / "manifest.json"
+    if (
+        root.is_symlink()
+        or not root.is_dir()
+        or manifest_path.is_symlink()
+        or not manifest_path.is_file()
+    ):
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    status = manifest.get("status") if isinstance(manifest, dict) else None
+    in_progress = (
+        status == "in_progress"
+        and manifest.get("completed_at") is None
+        and manifest.get("completed_stage") is None
+        and manifest.get("completed_master_universe_sha256") is None
+    )
+    completed_unpromoted = (
+        status == "complete"
+        and _is_strict_utc_timestamp(manifest.get("completed_at"))
+        and _valid_security_master_pair_fingerprint(
+            manifest.get("completed_stage")
+        )
+        and isinstance(
+            manifest.get("completed_master_universe_sha256"),
+            str,
+        )
+    )
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version")
+        != _SEC_SECURITY_MASTER_REBUILD_MANIFEST_SCHEMA_VERSION
+        or not (in_progress or completed_unpromoted)
+        or manifest.get("universe_sha256")
+        != _security_master_universe_sha256(universe)
+        or not _valid_security_master_pair_fingerprint(
+            manifest.get("base_production")
+        )
+    ):
+        return None
+    plan = manifest.get("plan")
+    plan_sha256 = manifest.get("plan_sha256")
+    if (
+        not isinstance(plan, dict)
+        or not isinstance(plan_sha256, str)
+        or hashlib.sha256(
+            json.dumps(
+                plan,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        != plan_sha256
+    ):
+        return None
+    try:
+        production_master, production_state = load_security_master_pair(
+            master_path=SEC_SECURITY_MASTER_PATH,
+            source_state_path=SEC_SOURCE_STATE_PATH,
+        )
+        current_production = _security_master_pair_fingerprint(
+            production_master,
+            production_state,
+        )
+    except (OSError, ValueError):
+        return None
+    if manifest["base_production"] != current_production:
+        return None
+    if completed_unpromoted:
+        try:
+            staged_master, staged_state = load_security_master_pair(
+                master_path=root / "sec_security_master.json",
+                source_state_path=root / "sec_source_state.json",
+            )
+        except (OSError, ValueError):
+            return None
+        if (
+            _security_master_pair_fingerprint(staged_master, staged_state)
+            != manifest.get("completed_stage")
+            or staged_master.get("universe_sha256")
+            != manifest.get("completed_master_universe_sha256")
+        ):
+            return None
+
+    stored_receipt = manifest.get("reported_identity_rebuild_receipt")
+    if stored_receipt is None:
+        # Migration path for an attempt created immediately before receipts
+        # were introduced. The exact state and 6+ GiB SQLite generation are
+        # fully checksummed before they can be adopted.
+        try:
+            receipt = build_completed_clean_rebuild_receipt(
+                verify_index_checksum=True,
+            )
+        except (OSError, ValueError):
+            return None
+    elif isinstance(stored_receipt, dict):
+        receipt = dict(stored_receipt)
+    else:
+        return None
+
+    created_at = manifest.get("created_at")
+    generated_at = receipt.get("generated_at")
+    if (
+        not _is_strict_utc_timestamp(created_at)
+        or not _is_strict_utc_timestamp(generated_at)
+        or str(generated_at) > str(created_at)
+    ):
+        return None
+    return receipt
+
+
+def _legacy_cutover_completed_identity_receipt(
+    *,
+    published_sec_security_state: bool,
+) -> dict[str, object] | None:
+    """Return only a receipt safe to reuse for an unpublished v1 cutover."""
+
+    if published_sec_security_state:
+        return None
+    receipt = load_completed_clean_rebuild_receipt()
+    if isinstance(receipt, dict):
+        return dict(receipt)
+    try:
+        receipt = prepare_unpublished_legacy_index_adoption(
+            FUNDS_DIR,
+            published_sec_security_state=False,
+        )
+    except (OSError, ValueError):
+        return None
+    return dict(receipt)
+
+
+def _record_reported_identity_rebuild_receipt(
+    root: Path,
+    receipt: dict[str, object] | None,
+) -> None:
+    """Attach a verified 13F generation to the active private workspace."""
+
+    if receipt is None:
+        return
+    manifest_path = Path(root) / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise SecurityMasterRefreshError(
+            "SEC rebuild workspace manifest is not a regular file"
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SecurityMasterRefreshError(
+            "invalid SEC rebuild workspace manifest"
+        ) from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("status") != "in_progress"
+        or manifest.get("completed_stage") is not None
+    ):
+        raise SecurityMasterRefreshError(
+            "SEC reported-identity receipt requires an in-progress rebuild"
+        )
+    manifest["reported_identity_rebuild_receipt"] = dict(receipt)
+    _atomic_write_json(manifest_path, manifest, sort_keys=True)
+
+
+def _prepare_security_master_rebuild_work(
+    universe: list[dict[str, str]],
+    *,
+    production_master: dict,
+    production_state: dict,
+    current: datetime | None = None,
+    force_fresh_completed: bool = False,
+) -> tuple[Path, bool]:
+    """Return a manifest-bound persistent, nonpublishable rebuild workspace."""
+
+    root = SEC_SECURITY_MASTER_REBUILD_WORK_ROOT
+    if root.parent.is_symlink():
+        raise SecurityMasterRefreshError(
+            "SEC security-master rebuild workspace parent cannot be a symlink"
+        )
+    if root.is_symlink():
+        raise SecurityMasterRefreshError(
+            "SEC security-master rebuild workspace cannot be a symlink"
+        )
+    if root.exists() and not root.is_dir():
+        raise SecurityMasterRefreshError(
+            "SEC security-master rebuild workspace must be a directory"
+        )
+    try:
+        root.mkdir(
+            parents=True,
+            exist_ok=True,
+            mode=_SEC_PRIVATE_DIRECTORY_MODE,
+        )
+    except OSError as exc:
+        raise SecurityMasterRefreshError(
+            "could not create SEC security-master rebuild workspace"
+        ) from exc
+    if root.is_symlink() or not root.is_dir():
+        raise SecurityMasterRefreshError(
+            "SEC security-master rebuild workspace must be a regular directory"
+        )
+    _set_and_verify_private_mode(
+        root,
+        _SEC_PRIVATE_DIRECTORY_MODE,
+        description="SEC security-master rebuild workspace",
+    )
+    staged_master = root / "sec_security_master.json"
+    staged_state = root / "sec_source_state.json"
+    managed_names = {
+        _SEC_SECURITY_MASTER_PAIR_LOCK_NAME,
+        "manifest.json",
+        "sec_security_master.json",
+        "sec_source_state.json",
+    }
+    for name in sorted(managed_names):
+        child = root / name
+        if child.is_symlink() or (child.exists() and not child.is_file()):
+            raise SecurityMasterRefreshError(
+                "SEC rebuild managed path must be a regular file: " + name
+            )
+        if child.is_file():
+            _set_and_verify_private_mode(
+                child,
+                _SEC_PRIVATE_FILE_MODE,
+                description="SEC rebuild managed file " + name,
+            )
+    if root.is_dir():
+        removed_temporary_journal = False
+        for child in root.iterdir():
+            if _is_sec_edgar_journal_managed_file(child):
+                if child.is_symlink() or not child.is_file():
+                    raise SecurityMasterRefreshError(
+                        "SEC rebuild EDGAR journal path must be a regular file: "
+                        + child.name
+                    )
+                _set_and_verify_private_mode(
+                    child,
+                    _SEC_PRIVATE_FILE_MODE,
+                    description="SEC rebuild EDGAR journal " + child.name,
+                )
+                if _is_sec_edgar_journal_temp_file(child):
+                    child.unlink()
+                    removed_temporary_journal = True
+        if removed_temporary_journal:
+            _fsync_directory(root)
+    try:
+        recover_security_master_pair(
+            master_path=staged_master,
+            source_state_path=staged_state,
+        )
+    except (OSError, ValueError) as exc:
+        raise SecurityMasterRefreshError(
+            "could not recover the SEC rebuild staged pair"
+        ) from exc
+    desired = _security_master_rebuild_manifest(
+        universe,
+        production_master=production_master,
+        production_state=production_state,
+    )
+    manifest_path = root / "manifest.json"
+    existing: dict[str, object] = {}
+    try:
+        existing_raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(existing_raw, dict):
+            existing = existing_raw
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        existing = {}
+    identity_fields = ("schema_version", "plan_sha256", "universe_sha256")
+    compatible = bool(existing) and all(
+        existing.get(field) == desired.get(field) for field in identity_fields
+    )
+    status = existing.get("status")
+    existing_base = existing.get("base_production")
+    completed_stage = existing.get("completed_stage")
+    current_production = desired["base_production"]
+    if (
+        force_fresh_completed
+        and status == "complete"
+        and current_production == completed_stage
+    ):
+        # Production already equals this completed stage, so a new explicit
+        # --rebuild-security-master call must be an independent reproducibility
+        # run.  When production still equals the manifest's base, the prior
+        # attempt stopped between completing the stage and promoting it; that
+        # exact stage remains the deterministic resume candidate.
+        compatible = False
+    if compatible:
+        compatible = (
+            status in {"in_progress", "complete"}
+            and _valid_security_master_pair_fingerprint(existing_base)
+            and (
+                (
+                    status == "in_progress"
+                    and completed_stage is None
+                    and existing_base == current_production
+                )
+                or (
+                    status == "complete"
+                    and _valid_security_master_pair_fingerprint(
+                        completed_stage
+                    )
+                    and current_production
+                    in (existing_base, completed_stage)
+                )
+            )
+        )
+    if compatible:
+        try:
+            loaded_state = None
+            loaded_master = None
+            if existing.get("status") == "complete":
+                loaded_master, loaded_state = load_security_master_pair(
+                    master_path=staged_master,
+                    source_state_path=staged_state,
+                )
+            if existing.get("status") == "complete" and (
+                loaded_master is None
+                or loaded_state is None
+                or loaded_master.get("source_state_sha256")
+                != source_state_sha256(loaded_state)
+                or _security_master_pair_fingerprint(
+                    loaded_master,
+                    loaded_state,
+                )
+                != existing.get("completed_stage")
+                or existing.get("completed_master_universe_sha256")
+                != loaded_master.get("universe_sha256")
+            ):
+                compatible = False
+        except Exception:
+            compatible = False
+    if not compatible:
+        if root.exists():
+            unknown = [
+                child
+                for child in root.iterdir()
+                if child.name not in managed_names
+                and not _is_sec_edgar_journal_managed_file(child)
+                and not (
+                    child.is_file()
+                    and (
+                        child.name.startswith(".manifest.json.")
+                        or child.name.startswith(".sec_security_master.json.")
+                        or child.name.startswith(".sec_source_state.json.")
+                        or child.name.startswith("manifest.json.tmp.")
+                    )
+                )
+            ]
+            if unknown:
+                raise SecurityMasterRefreshError(
+                    "SEC rebuild workspace contains unmanaged entries: "
+                    + ", ".join(sorted(child.name for child in unknown))
+                )
+            for child in list(root.iterdir()):
+                if child.name == _SEC_SECURITY_MASTER_PAIR_LOCK_NAME:
                     continue
-                detail = details.get(cusip)
-                if not isinstance(detail, dict):
-                    continue
-                ticker = detail.get("ticker")
-                _OPENFIGI_RUN_CACHE[cusip] = (
-                    str(ticker).strip().upper()
-                    if detail.get("status") == "matched" and ticker
+                if child.is_dir() and not child.is_symlink():
+                    raise SecurityMasterRefreshError(
+                        "SEC rebuild managed path unexpectedly became a directory: "
+                        + child.name
+                    )
+                child.unlink()
+        existing = {
+            **desired,
+            "status": "in_progress",
+            "created_at": (current or datetime.now(timezone.utc))
+            .astimezone(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "completed_at": None,
+            "completed_master_universe_sha256": None,
+            "completed_stage": None,
+        }
+        _atomic_write_json(manifest_path, existing, sort_keys=True)
+
+    complete = existing.get("status") == "complete"
+    if complete:
+        try:
+            completed_value = str(existing.get("completed_at") or "")
+            completed = datetime.fromisoformat(
+                completed_value.removesuffix("Z") + "+00:00"
+            )
+        except ValueError:
+            completed = None
+        now = current or datetime.now(timezone.utc)
+        stage_audit_ok = False
+        if completed is not None:
+            try:
+                stage_audit = audit_security_master(
+                    loaded_master,
+                    prior_master=(
+                        production_master
+                        if production_master.get("audit")
+                        else None
+                    ),
+                    as_of=now,
+                )
+                stage_audit_ok = bool(stage_audit.get("ok"))
+            except Exception:
+                stage_audit_ok = False
+        if (
+            completed is None
+            or now.astimezone(timezone.utc) - completed
+            > timedelta(days=_SEC_EDGAR_RESOLVED_RECHECK_DAYS)
+            or not stage_audit_ok
+        ):
+            existing["status"] = "in_progress"
+            # Once a promoted stage is reopened, the current production pair
+            # becomes the rollback boundary for all subsequent checkpoints.
+            # This preserves resumability without allowing that older stage to
+            # overwrite a later incremental production refresh.
+            existing["base_production"] = current_production
+            existing["completed_at"] = None
+            existing["completed_master_universe_sha256"] = None
+            existing["completed_stage"] = None
+            _atomic_write_json(manifest_path, existing, sort_keys=True)
+            complete = False
+    return root, complete
+
+
+def _mark_security_master_rebuild_complete(
+    root: Path,
+    *,
+    current: datetime | None = None,
+) -> None:
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise SecurityMasterRefreshError("invalid SEC rebuild workspace manifest")
+    completed = (current or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    staged_master, staged_state = load_security_master_pair(
+        master_path=root / "sec_security_master.json",
+        source_state_path=root / "sec_source_state.json",
+    )
+    if staged_master.get("source_state_sha256") != source_state_sha256(
+        staged_state
+    ):
+        raise SecurityMasterRefreshError(
+            "SEC rebuild staged master is not bound to its source state"
+        )
+    manifest["status"] = "complete"
+    manifest["completed_at"] = (
+        completed.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    manifest["completed_master_universe_sha256"] = staged_master.get(
+        "universe_sha256"
+    )
+    manifest["completed_stage"] = _security_master_pair_fingerprint(
+        staged_master,
+        staged_state,
+    )
+    _atomic_write_json(manifest_path, manifest, sort_keys=True)
+_SEC_FUND_SERIES_RECHECK_DAYS = 7
+_SEC_EDGAR_FINGERPRINT_FIELDS = (
+    "cusip",
+    "instrument_type",
+    "mapping_status",
+    "resolution_reason",
+    "reported_issuer",
+    "reported_issuers",
+    "reported_class",
+    "reported_classes",
+    "reported_identities",
+    "reported_identity_evidence",
+    "official_13f_status",
+    "official_13f_as_of",
+    "official_13f",
+    "candidate_ticker",
+    "candidate_symbols",
+    "candidate_as_of",
+    "confirmation_dates",
+    "symbol_validation_titles",
+    "ticker",
+    "ticker_source",
+    "ticker_as_of",
+    "last_verification_date",
+    "sec_edgar_evidence",
+)
+
+
+def _sec_edgar_fingerprint_record(record: dict) -> dict[str, object]:
+    """Project only exact identity/evidence changes into discovery state.
+
+    A new quarterly official-list file changes its URL, checksum, and period
+    even when the exact CUSIP row is byte-for-byte equivalent.  Those container
+    changes must not reopen a terminal no-evidence result forever.  Exact list
+    membership and descriptor changes remain in the fingerprint.
+    """
+
+    projected: dict[str, object] = {
+        field: record.get(field)
+        for field in _SEC_EDGAR_FINGERPRINT_FIELDS
+        if field in record and field not in {"official_13f", "official_13f_as_of"}
+    }
+    official = record.get("official_13f")
+    if isinstance(official, dict):
+        rows = official.get("records")
+        if isinstance(rows, list):
+            exact_rows = [
+                {
+                    field: row.get(field)
+                    for field in (
+                        "cusip",
+                        "option_indicator",
+                        "issuer",
+                        "description",
+                        "status",
+                    )
+                    if field in row
+                }
+                for row in rows
+                if isinstance(row, dict)
+            ]
+            projected["official_13f"] = {
+                "status": official.get("status"),
+                "records": sorted(
+                    exact_rows,
+                    key=lambda row: json.dumps(
+                        row,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ),
+            }
+    return projected
+
+
+def _sec_edgar_date_within(
+    raw_date: object,
+    *,
+    reference: date | None,
+    days: int,
+) -> bool:
+    """Return whether one canonical date is recent without accepting futures."""
+
+    if reference is None or not isinstance(raw_date, str):
+        return False
+    try:
+        parsed = date.fromisoformat(raw_date)
+    except ValueError:
+        return False
+    age = (reference - parsed).days
+    return 0 <= age <= days
+
+
+def _sec_edgar_candidate_priority(
+    records: list[dict],
+    *,
+    current_date: date,
+    latest_ftd_date: date | None,
+    recent_window_days: int,
+) -> int | None:
+    """Rank current/actionable exceptions; omit permanent historical gaps."""
+
+    priorities: list[int] = []
+    for record in records:
+        status = record.get("mapping_status")
+        if status == "resolved" and record.get("ticker_source") == "sec_ixbrl":
+            # These mappings have a 45-day freshness gate, so their 30-day
+            # revalidation cadence takes precedence over enrichment attempts.
+            priorities.append(0)
+            continue
+        if status not in _SEC_EDGAR_DISCOVERY_STATUSES:
+            continue
+
+        official_active = record.get("official_13f_status") == "active"
+        recent_ftd = any(
+            _sec_edgar_date_within(
+                record.get(field),
+                reference=latest_ftd_date,
+                days=recent_window_days,
+            )
+            for field in ("candidate_as_of", "last_verification_date")
+        )
+        identity_evidence = record.get("reported_identity_evidence", [])
+        recent_report = isinstance(identity_evidence, list) and any(
+            isinstance(evidence, dict)
+            and _sec_edgar_date_within(
+                evidence.get("report_date"),
+                reference=current_date,
+                days=_SEC_EDGAR_NEW_REPORTED_IDENTITY_DAYS,
+            )
+            for evidence in identity_evidence
+        )
+        if not (official_active or recent_ftd or recent_report):
+            continue
+        if official_active:
+            priorities.append(2 if status == "ambiguous" else 3)
+        elif recent_ftd:
+            priorities.append(4 if status == "ambiguous" else 5)
+        else:
+            priorities.append(6 if status == "ambiguous" else 7)
+    return min(priorities) if priorities else None
+
+
+def _sec_fund_series_target_ciks(master: dict, source_state: dict) -> set[str]:
+    """Return registrants needed by exact resolved fund-symbol records."""
+
+    resolved_symbols = {
+        str(record.get("ticker") or "").strip().upper()
+        for record in master.get("records", {}).values()
+        if isinstance(record, dict)
+        and record.get("mapping_status") == "resolved"
+        and str(record.get("ticker") or "").strip()
+    }
+    symbol_records: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+    for source in source_state.get("sources", {}).values():
+        if not isinstance(source, dict) or source.get("kind") != "sec_fund_tickers":
+            continue
+        for record in source.get("fund_records", []):
+            if not isinstance(record, dict):
+                continue
+            symbol = str(record.get("symbol") or "").strip().upper()
+            cik = str(record.get("cik") or "")
+            series_id = str(record.get("series_id") or "")
+            class_id = str(record.get("class_id") or "")
+            if symbol in resolved_symbols:
+                symbol_records[symbol].add((cik, series_id, class_id))
+    return {
+        next(iter(records))[0]
+        for records in symbol_records.values()
+        if len(records) == 1
+    }
+
+
+def _sec_fund_series_refresh_due(
+    source: dict | None,
+    *,
+    current: datetime,
+) -> bool:
+    if not isinstance(source, dict):
+        return True
+    checked_at = source.get(
+        "last_successful_check_at",
+        source.get("accepted_at"),
+    )
+    if not _is_strict_utc_timestamp(checked_at):
+        return True
+    checked = datetime.strptime(checked_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    return current.astimezone(timezone.utc) >= checked + timedelta(
+        days=_SEC_FUND_SERIES_RECHECK_DAYS
+    )
+
+
+def _refresh_sec_fund_series_evidence(
+    result,
+    universe: list[dict[str, str]],
+    *,
+    refreshed_at: datetime | None = None,
+    fetcher=None,
+    master_path: Path = SEC_SECURITY_MASTER_PATH,
+    source_state_path: Path = SEC_SOURCE_STATE_PATH,
+):
+    """Refresh selected SEC series pages and atomically bind them to master."""
+
+    current = refreshed_at or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc).replace(microsecond=0)
+    checked_at = current.strftime("%Y-%m-%dT%H:%M:%SZ")
+    candidate_state = json.loads(json.dumps(result.state))
+    sources = candidate_state.get("sources")
+    if not isinstance(sources, dict):
+        return result
+    target_ciks = _sec_fund_series_target_ciks(result.master, candidate_state)
+    due_urls = [
+        sec_fund_series_url(cik)
+        for cik in sorted(target_ciks)
+        if _sec_fund_series_refresh_due(
+            sources.get(sec_fund_series_url(cik)),
+            current=current,
+        )
+    ]
+    if not due_urls:
+        return result
+
+    fetch = fetcher or make_sec_fetcher(USER_AGENT)
+    refreshed_urls: set[str] = set(result.refreshed_urls)
+    retained_urls: set[str] = set(result.retained_urls)
+    errors = list(result.errors)
+    state_changed = False
+    for url in due_urls:
+        prior = sources.get(url)
+        try:
+            payload = fetch(url)
+            if not isinstance(payload, (bytes, bytearray)):
+                raise SourceParseError(
+                    "SEC fund-series fetcher returned non-bytes"
+                )
+            raw = bytes(payload)
+            digest = hashlib.sha256(raw).hexdigest()
+            if isinstance(prior, dict) and prior.get("sha256") == digest:
+                replacement = dict(prior)
+                replacement["last_successful_check_at"] = checked_at
+                sources[url] = replacement
+                retained_urls.add(url)
+                state_changed = replacement != prior or state_changed
+                continue
+            series_names, class_names = _parse_sec_fund_series_page(
+                raw.decode("utf-8-sig")
+            )
+            cik = dict(parse_qs(urlparse(url).query)).get("CIK", [""])[0]
+            sources[url] = {
+                "url": url,
+                "kind": "sec_fund_series",
+                "sha256": digest,
+                "accepted_at": checked_at,
+                "last_successful_check_at": checked_at,
+                "cik": str(cik).zfill(10),
+                "series_names": {
+                    key: series_names[key] for key in sorted(series_names)
+                },
+                "class_names": {
+                    key: class_names[key] for key in sorted(class_names)
+                },
+            }
+            refreshed_urls.add(url)
+            state_changed = True
+        except SourceSchemaError as exc:
+            raise SourceSchemaChangeError([f"{url}: {exc}"]) from exc
+        except UnicodeDecodeError:
+            errors.append(f"{url}: SourceParseError: invalid UTF-8 response")
+            if isinstance(prior, dict):
+                retained_urls.add(url)
+        except Exception as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
+            if isinstance(prior, dict):
+                retained_urls.add(url)
+
+    if len(errors) > len(result.errors):
+        # A batch of selected series pages is one enrichment checkpoint. Do
+        # not publish successful pages from a partial batch alongside retained
+        # stale pages; keep the exact prior master/state and retry the complete
+        # due set on the next maintenance run.
+        return replace(
+            result,
+            retained_urls=tuple(sorted(retained_urls)),
+            errors=tuple(errors),
+        )
+    if not state_changed:
+        return replace(result, errors=tuple(errors))
+    candidate_state["updated_at"] = checked_at
+    policy = result.master.get("policy", {})
+    rebuilt = rebuild_sec_security_master(
+        candidate_state,
+        universe,
+        recent_window_days=int(policy.get("recent_window_days", 31)),
+        max_evidence_age_days=int(policy.get("max_evidence_age_days", 395)),
+        min_confirmation_dates=int(policy.get("min_confirmation_dates", 2)),
+    )
+    acceptance = audit_security_master(
+        rebuilt,
+        prior_master=result.master,
+        as_of=current,
+        enforce_sec_ixbrl_freshness=False,
+    )
+    if not acceptance["ok"]:
+        raise SecurityMasterRefreshError(
+            "SEC fund-series evidence failed the security-master gate: "
+            + ", ".join(acceptance["issues"])
+        )
+    save_security_master_pair(
+        rebuilt,
+        candidate_state,
+        master_path=master_path,
+        source_state_path=source_state_path,
+    )
+    return replace(
+        result,
+        master=rebuilt,
+        state=candidate_state,
+        changed=True,
+        refreshed_urls=tuple(sorted(refreshed_urls)),
+        retained_urls=tuple(sorted(retained_urls)),
+        errors=tuple(errors),
+        acceptance=acceptance,
+    )
+
+
+def _sec_edgar_discovery_candidates(
+    master: dict,
+    source_state: dict,
+    *,
+    as_of: datetime | None = None,
+    max_candidates: int | None = _SEC_EDGAR_INCREMENTAL_CANDIDATE_LIMIT,
+) -> tuple[list[str], dict[str, str]]:
+    """Return a bounded, prioritized queue of actionable exact CUSIPs.
+
+    A terminal no-evidence or conflict result stays terminal while its exact
+    SEC identity/list-row/FTD/class/conflict fingerprint is unchanged. Current
+    official-list securities, recent exact FTD evidence, and newly reported
+    13F identities are actionable; old corpus-only gaps remain tickerless and
+    do not become a one-time 27,000-item search queue. Resolved iXBRL bridges
+    use a 30-day cadence so each mapping can complete a successful check before
+    the 45-day publication limit. Permanent ``no_listed_symbol`` and malformed
+    master states never enter this queue. Transient actionable results are
+    retried by the next run.
+    """
+
+    if max_candidates is not None and (
+        type(max_candidates) is not int or max_candidates < 0
+    ):
+        raise ValueError("SEC EDGAR candidate limit must be a non-negative integer")
+
+    eligible: dict[str, list[dict]] = defaultdict(list)
+    for record in master.get("records", {}).values():
+        if not isinstance(record, dict):
+            continue
+        cusip = normalize_security_identifier(record.get("cusip"))
+        instrument_type = normalize_instrument_type(
+            record.get("instrument_type")
+        )
+        status = record.get("mapping_status")
+        is_unresolved_candidate = status in _SEC_EDGAR_DISCOVERY_STATUSES
+        is_resolved_ixbrl_candidate = (
+            status == "resolved" and record.get("ticker_source") == "sec_ixbrl"
+        )
+        if (
+            not cusip
+            or instrument_type not in _SEC_EDGAR_DISCOVERY_TYPES
+            or not (is_unresolved_candidate or is_resolved_ixbrl_candidate)
+        ):
+            continue
+        eligible[cusip].append(_sec_edgar_fingerprint_record(record))
+
+    prior_discovery = source_state.get("edgar_discovery", {})
+    prior_records = (
+        prior_discovery.get("records", {})
+        if isinstance(prior_discovery, dict)
+        else {}
+    )
+    if not isinstance(prior_records, dict):
+        prior_records = {}
+
+    ranked_candidates: list[tuple[int, str, int, str]] = []
+    fingerprints: dict[str, str] = {}
+    current = as_of or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_date = current.astimezone(timezone.utc).date()
+    audit = master.get("audit", {})
+    latest_ftd_text = (
+        audit.get("latest_ftd_settlement_date")
+        if isinstance(audit, dict)
+        else None
+    )
+    try:
+        latest_ftd_date = (
+            date.fromisoformat(latest_ftd_text)
+            if isinstance(latest_ftd_text, str)
+            else None
+        )
+    except ValueError:
+        latest_ftd_date = None
+    policy = master.get("policy", {})
+    recent_window_days = (
+        policy.get("recent_window_days", 31)
+        if isinstance(policy, dict)
+        else 31
+    )
+    if type(recent_window_days) is not int or recent_window_days < 0:
+        recent_window_days = 31
+    for cusip, records in sorted(eligible.items()):
+        fingerprint = _canonical_json_hash({
+            "records": sorted(
+                records,
+                key=lambda record: (
+                    str(record.get("instrument_type") or ""),
+                    json.dumps(
+                        record,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        })
+        fingerprints[cusip] = fingerprint
+        priority = _sec_edgar_candidate_priority(
+            records,
+            current_date=current_date,
+            latest_ftd_date=latest_ftd_date,
+            recent_window_days=recent_window_days,
+        )
+        if priority is None:
+            continue
+        prior = prior_records.get(cusip)
+        fingerprint_changed = (
+            isinstance(prior, dict)
+            and prior.get("record_sha256") != fingerprint
+        )
+        if fingerprint_changed and priority > 0:
+            # A changed exact fingerprint must not wait behind the untouched
+            # historical/current backlog. Due iXBRL checks remain lane zero.
+            priority = 1
+        checked_at = prior.get("checked_at") if isinstance(prior, dict) else None
+        checked_date = None
+        if _is_strict_utc_timestamp(checked_at):
+            checked_date = datetime.strptime(
+                checked_at,
+                "%Y-%m-%dT%H:%M:%SZ",
+            ).date()
+        same_terminal_result = (
+            isinstance(prior, dict)
+            and prior.get("record_sha256") == fingerprint
+            and prior.get("terminal") is True
+        )
+        is_resolved_ixbrl = any(
+            record.get("mapping_status") == "resolved"
+            and record.get("ticker_source") == "sec_ixbrl"
+            for record in records
+        )
+        terminal_is_current = same_terminal_result and (
+            not is_resolved_ixbrl
+            or (
+                checked_date is not None
+                and max(0, (current_date - checked_date).days)
+                < _SEC_EDGAR_RESOLVED_RECHECK_DAYS
+            )
+        )
+        if terminal_is_current:
+            continue
+        # Publication-critical iXBRL rechecks and materially changed evidence
+        # lead the queue. After that, every never-checked identity precedes
+        # retries, and retries rotate globally by oldest attempt before their
+        # evidence-priority lane. Persistent transient failures therefore
+        # cannot starve lower-lane actionable identities behind a fixed cap.
+        queue_clock = (
+            ""
+            if fingerprint_changed or checked_date is None
+            else str(checked_at)
+        )
+        if priority == 0:
+            queue_phase = 0
+        elif fingerprint_changed:
+            queue_phase = 1
+        elif checked_date is None:
+            queue_phase = 2
+        else:
+            queue_phase = 3
+        ranked_candidates.append((queue_phase, queue_clock, priority, cusip))
+    ranked_candidates.sort()
+    if max_candidates is not None and len(ranked_candidates) > max_candidates:
+        log.warning(
+            "  SEC EDGAR candidate backlog bounded to %s of %s actionable "
+            "CUSIPs; deferred records remain tickerless",
+            max_candidates,
+            len(ranked_candidates),
+        )
+    selected = (
+        ranked_candidates
+        if max_candidates is None
+        else ranked_candidates[:max_candidates]
+    )
+    return (
+        [cusip for _phase, _queue_clock, _priority, cusip in selected],
+        fingerprints,
+    )
+
+
+def _sec_edgar_batch_journal_payload(
+    candidates: list[str],
+    fingerprints: dict[str, str],
+    *,
+    sequence: int,
+    prior_entry_sha256: str | None,
+    current: datetime,
+    discovery_fetcher,
+) -> dict[str, object]:
+    """Fetch and validate one bounded EDGAR batch without copying the master."""
+
+    try:
+        discovery = discover_sec_edgar_sources(
+            candidates,
+            fetcher=discovery_fetcher,
+        )
+    except EvidenceSchemaError as exc:
+        raise SourceSchemaChangeError([
+            f"SEC EDGAR discovery contract changed: {exc}"
+        ]) from exc
+    serialized = discovery.to_dict()
+    refreshed_cache: dict[str, object] = {}
+    if discovery.sources:
+        try:
+            refreshed_cache = refresh_sec_edgar_evidence(
+                discovery.sources,
+                cache_path=None,
+                fetcher=discovery_fetcher,
+                refreshed_at=current,
+            )
+        except EvidenceSchemaError as exc:
+            raise SourceSchemaChangeError([
+                f"SEC EDGAR evidence contract changed: {exc}"
+            ]) from exc
+    payload: dict[str, object] = {
+        "schema_version": _SEC_EDGAR_JOURNAL_SCHEMA_VERSION,
+        "sequence": sequence,
+        "prior_entry_sha256": prior_entry_sha256,
+        "candidates": list(candidates),
+        "fingerprints": {
+            cusip: fingerprints[cusip] for cusip in candidates
+        },
+        "checked_at": current.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "discovery": serialized,
+        "refreshed_evidence": refreshed_cache,
+        "source_pair_count": len(discovery.sources) // 2,
+    }
+    payload["entry_sha256"] = _canonical_json_hash(payload)
+    return _validate_sec_edgar_batch_journal_entry(
+        payload,
+        sequence=sequence,
+        prior_entry_sha256=prior_entry_sha256,
+        candidates=candidates,
+        fingerprints=fingerprints,
+    )
+
+
+def _validate_sec_edgar_batch_journal_entry(
+    entry: object,
+    *,
+    sequence: int,
+    prior_entry_sha256: str | None,
+    candidates: list[str],
+    fingerprints: dict[str, str],
+) -> dict[str, object]:
+    """Reject a stale, incomplete, reordered, or tampered EDGAR checkpoint."""
+
+    required = {
+        "schema_version",
+        "sequence",
+        "prior_entry_sha256",
+        "candidates",
+        "fingerprints",
+        "checked_at",
+        "discovery",
+        "refreshed_evidence",
+        "source_pair_count",
+        "entry_sha256",
+    }
+    if not isinstance(entry, dict) or set(entry) != required:
+        raise SecurityMasterRefreshError("malformed SEC EDGAR batch journal")
+    candidate_entry = dict(entry)
+    entry_sha256 = candidate_entry.pop("entry_sha256")
+    if (
+        not isinstance(entry_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", entry_sha256) is None
+        or entry_sha256 != _canonical_json_hash(candidate_entry)
+    ):
+        raise SecurityMasterRefreshError(
+            "SEC EDGAR batch journal checksum mismatch"
+        )
+    if (
+        entry.get("schema_version") != _SEC_EDGAR_JOURNAL_SCHEMA_VERSION
+        or entry.get("sequence") != sequence
+        or entry.get("prior_entry_sha256") != prior_entry_sha256
+        or entry.get("candidates") != candidates
+        or entry.get("fingerprints")
+        != {cusip: fingerprints[cusip] for cusip in candidates}
+        or not _is_strict_utc_timestamp(entry.get("checked_at"))
+        or type(entry.get("source_pair_count")) is not int
+        or int(entry["source_pair_count"]) < 0
+    ):
+        raise SecurityMasterRefreshError(
+            "SEC EDGAR batch journal does not match the active rebuild"
+        )
+    discovery = entry.get("discovery")
+    if not isinstance(discovery, dict) or set(discovery) != {
+        "sources",
+        "diagnostics",
+        "fetched_sources",
+    }:
+        raise SecurityMasterRefreshError(
+            "SEC EDGAR batch journal has malformed discovery evidence"
+        )
+    diagnostics = discovery.get("diagnostics")
+    fetched_sources = discovery.get("fetched_sources")
+    sources = discovery.get("sources")
+    diagnostic_cusips = (
+        [item.get("cusip") for item in diagnostics]
+        if isinstance(diagnostics, list)
+        and all(isinstance(item, dict) for item in diagnostics)
+        else []
+    )
+    if (
+        not isinstance(diagnostics, list)
+        or not all(isinstance(item, dict) for item in diagnostics)
+        or any(not isinstance(cusip, str) for cusip in diagnostic_cusips)
+        or sorted(diagnostic_cusips) != sorted(candidates)
+        or len(set(diagnostic_cusips)) != len(candidates)
+        or not isinstance(fetched_sources, list)
+        or not all(isinstance(item, dict) for item in fetched_sources)
+        or not isinstance(sources, list)
+        or not all(isinstance(item, dict) for item in sources)
+        or not isinstance(entry.get("refreshed_evidence"), dict)
+    ):
+        raise SecurityMasterRefreshError(
+            "SEC EDGAR batch journal has incomplete discovery evidence"
+        )
+    refreshed_evidence = entry["refreshed_evidence"]
+    if refreshed_evidence:
+        try:
+            merge_sec_edgar_evidence_caches({}, refreshed_evidence)
+        except Exception as exc:
+            raise SecurityMasterRefreshError(
+                "SEC EDGAR batch journal has invalid filing evidence"
+            ) from exc
+    return dict(entry)
+
+
+def _sec_edgar_journal_path(root: Path, sequence: int) -> Path:
+    return Path(root) / f"{_SEC_EDGAR_JOURNAL_FILE_PREFIX}{sequence:06d}.json"
+
+
+def _clear_sec_edgar_batch_journal(root: Path) -> None:
+    """Remove only recognized nonpublishable EDGAR journal artifacts."""
+
+    changed = False
+    for child in Path(root).iterdir():
+        if not _is_sec_edgar_journal_managed_file(child):
+            continue
+        if child.is_symlink() or not child.is_file():
+            raise SecurityMasterRefreshError(
+                "SEC rebuild EDGAR journal path must be a regular file: "
+                + child.name
+            )
+        child.unlink()
+        changed = True
+    if changed:
+        _fsync_directory(Path(root))
+
+
+def _load_sec_edgar_batch_journal(
+    root: Path,
+    batches: list[list[str]],
+    fingerprints: dict[str, str],
+) -> list[dict[str, object]]:
+    """Load the durable contiguous prefix of an interrupted clean rebuild."""
+
+    root = Path(root)
+    paths = sorted(
+        (
+            child
+            for child in root.iterdir()
+            if _SEC_EDGAR_JOURNAL_FILE_RE.fullmatch(child.name)
+        ),
+        key=lambda child: child.name,
+    )
+    entries: list[dict[str, object]] = []
+    prior_entry_sha256: str | None = None
+    try:
+        if len(paths) > len(batches):
+            raise SecurityMasterRefreshError(
+                "SEC EDGAR batch journal exceeds the active candidate set"
+            )
+        for sequence, path in enumerate(paths):
+            match = _SEC_EDGAR_JOURNAL_FILE_RE.fullmatch(path.name)
+            if (
+                match is None
+                or int(match.group("sequence")) != sequence
+                or path.is_symlink()
+                or not path.is_file()
+                or path.stat().st_mode & 0o7777 != _SEC_PRIVATE_FILE_MODE
+            ):
+                raise SecurityMasterRefreshError(
+                    "SEC EDGAR batch journal is not a contiguous regular-file prefix"
+                )
+            try:
+                raw_entry = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise SecurityMasterRefreshError(
+                    "SEC EDGAR batch journal is unreadable"
+                ) from exc
+            entry = _validate_sec_edgar_batch_journal_entry(
+                raw_entry,
+                sequence=sequence,
+                prior_entry_sha256=prior_entry_sha256,
+                candidates=batches[sequence],
+                fingerprints=fingerprints,
+            )
+            entries.append(entry)
+            prior_entry_sha256 = str(entry["entry_sha256"])
+    except SecurityMasterRefreshError as exc:
+        # These files are nonpublishable work products. A stale or torn
+        # journal is safe to discard because no state/master pair has yet
+        # incorporated it; the exact SEC batches will simply be fetched again.
+        log.warning("  discarded unusable SEC EDGAR batch journal: %s", exc)
+        _clear_sec_edgar_batch_journal(root)
+        return []
+    return entries
+
+
+def _append_sec_edgar_batch_journal(
+    root: Path,
+    entry: dict[str, object],
+) -> None:
+    """Atomically commit one hash-chained EDGAR batch before advancing."""
+
+    sequence = int(entry["sequence"])
+    path = _sec_edgar_journal_path(root, sequence)
+    if path.exists() or path.is_symlink():
+        raise SecurityMasterRefreshError(
+            "SEC EDGAR batch journal would overwrite an existing checkpoint"
+        )
+    _atomic_write_json(path, entry, indent=None, sort_keys=True)
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_mode & 0o7777 != _SEC_PRIVATE_FILE_MODE
+    ):
+        raise SecurityMasterRefreshError(
+            "SEC EDGAR batch journal was not committed as a private regular file"
+        )
+
+
+def _apply_sec_edgar_batch_journal(
+    result,
+    universe: list[dict[str, str]],
+    entries: list[dict[str, object]],
+):
+    """Apply all compact EDGAR batches with one full state copy/pair publish."""
+
+    if not entries:
+        return result
+    candidate_state = json.loads(json.dumps(result.state))
+    prior_discovery = candidate_state.get("edgar_discovery", {})
+    prior_records = (
+        prior_discovery.get("records", {})
+        if isinstance(prior_discovery, dict)
+        else {}
+    )
+    records = {
+        str(cusip): dict(record)
+        for cusip, record in (
+            prior_records.items() if isinstance(prior_records, dict) else []
+        )
+        if isinstance(record, dict)
+    }
+    for record in records.values():
+        if "last_successful_check_at" not in record:
+            record["last_successful_check_at"] = (
+                record.get("checked_at")
+                if record.get("terminal") is True
+                and record.get("status") != "transient_error"
+                and _is_strict_utc_timestamp(record.get("checked_at"))
+                else None
+            )
+    prior_fetches = (
+        prior_discovery.get("fetched_sources", {})
+        if isinstance(prior_discovery, dict)
+        else {}
+    )
+    fetched_sources = {
+        str(url): dict(record)
+        for url, record in (
+            prior_fetches.items() if isinstance(prior_fetches, dict) else []
+        )
+        if isinstance(record, dict)
+    }
+    terminal_cusips: set[str] = set()
+    all_candidates: list[str] = []
+    fetched_urls: set[str] = set(result.refreshed_urls)
+    source_pair_count = 0
+    checked_values: list[str] = []
+    for entry in entries:
+        checked_at = str(entry["checked_at"])
+        checked_values.append(checked_at)
+        all_candidates.extend(str(cusip) for cusip in entry["candidates"])
+        source_pair_count += int(entry["source_pair_count"])
+        serialized = entry["discovery"]
+        for diagnostic in serialized["diagnostics"]:
+            cusip = str(diagnostic["cusip"])
+            prior_record = records.get(cusip, {})
+            last_successful_check_at = (
+                checked_at
+                if diagnostic.get("terminal") is True
+                and diagnostic.get("status") != "transient_error"
+                else (
+                    prior_record.get("last_successful_check_at")
+                    if isinstance(prior_record, dict)
                     else None
                 )
-        result = {} if force_refresh else {
-            cusip: ticker
-            for cusip in requested
-            if (
-                cusip in _OPENFIGI_RUN_CACHE
-                and (ticker := _OPENFIGI_RUN_CACHE[cusip]) is not None
             )
-        }
-        uncached = requested if force_refresh else [
-            cusip for cusip in requested
-            if cusip not in _OPENFIGI_RUN_CACHE
-        ]
-        if not uncached:
-            return result
+            if (
+                last_successful_check_at is None
+                and isinstance(prior_record, dict)
+                and prior_record.get("terminal") is True
+                and prior_record.get("status") != "transient_error"
+                and _is_strict_utc_timestamp(prior_record.get("checked_at"))
+            ):
+                # Nested discovery schema v1 used checked_at as its only
+                # success clock. Preserve it across a transient v2 attempt.
+                last_successful_check_at = prior_record["checked_at"]
+            records[cusip] = {
+                **diagnostic,
+                "record_sha256": entry["fingerprints"][cusip],
+                "checked_at": checked_at,
+                "last_successful_check_at": last_successful_check_at,
+            }
+            if diagnostic.get("terminal") is True:
+                terminal_cusips.add(cusip)
+        for fetched in serialized["fetched_sources"]:
+            fetched_sources[fetched["url"]] = fetched
+            if fetched.get("outcome") == "fetched":
+                fetched_urls.add(fetched["url"])
 
-        batch_size = openfigi_batch_size()
-        pause_seconds = openfigi_target_interval()
-        total_batches = (len(uncached) + batch_size - 1) // batch_size
-        mode = "with API key" if get_openfigi_api_key() else "without API key"
-        est_minutes = int((total_batches * pause_seconds) // 60)
-        log.info(
-            f"  OpenFIGI: resolving {len(uncached)} CUSIPs in {total_batches} batches "
-            f"(~{est_minutes} min, {batch_size}/request, {mode})"
+    candidate_state["edgar_discovery"] = {
+        "schema_version": 2,
+        "records": {cusip: records[cusip] for cusip in sorted(records)},
+        "fetched_sources": {
+            url: fetched_sources[url] for url in sorted(fetched_sources)
+        },
+    }
+    existing_cache = candidate_state.get("edgar_evidence", {})
+    retired_urls: set[str] = set()
+    if isinstance(existing_cache, dict):
+        existing_records = existing_cache.get("records", {})
+        if isinstance(existing_records, dict):
+            for cusip in terminal_cusips:
+                prior_record = existing_records.get(cusip)
+                if not isinstance(prior_record, dict):
+                    continue
+                for field in ("schedule_13dg_url", "ixbrl_url"):
+                    url = str(prior_record.get(field) or "")
+                    if url:
+                        retired_urls.add(url)
+            # Shared periodic filings remain while any record outside this
+            # complete revalidation set still depends on them.
+            for cusip, prior_record in existing_records.items():
+                if cusip in terminal_cusips or not isinstance(prior_record, dict):
+                    continue
+                retired_urls.discard(
+                    str(prior_record.get("schedule_13dg_url") or "")
+                )
+                retired_urls.discard(str(prior_record.get("ixbrl_url") or ""))
+
+    merged_cache = existing_cache if isinstance(existing_cache, dict) else {}
+    latest_checked_at = max(checked_values)
+    latest_checked = datetime.strptime(
+        latest_checked_at,
+        "%Y-%m-%dT%H:%M:%SZ",
+    ).replace(tzinfo=timezone.utc)
+    if retired_urls:
+        merged_cache = merge_sec_edgar_evidence_caches(
+            merged_cache,
+            {},
+            retired_urls=retired_urls,
+            refreshed_at=latest_checked,
         )
-        for i in range(0, len(uncached), batch_size):
-            batch_num = i // batch_size + 1
-            if batch_num % 10 == 1 or batch_num == total_batches:
-                log.info(f"    batch {batch_num}/{total_batches} ({len(result)} resolved so far)")
-            batch = uncached[i : i + batch_size]
-            payload = [
-                {
-                    "idType": _openfigi_identifier_type(identifier),
-                    "idValue": identifier,
-                }
-                for identifier in batch
-            ]
-            resp = _openfigi_post(payload)
-            if resp is None:
-                _openfigi_batch_failure(
-                    f"OpenFIGI batch {batch_num}/{total_batches} failed after "
-                    "all request attempts: no response",
-                    strict=force_refresh,
-                )
-            elif resp.status_code != 200:
-                _openfigi_batch_failure(
-                    f"OpenFIGI batch {batch_num}/{total_batches} failed with "
-                    f"HTTP {resp.status_code}: {_response_excerpt(resp)}",
-                    strict=force_refresh,
-                )
-            else:
-                try:
-                    data = resp.json()
-                except ValueError:
-                    _openfigi_batch_failure(
-                        f"OpenFIGI batch {batch_num}/{total_batches} returned "
-                        f"invalid JSON: {_response_excerpt(resp)}",
-                        strict=force_refresh,
-                    )
-                    data = []
-                if not isinstance(data, list):
-                    _openfigi_batch_failure(
-                        f"OpenFIGI batch {batch_num}/{total_batches} JSON was "
-                        f"not a list ({type(data).__name__}): "
-                        f"{_response_excerpt(resp)}",
-                        strict=force_refresh,
-                    )
-                    data = []
-                if len(data) != len(batch):
-                    _openfigi_batch_failure(
-                        f"OpenFIGI batch {batch_num}/{total_batches} returned "
-                        f"{len(data)} result(s) for {len(batch)} identifier(s)",
-                        strict=force_refresh,
-                    )
-                details_changed = False
-                for cusip, entry in zip(batch, data):
-                    if not isinstance(entry, dict):
-                        _openfigi_batch_failure(
-                            f"OpenFIGI batch {batch_num}/{total_batches} returned "
-                            f"a non-object result for {cusip}",
-                            strict=force_refresh,
-                        )
-                        continue
-                    if force_refresh:
-                        result_keys = {
-                            key for key in ("data", "error", "warning")
-                            if key in entry
-                        }
-                        if len(result_keys) != 1:
-                            _openfigi_batch_failure(
-                                f"OpenFIGI batch {batch_num}/{total_batches} "
-                                f"returned a non-exclusive result shape for "
-                                f"{cusip}: {sorted(result_keys)!r}",
-                                strict=True,
-                            )
-                        result_key = next(iter(result_keys))
-                        # These two recognized per-identifier negatives are
-                        # complete answers, not batch/provider failures. SEC
-                        # filings can contain placeholder or malformed CUSIPs,
-                        # so persist them as no-match while keeping every
-                        # unknown error fatal in full-refresh mode.
-                        if (
-                            result_key == "error"
-                            and not _openfigi_is_definitive_no_match(entry)
-                        ):
-                            _openfigi_batch_failure(
-                                f"OpenFIGI batch {batch_num}/{total_batches} "
-                                f"returned an error result for {cusip}: "
-                                f"{entry.get('error')!r}",
-                                strict=True,
-                            )
-                        if result_key == "warning" and not (
-                            isinstance(entry.get("warning"), str)
-                            and entry["warning"].strip()
-                        ):
-                            _openfigi_batch_failure(
-                                f"OpenFIGI batch {batch_num}/{total_batches} "
-                                f"returned an empty warning for {cusip}",
-                                strict=True,
-                            )
-                    if "data" not in entry:
-                        if _openfigi_is_definitive_no_match(entry):
-                            _OPENFIGI_RUN_CACHE[cusip] = None
-                            no_match = {"status": "no_match"}
-                            if details.get(cusip) != no_match:
-                                details[cusip] = no_match
-                                details_changed = True
-                        else:
-                            _openfigi_batch_failure(
-                                f"OpenFIGI batch {batch_num}/{total_batches} "
-                                f"returned an incomplete result for {cusip}: "
-                                f"{entry!r}",
-                                strict=force_refresh,
-                            )
-                        continue
-                    inner = entry.get("data")
-                    if not isinstance(inner, list) or any(
-                        not isinstance(item, dict) for item in inner
-                    ):
-                        _openfigi_batch_failure(
-                            f"OpenFIGI batch {batch_num}/{total_batches} returned "
-                            f"malformed mapping data for {cusip}",
-                            strict=force_refresh,
-                        )
-                        continue
-                    if not inner:
-                        if force_refresh:
-                            _openfigi_batch_failure(
-                                f"OpenFIGI batch {batch_num}/{total_batches} "
-                                f"returned empty mapping data for {cusip}; "
-                                "a no-match must use the warning response shape",
-                                strict=True,
-                            )
-                        _OPENFIGI_RUN_CACHE[cusip] = None
-                        no_match = {"status": "no_match"}
-                        if details.get(cusip) != no_match:
-                            details[cusip] = no_match
-                            details_changed = True
-                        continue
-                    if force_refresh and any(
-                        not isinstance(item.get("figi"), str)
-                        or not item["figi"].strip()
-                        for item in inner
-                    ):
-                        _openfigi_batch_failure(
-                            f"OpenFIGI batch {batch_num}/{total_batches} "
-                            f"returned a mapping result without a non-empty "
-                            f"FIGI for {cusip}",
-                            strict=True,
-                        )
+    for entry in entries:
+        refreshed_cache = entry["refreshed_evidence"]
+        if refreshed_cache:
+            entry_checked = datetime.strptime(
+                str(entry["checked_at"]),
+                "%Y-%m-%dT%H:%M:%SZ",
+            ).replace(tzinfo=timezone.utc)
+            merged_cache = merge_sec_edgar_evidence_caches(
+                merged_cache,
+                refreshed_cache,
+                refreshed_at=entry_checked,
+            )
+    if merged_cache != existing_cache:
+        candidate_state["edgar_evidence"] = merged_cache
+    candidate_state["updated_at"] = max(
+        latest_checked_at,
+        str(candidate_state.get("updated_at") or ""),
+    )
 
-                    candidate = _select_openfigi_candidate(inner)
-                    if candidate is None:
-                        continue
-                    detail = _openfigi_detail(candidate)
-                    if details.get(cusip) != detail:
-                        details[cusip] = detail
-                        details_changed = True
+    policy = result.master.get("policy", {})
+    rebuilt = rebuild_sec_security_master(
+        candidate_state,
+        universe,
+        recent_window_days=int(policy.get("recent_window_days", 31)),
+        max_evidence_age_days=int(policy.get("max_evidence_age_days", 395)),
+        min_confirmation_dates=int(policy.get("min_confirmation_dates", 2)),
+    )
+    # Store the fingerprint of the post-application record. Otherwise a new
+    # exact bridge would cause one redundant discovery run on the next day.
+    _, rebuilt_fingerprints = _sec_edgar_discovery_candidates(
+        rebuilt,
+        {},
+        as_of=latest_checked,
+        max_candidates=None,
+    )
+    discovery_records = candidate_state["edgar_discovery"]["records"]
+    for cusip in all_candidates:
+        if cusip in rebuilt_fingerprints and cusip in discovery_records:
+            discovery_records[cusip]["record_sha256"] = rebuilt_fingerprints[cusip]
+    # The post-application fingerprints above are authoritative state, not a
+    # transient queue projection. Rebuild from that final state so the
+    # master's source_state_sha256 binds the exact state that the pair
+    # transaction will publish. Merely replacing the digest here would hide a
+    # future dependency on discovery state and could publish a master derived
+    # from a different state than the one beside it.
+    rebuilt = rebuild_sec_security_master(
+        candidate_state,
+        universe,
+        recent_window_days=int(policy.get("recent_window_days", 31)),
+        max_evidence_age_days=int(policy.get("max_evidence_age_days", 395)),
+        min_confirmation_dates=int(policy.get("min_confirmation_dates", 2)),
+    )
+    _, final_fingerprints = _sec_edgar_discovery_candidates(
+        rebuilt,
+        {},
+        as_of=latest_checked,
+        max_candidates=None,
+    )
+    unstable_fingerprints = sorted(
+        cusip
+        for cusip in all_candidates
+        if cusip in final_fingerprints
+        and cusip in discovery_records
+        and discovery_records[cusip].get("record_sha256")
+        != final_fingerprints[cusip]
+    )
+    if unstable_fingerprints:
+        raise SecurityMasterRefreshError(
+            "SEC EDGAR post-application fingerprints did not reach a stable "
+            "state: "
+            + ", ".join(unstable_fingerprints)
+        )
+    acceptance = audit_security_master(
+        rebuilt,
+        prior_master=result.master,
+        as_of=latest_checked,
+    )
+    if not acceptance["ok"]:
+        raise SecurityMasterRefreshError(
+            "SEC EDGAR exception evidence failed the security-master gate: "
+            + ", ".join(acceptance["issues"])
+        )
+    log.info(
+        "  SEC EDGAR exceptions: %s checked; %s exact filing pair(s); "
+        "%s resolved master record(s) total (net change %+d)",
+        len(all_candidates),
+        source_pair_count,
+        rebuilt.get("summary", {}).get("resolved", 0),
+        (
+            rebuilt.get("summary", {}).get("resolved", 0)
+            - result.master.get("summary", {}).get("resolved", 0)
+        ),
+    )
+    return replace(
+        result,
+        master=rebuilt,
+        state=candidate_state,
+        changed=True,
+        refreshed_urls=tuple(sorted(fetched_urls)),
+        acceptance=acceptance,
+    )
 
-                    ticker = detail.get("ticker")
-                    if isinstance(ticker, str) and ticker:
-                        result[cusip] = ticker
-                        _OPENFIGI_RUN_CACHE[cusip] = ticker
-                    else:
-                        _OPENFIGI_RUN_CACHE[cusip] = None
-                if details_changed:
-                    save_openfigi_details(details)
-            if batch_num < total_batches:
-                time.sleep(_openfigi_pause_seconds(resp, pause_seconds))
-        log.info(f"  OpenFIGI resolved {len(result)}/{len(requested)} CUSIPs")
+
+def _persist_sec_edgar_result_pair(
+    prior_result,
+    refreshed_result,
+    *,
+    master_path: Path,
+    source_state_path: Path,
+) -> None:
+    """Crash-safely publish one validated state/master pair."""
+
+    del prior_result
+    save_security_master_pair(
+        refreshed_result.master,
+        refreshed_result.state,
+        master_path=master_path,
+        source_state_path=source_state_path,
+    )
+
+
+def _refresh_sec_edgar_exceptions(
+    result,
+    universe: list[dict[str, str]],
+    *,
+    refreshed_at: datetime | None = None,
+    fetcher=None,
+    master_path: Path = SEC_SECURITY_MASTER_PATH,
+    source_state_path: Path = SEC_SOURCE_STATE_PATH,
+    checkpoint_batches: bool = False,
+    checkpoint_root: Path | None = None,
+    _candidate_cusips: tuple[str, ...] | None = None,
+):
+    """Discover and atomically apply exact Schedule 13D/G -> iXBRL bridges.
+
+    A clean rebuild journals only compact, checksummed batch results. The
+    hundreds-of-megabytes source state and larger derived master are copied
+    and persisted once after all batches finish. The final state is rebuilt
+    again after its post-application discovery fingerprints are known, so the
+    published master remains digest-bound without performing
+    O(batch_count * full_pair_size) local work. Thus a cooperative timeout can
+    resume without refetching accepted batches.
+    """
+
+    current = refreshed_at or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc).replace(microsecond=0)
+    candidates, fingerprints = _sec_edgar_discovery_candidates(
+        result.master,
+        result.state,
+        as_of=current,
+        max_candidates=(
+            _SEC_EDGAR_CLEAN_CANDIDATE_LIMIT
+            if checkpoint_batches
+            else _SEC_EDGAR_INCREMENTAL_CANDIDATE_LIMIT
+        ),
+    )
+    if _candidate_cusips is not None:
+        eligible = set(candidates)
+        candidates = [cusip for cusip in _candidate_cusips if cusip in eligible]
+    if not candidates:
         return result
+    discovery_fetcher = fetcher or make_sec_discovery_fetcher(USER_AGENT)
+    use_batches = checkpoint_batches and _candidate_cusips is None
+    chunk_size = _SEC_EDGAR_CLEAN_CHUNK_SIZE if use_batches else len(candidates)
+    batches = [
+        candidates[offset : offset + chunk_size]
+        for offset in range(0, len(candidates), chunk_size)
+    ]
+    entries: list[dict[str, object]] = []
+    if use_batches and checkpoint_root is not None:
+        entries = _load_sec_edgar_batch_journal(
+            checkpoint_root,
+            batches,
+            fingerprints,
+        )
+        if entries:
+            log.info(
+                "  resumed %s/%s SEC EDGAR exception batch checkpoint(s)",
+                len(entries),
+                len(batches),
+            )
+    prior_entry_sha256 = (
+        str(entries[-1]["entry_sha256"]) if entries else None
+    )
+    for sequence in range(len(entries), len(batches)):
+        entry = _sec_edgar_batch_journal_payload(
+            batches[sequence],
+            fingerprints,
+            sequence=sequence,
+            prior_entry_sha256=prior_entry_sha256,
+            current=current,
+            discovery_fetcher=discovery_fetcher,
+        )
+        if use_batches and checkpoint_root is not None:
+            _append_sec_edgar_batch_journal(checkpoint_root, entry)
+        entries.append(entry)
+        prior_entry_sha256 = str(entry["entry_sha256"])
+        if use_batches:
+            log.info(
+                "  SEC EDGAR exception checkpoint: %s/%s batches",
+                sequence + 1,
+                len(batches),
+            )
+
+    refreshed = _apply_sec_edgar_batch_journal(result, universe, entries)
+    _persist_sec_edgar_result_pair(
+        result,
+        refreshed,
+        master_path=master_path,
+        source_state_path=source_state_path,
+    )
+    return refreshed
+
+
+def refresh_sec_security_master_from_funds(
+    *,
+    full_rebuild: bool = False,
+    extra_holdings: list[dict] | None = None,
+):
+    """Refresh official SEC evidence and rebuild the complete local master."""
+
+    reported_identity_resume_receipt = None
+    resume_universe = None
+    completed_reported_identity_receipt = None
+    if full_rebuild:
+        published_master, published_state = load_security_master_pair(
+            master_path=SEC_SECURITY_MASTER_PATH,
+            source_state_path=SEC_SOURCE_STATE_PATH,
+        )
+        published_sec_security_state = _has_published_sec_security_state(
+            published_master,
+            published_state,
+        )
+        before_backfill = reported_identity_backfill_audit(FUNDS_DIR)
+        log.info(
+            "  verifying immutable reported identity for %s retained "
+            "holding(s) against SEC Form 13F evidence (%s incomplete)",
+            before_backfill.get("holdings_scanned", 0),
+            before_backfill.get("incomplete_holdings", 0),
+        )
+        if before_backfill.get("needed"):
+            try:
+                capacity = ensure_clean_rebuild_disk_space()
+            except Exception as exc:
+                raise SecurityMasterRefreshError(str(exc)) from exc
+            log.info(
+                "  SEC Form 13F clean-rebuild disk preflight: %.1f GiB free "
+                "(%.1f GiB additional minimum; %.1f GiB resumable)",
+                int(capacity["available_bytes"]) / 1024**3,
+                int(capacity["minimum_free_bytes"]) / 1024**3,
+                int(capacity["resumable_bytes"]) / 1024**3,
+            )
+        # Only an unfinished security-master attempt can authorize reuse of a
+        # completed clean 13F generation. This includes a validated stage that
+        # has not yet crossed the production promotion boundary.
+        manifest_path = (
+            SEC_SECURITY_MASTER_REBUILD_WORK_ROOT / "manifest.json"
+        )
+        try:
+            possible_resume = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            possible_resume = None
+        if (
+            not before_backfill.get("needed")
+            and isinstance(possible_resume, dict)
+            and possible_resume.get("status") in {"in_progress", "complete"}
+        ):
+            resume_universe = collect_security_master_universe(extra_holdings)
+            reported_identity_resume_receipt = (
+                _reported_identity_resume_receipt_for_in_progress_rebuild(
+                    resume_universe
+                )
+            )
+            if reported_identity_resume_receipt is not None:
+                log.info(
+                    "  resuming the completed verified SEC Form 13F index "
+                    "owned by the interrupted security-master rebuild"
+                )
+        if (
+            reported_identity_resume_receipt is None
+        ):
+            reported_identity_resume_receipt = (
+                _legacy_cutover_completed_identity_receipt(
+                    published_sec_security_state=published_sec_security_state,
+                )
+            )
+            if reported_identity_resume_receipt is not None:
+                log.info(
+                    "  reusing the checksum-bound completed SEC Form 13F "
+                    "index from an earlier legacy-cutover attempt"
+                )
+        if (
+            published_sec_security_state
+            and isinstance(reported_identity_resume_receipt, dict)
+            and reported_identity_resume_receipt.get("receipt_scope")
+            == LEGACY_INDEX_ADOPTION_RECEIPT_SCOPE
+        ):
+            # A staged-workspace manifest is private but not an authority to
+            # cross the one-time cutover boundary. Fall back to a fresh rebuild
+            # if it ever contains the migration-only receipt shape.
+            reported_identity_resume_receipt = None
+        try:
+            backfill_kwargs = {"user_agent": USER_AGENT}
+            if reported_identity_resume_receipt is not None:
+                backfill_kwargs["completed_rebuild_receipt"] = (
+                    reported_identity_resume_receipt
+                )
+                if (
+                    reported_identity_resume_receipt.get("receipt_scope")
+                    == LEGACY_INDEX_ADOPTION_RECEIPT_SCOPE
+                ):
+                    backfill_kwargs[
+                        "allow_unpublished_legacy_index_adoption"
+                    ] = True
+            backfill = rebuild_reported_identity_from_sec(
+                FUNDS_DIR, **backfill_kwargs
+            )
+        except Exception as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            raise SecurityMasterRefreshError(
+                "SEC Form 13F reported-identity backfill failed"
+            ) from exc
+        after_backfill = reported_identity_backfill_audit(FUNDS_DIR)
+        if after_backfill.get("needed"):
+            missing = after_backfill.get("missing_or_invalid_fields", {})
+            unresolved = (
+                len(backfill.archive_fallback.unresolved)
+                if backfill.archive_fallback is not None
+                else 0
+            )
+            raise SecurityMasterRefreshError(
+                "SEC Form 13F reported-identity backfill remained incomplete: "
+                f"{after_backfill.get('incomplete_holdings', 0)} holding(s), "
+                f"{unresolved} accession fallback target(s), fields={missing}"
+            )
+        candidate_receipt = getattr(
+            backfill,
+            "completed_rebuild_receipt",
+            None,
+        )
+        if isinstance(candidate_receipt, dict):
+            completed_reported_identity_receipt = candidate_receipt
+        log.info(
+            "  SEC Form 13F identity backfill changed %s holding(s) in %s "
+            "fund file(s)",
+            backfill.backfill.holdings_changed,
+            backfill.backfill.files_changed,
+        )
+
+    if (
+        resume_universe is not None
+        and getattr(backfill.backfill, "files_changed", None) == 0
+    ):
+        universe = resume_universe
+    else:
+        universe = collect_security_master_universe(extra_holdings)
+    if not universe:
+        log.info("  no security identities found; SEC master refresh is a no-op")
+        return None
+    with SEC_SECURITY_REFRESH_LOCK:
+        prior_master, prior_state = load_security_master_pair(
+            master_path=SEC_SECURITY_MASTER_PATH,
+            source_state_path=SEC_SOURCE_STATE_PATH,
+        )
+        staging_complete = False
+        working_root = None
+        if full_rebuild:
+            # An explicit rebuild over an established SEC master must not
+            # inherit a stage that production already matches. A failed
+            # promotion (or a legacy-cutover retry) may reuse its complete,
+            # fingerprint-bound stage while production still matches the
+            # recorded base. In-progress work remains resumable in either
+            # case, and promotion occurs only after all publication gates pass
+            # against the prior master.
+            working_root, staging_complete = (
+                _prepare_security_master_rebuild_work(
+                    universe,
+                    production_master=prior_master,
+                    production_state=prior_state,
+                    force_fresh_completed=_has_published_sec_security_state(
+                        prior_master,
+                        prior_state,
+                    ),
+                )
+            )
+            working_master_path = working_root / "sec_security_master.json"
+            working_source_state_path = working_root / "sec_source_state.json"
+            if not staging_complete:
+                _record_reported_identity_rebuild_receipt(
+                    working_root,
+                    completed_reported_identity_receipt,
+                )
+        else:
+            working_master_path = SEC_SECURITY_MASTER_PATH
+            working_source_state_path = SEC_SOURCE_STATE_PATH
+
+        try:
+            try:
+                if staging_complete:
+                    staged_master, staged_state = load_security_master_pair(
+                        master_path=working_master_path,
+                        source_state_path=working_source_state_path,
+                    )
+                    result = SecSecurityMasterRefreshResult(
+                        master=staged_master,
+                        state=staged_state,
+                        changed=False,
+                        refreshed_urls=(),
+                        retained_urls=tuple(
+                            sorted(staged_state.get("sources", {}))
+                        ),
+                        errors=(),
+                        acceptance=audit_security_master(
+                            staged_master,
+                            prior_master=(
+                                prior_master if prior_master.get("audit") else None
+                            ),
+                            as_of=datetime.now(timezone.utc),
+                        ),
+                    )
+                else:
+                    result = refresh_security_master(
+                        universe,
+                        master_path=working_master_path,
+                        source_state_path=working_source_state_path,
+                        # A clean rebuild discovers and parses the full
+                        # 2004-present archive set from empty state. Incremental
+                        # runs retain a compact rolling validation window.
+                        lookback_months=None if full_rebuild else 24,
+                        recheck_recent_archives=2,
+                        minimum_current_symbol_population_by_kind=(
+                            PRODUCTION_MIN_CURRENT_SYMBOL_POPULATION_BY_KIND
+                        ),
+                        minimum_current_symbol_title_ratio=(
+                            PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO
+                        ),
+                        minimum_active_official_cusip_count=(
+                            PRODUCTION_MIN_ACTIVE_OFFICIAL_CUSIP_COUNT
+                        ),
+                        enforce_latest_completed_official_period=True,
+                        enforce_reported_identity_evidence=True,
+                    )
+            except SecurityMasterAcceptanceError as exc:
+                issues = set(exc.audit.get("issues", []))
+                can_defer_new_filter_evidence = (
+                    not full_rebuild
+                    and issues == {"ftd_filter_universe_incomplete"}
+                    and bool(prior_master.get("audit"))
+                )
+                if not can_defer_new_filter_evidence:
+                    raise
+
+                # A newly observed repo-only CUSIP can require old filtered FTD
+                # archives to be fetched again. A transient archive outage must
+                # not block an otherwise valid filing update: roll back the
+                # partially checkpointed candidate state, retain every verified
+                # mapping, and add the new exact identities as unresolved. The
+                # unchanged source profile makes them retry automatically on the
+                # next normal run.
+                policy = prior_master.get("policy", {})
+                fallback_master = rebuild_sec_security_master(
+                    prior_state,
+                    universe,
+                    recent_window_days=int(
+                        policy.get("recent_window_days", 31)
+                    ),
+                    max_evidence_age_days=int(
+                        policy.get("max_evidence_age_days", 395)
+                    ),
+                    min_confirmation_dates=int(
+                        policy.get("min_confirmation_dates", 2)
+                    ),
+                )
+                fallback_acceptance = audit_security_master(
+                    fallback_master,
+                    prior_master=prior_master,
+                    as_of=datetime.now(timezone.utc),
+                )
+                if not fallback_acceptance["ok"]:
+                    raise SecurityMasterRefreshError(
+                        "last-good SEC security master could not accept new "
+                        "unresolved identities: "
+                        + ", ".join(fallback_acceptance["issues"])
+                    ) from exc
+                save_security_master_pair(
+                    fallback_master,
+                    prior_state,
+                    master_path=SEC_SECURITY_MASTER_PATH,
+                    source_state_path=SEC_SOURCE_STATE_PATH,
+                )
+                result = SecSecurityMasterRefreshResult(
+                    master=fallback_master,
+                    state=prior_state,
+                    changed=(fallback_master != prior_master),
+                    refreshed_urls=(),
+                    retained_urls=(),
+                    errors=(
+                        "deferred incomplete FTD filter refresh; new "
+                        "identifiers remain unresolved",
+                    ),
+                    acceptance=fallback_acceptance,
+                )
+            if not result.errors and not staging_complete:
+                supplemental_paths = (
+                    {
+                        "master_path": working_master_path,
+                        "source_state_path": working_source_state_path,
+                    }
+                    if full_rebuild
+                    else {}
+                )
+                try:
+                    result = _refresh_sec_fund_series_evidence(
+                        result,
+                        universe,
+                        **supplemental_paths,
+                    )
+                except Exception as exc:
+                    if isinstance(exc, KeyboardInterrupt):
+                        raise
+                    if isinstance(exc, SourceSchemaChangeError):
+                        if not full_rebuild:
+                            save_security_master_pair(
+                                prior_master,
+                                prior_state,
+                                master_path=SEC_SECURITY_MASTER_PATH,
+                                source_state_path=SEC_SOURCE_STATE_PATH,
+                            )
+                        raise
+                    if full_rebuild:
+                        raise
+                    # Series/class names are display enrichment. A delayed
+                    # registrant page must not evict exact ticker mappings or
+                    # other last-good SEC evidence; the weekly run will retry it.
+                    log.warning(
+                        "  SEC fund-series refresh retained last-good "
+                        "evidence: %s",
+                        exc,
+                    )
+                if not result.errors:
+                    try:
+                        result = _refresh_sec_edgar_exceptions(
+                            result,
+                            universe,
+                            checkpoint_batches=full_rebuild,
+                            checkpoint_root=(
+                                working_root if full_rebuild else None
+                            ),
+                            **supplemental_paths,
+                        )
+                    except Exception as exc:
+                        if isinstance(exc, KeyboardInterrupt):
+                            raise
+                        if isinstance(exc, SourceSchemaChangeError):
+                            if not full_rebuild:
+                                save_security_master_pair(
+                                    prior_master,
+                                    prior_state,
+                                    master_path=SEC_SECURITY_MASTER_PATH,
+                                    source_state_path=SEC_SOURCE_STATE_PATH,
+                                )
+                            raise
+                        if full_rebuild:
+                            raise
+                        # EDGAR is an exception resolver. A delayed search,
+                        # submissions response, or filing document must not
+                        # evict the accepted FTD master.
+                        log.warning(
+                            "  SEC EDGAR exception refresh retained last-good "
+                            "evidence: %s",
+                            exc,
+                        )
+            else:
+                # The core refresh deliberately rolled back to one coherent
+                # prior SEC source set. Do not mix supplemental evidence into
+                # that state or resolve a new identity during the same failed-
+                # source run.
+                log.info(
+                    "  supplemental SEC evidence refresh deferred until all "
+                    "core SEC sources refresh successfully"
+                )
+
+            if full_rebuild:
+                if result.errors:
+                    raise SecurityMasterRefreshError(
+                        "clean SEC security-master rebuild retained no "
+                        "supplemental last-good state: "
+                        + "; ".join(result.errors)
+                    )
+                discovery = result.state.get("edgar_discovery", {})
+                discovery_records = (
+                    discovery.get("records", {})
+                    if isinstance(discovery, dict)
+                    else None
+                )
+                if not isinstance(discovery_records, dict):
+                    raise SecurityMasterRefreshError(
+                        "clean SEC security-master rebuild produced malformed "
+                        "EDGAR discovery state"
+                    )
+                transient_edgar = sorted(
+                    (
+                        f"{cusip}:"
+                        f"{record.get('reason') or 'transient_error'}"
+                        if isinstance(record, dict)
+                        else f"{cusip}:malformed_record"
+                    )
+                    for cusip, record in discovery_records.items()
+                    if not isinstance(record, dict)
+                    or record.get("terminal") is not True
+                    or record.get("status") == "transient_error"
+                )
+                if transient_edgar:
+                    # EDGAR is optional exception enrichment, not part of the
+                    # core FTD/list publication boundary. A transient search
+                    # or filing fetch therefore leaves the affected identity
+                    # unresolved and tickerless; schema drift and stale
+                    # already-published iXBRL proof remain fatal through the
+                    # dedicated exception handling and audit gates above.
+                    log.warning(
+                        "  clean SEC security-master rebuild deferred %s "
+                        "transient EDGAR exception(s); affected identities "
+                        "remain unresolved and tickerless",
+                        len(transient_edgar),
+                    )
+                staged_records = result.master.get("records", {})
+                if not staged_records:
+                    raise SecurityMasterRefreshError(
+                        "full SEC security-master rebuild produced no records"
+                    )
+                staged_audit = audit_security_master(
+                    result.master,
+                    prior_master=(
+                        prior_master if prior_master.get("audit") else None
+                    ),
+                    as_of=datetime.now(timezone.utc),
+                )
+                if not staged_audit["ok"]:
+                    raise SecurityMasterRefreshError(
+                        "SEC security-master acceptance gate failed: "
+                        + ", ".join(staged_audit["issues"])
+                    )
+                result = replace(result, acceptance=staged_audit)
+                if working_root is None:
+                    raise SecurityMasterRefreshError(
+                        "clean rebuild has no persistent workspace"
+                    )
+                # Commit the validated staged identity before promotion.  A
+                # crash after this point can resume the exact completed stage
+                # instead of treating its terminal EDGAR fingerprints as a
+                # new queue and producing a crash-dependent result.
+                _mark_security_master_rebuild_complete(working_root)
+                save_security_master_pair(
+                    result.master,
+                    result.state,
+                    master_path=SEC_SECURITY_MASTER_PATH,
+                    source_state_path=SEC_SOURCE_STATE_PATH,
+                )
+        finally:
+            pass
+    for error in result.errors:
+        log.warning("  SEC security source retained last-good state: %s", error)
+    records = result.master.get("records", {})
+    if full_rebuild and not records:
+        raise SecurityMasterRefreshError(
+            "full SEC security-master rebuild produced no records"
+        )
+    audit = audit_security_master(
+        result.master,
+        prior_master=(prior_master if prior_master.get("audit") else None),
+        as_of=datetime.now(timezone.utc),
+    )
+    if not audit["ok"]:
+        ixbrl_freshness_failed = any(
+            issue in {
+                "sec_ixbrl_source_date_unavailable",
+                "sec_ixbrl_source_is_stale",
+            }
+            for issue in audit["issues"]
+        )
+        if ixbrl_freshness_failed and not full_rebuild:
+            save_security_master_pair(
+                prior_master,
+                prior_state,
+                master_path=SEC_SECURITY_MASTER_PATH,
+                source_state_path=SEC_SOURCE_STATE_PATH,
+            )
+        raise SecurityMasterRefreshError(
+            "SEC security-master acceptance gate failed: "
+            + ", ".join(audit["issues"])
+        )
+    summary = result.master.get("summary", {})
+    log.info(
+        "  SEC security master: %s records; %s resolved; %s ambiguous; "
+        "%s malformed",
+        len(records),
+        summary.get("resolved", 0),
+        summary.get("ambiguous", 0),
+        summary.get("malformed_as_filed", 0),
+    )
+    log.info(
+        "  current official-list FTD coverage: %.2f%% (%s/%s)",
+        100 * audit["ftd_coverage_ratio"],
+        audit["ftd_evidenced_official_cusip_count"],
+        audit["active_non_option_official_cusip_count"],
+    )
+    return result
+
+
+def resolve_cusips_via_sec_security_master(
+    cusips: list[str],
+    *,
+    holdings: list[dict] | None = None,
+    master: dict | None = None,
+) -> dict[str, str]:
+    """Resolve exact security identities from persisted SEC evidence only."""
+
+    requested = {
+        normalize_security_identifier(cusip)
+        for cusip in cusips
+        if normalize_security_identifier(cusip)
+    }
+    if not requested:
+        return {}
+    loaded = master or load_security_master(SEC_SECURITY_MASTER_PATH)
+    types_by_cusip: dict[str, set[str]] = defaultdict(set)
+    for holding in holdings or []:
+        cusip = normalize_security_identifier(
+            holding.get("reported_cusip") or holding.get("cusip")
+        )
+        if cusip in requested:
+            instrument_type = holding_instrument_type(holding)
+            types_by_cusip[cusip].add(instrument_type)
+            if instrument_type in {"CALL", "PUT", "OPT"}:
+                types_by_cusip[cusip].add("EQUITY")
+    records = loaded.get("records", {})
+    # The legacy compatibility map has only one slot per CUSIP. Consider every
+    # exact identity already known to the master even when this caller happens
+    # to be updating one quarter/type; otherwise an EQUITY-only call could
+    # resurrect a broad ticker while a retained PREF or WARRANT sibling is
+    # unresolved.
+    for record in records.values():
+        if not isinstance(record, dict):
+            continue
+        cusip = normalize_security_identifier(record.get("cusip"))
+        if cusip in requested:
+            raw_type = str(record.get("instrument_type") or "").upper()
+            if raw_type in VALID_INSTRUMENT_TYPES:
+                types_by_cusip[cusip].add(raw_type)
+
+    resolved: dict[str, str] = {}
+    for cusip in sorted(requested):
+        tickers: set[str] = set()
+        complete = True
+        for instrument_type in types_by_cusip.get(cusip, {"EQUITY"}):
+            evidence_type = (
+                "EQUITY"
+                if instrument_type in {"CALL", "PUT", "OPT"}
+                else instrument_type
+            )
+            record = _resolve_loaded_security(loaded, cusip, evidence_type)
+            ticker = str(record.get("ticker") or "").strip().upper()
+            if record.get("mapping_status") != "resolved" or not ticker:
+                complete = False
+                break
+            tickers.add(ticker)
+        if complete and len(tickers) == 1:
+            resolved[cusip] = next(iter(tickers))
+    return resolved
 
 
 def update_cusip_map(
     cusip_map: dict[str, str],
     holdings: list[dict],
 ) -> None:
-    """Assign tickers to holdings using only CUSIP-based data.
+    """Apply exact SEC-master mappings; unsupported identities fail closed."""
 
-    We deliberately avoid issuer-name heuristics here. CUSIP is the canonical
-    security identity; tickers are just display metadata derived from the
-    mapping cache or OpenFIGI."""
-    missing_cusips = sorted({
-        str(h.get("cusip") or "").strip().upper()
-        for h in holdings
-        if h.get("cusip") and str(h["cusip"]).strip().upper() not in cusip_map
+    cusips = sorted({
+        normalize_security_identifier(
+            holding.get("reported_cusip") or holding.get("cusip")
+        )
+        for holding in holdings
+        if normalize_security_identifier(
+            holding.get("reported_cusip") or holding.get("cusip")
+        )
     })
-    if missing_cusips:
-        cusip_map.update(manual_cusip_ticker_overrides(missing_cusips))
-        unresolved_missing = [cusip for cusip in missing_cusips if cusip not in cusip_map]
-        if unresolved_missing:
-            cusip_map.update(resolve_cusips_via_openfigi(unresolved_missing))
+    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    resolved = resolve_cusips_via_sec_security_master(
+        cusips,
+        holdings=holdings,
+        master=master,
+    )
+    # Do not allow a caller-provided legacy mapping to survive without an exact
+    # record in the SEC master.
+    for cusip in cusips:
+        if cusip in resolved:
+            cusip_map[cusip] = resolved[cusip]
+        else:
+            cusip_map.pop(cusip, None)
 
-    for h in holdings:
-        cusip = str(h.get("cusip") or "").strip().upper()
-        if cusip and cusip in cusip_map:
-            h["ticker"] = display_ticker_for_holding_type(
-                cusip_map[cusip],
-                classify_saved_holding(h),
-            )
-
-    suspect_cusips = sorted(find_ambiguous_ticker_cusips(holdings))
-    if suspect_cusips:
-        refreshed = manual_cusip_ticker_overrides(suspect_cusips)
-        unresolved_suspects = [cusip for cusip in suspect_cusips if cusip not in refreshed]
-        if unresolved_suspects:
-            refreshed.update(resolve_cusips_via_openfigi(unresolved_suspects))
-        if refreshed:
-            cusip_map.update(refreshed)
-            for h in holdings:
-                cusip = str(h.get("cusip") or "").strip().upper()
-                if cusip in refreshed:
-                    h["ticker"] = display_ticker_for_holding_type(
-                        refreshed[cusip],
-                        classify_saved_holding(h),
-                    )
-
+    for holding in holdings:
+        cusip = normalize_security_identifier(
+            holding.get("reported_cusip") or holding.get("cusip")
+        )
+        instrument_type = holding_instrument_type(holding)
+        evidence_type = (
+            "EQUITY"
+            if instrument_type in {"CALL", "PUT", "OPT"}
+            else instrument_type
+        )
+        record = _resolve_loaded_security(master, cusip, evidence_type)
+        ticker = (
+            record.get("ticker")
+            if record.get("mapping_status") == "resolved"
+            else None
+        )
+        holding["ticker"] = display_ticker_for_holding_type(
+            ticker,
+            instrument_type,
+        )
 
 # ----------------------------------------------------------------------------
 # Pipeline state (which accession numbers we've processed)
@@ -5036,485 +7254,104 @@ def merge_composed_quarters_into_fund(
 # the same ticker. Anything short of that is flagged as ambiguous and left
 # alone — we'd rather keep a real multi-CUSIP case (e.g. a share-class split
 # misclassified as common) than silently drop it.
-_TICKER_COLLISION_DOMINANCE_RATIO = 10.0
-
-
-def _detect_ticker_collisions() -> tuple[list[tuple], list[tuple]]:
-    """Scan every equity holding and find tickers claimed by multiple CUSIPs.
-
-    Returns:
-      demote: list of (ticker, kept_cusip, kept_value, losing_cusip, losing_value)
-              — each losing CUSIP should have its ticker nulled.
-      ambiguous: list of (ticker, [cusip,...]) — no CUSIP dominates the
-                 others by >= _TICKER_COLLISION_DOMINANCE_RATIO; left alone.
-    """
-    claims: dict[str, dict[str, dict]] = defaultdict(dict)
-    for fp in sorted(FUNDS_DIR.glob("*.json")):
-        try:
-            with open(fp) as f:
-                fund = json.load(f)
-        except json.JSONDecodeError:
-            continue
-        cik = fund.get("cik")
-        for q in fund.get("quarters", []):
-            for h in q.get("holdings", []):
-                cusip = str(h.get("cusip") or "").strip().upper()
-                ticker = str(h.get("ticker") or "").strip().upper()
-                htype = classify_saved_holding(h)
-                if not (cusip and ticker) or htype != "EQUITY":
-                    continue
-                rec = claims[ticker].setdefault(cusip, {"value": 0, "ciks": set()})
-                rec["value"] += int(h.get("value", 0) or 0)
-                if cik is not None:
-                    rec["ciks"].add(cik)
-
-    demote: list[tuple] = []
-    ambiguous: list[tuple] = []
-    for ticker, by_cusip in claims.items():
-        if len(by_cusip) < 2:
-            continue
-        ranked = sorted(
-            by_cusip.items(),
-            key=lambda item: (item[1]["value"], len(item[1]["ciks"])),
-            reverse=True,
-        )
-        top_cusip, top_rec = ranked[0]
-        _runner_cusip, runner_rec = ranked[1]
-        top_v = top_rec["value"]
-        runner_v = runner_rec["value"]
-        if runner_v == 0 or top_v / max(runner_v, 1) >= _TICKER_COLLISION_DOMINANCE_RATIO:
-            for losing_cusip, losing_rec in ranked[1:]:
-                demote.append((
-                    ticker, top_cusip, top_v, losing_cusip, losing_rec["value"],
-                ))
-        else:
-            ambiguous.append((ticker, [c for c, _ in ranked]))
-
-    return demote, ambiguous
-
-
-def apply_ticker_collision_fixes(
-    cusip_map: dict[str, str],
-    *,
-    protected_tickers: set[str] | None = None,
-) -> int:
-    """Prune losing entries from cusip_map when multiple CUSIPs claim a ticker.
-
-    For each ticker where a dominant CUSIP exists (>= 10x value of next),
-    drop the losing CUSIPs from cusip_map so the registry build doesn't
-    inherit the bad mapping. Ambiguous cases (no clear dominance) are
-    logged and left alone so legitimate multi-CUSIP scenarios (reverse
-    splits, dual listings, leveraged-ETF share-class history) don't get
-    silently collapsed.
-
-    Phase 3: fund-file mutation is NO LONGER done here — canonicalize_fund_files()
-    runs after build_cusip_registry and rewrites ticker/issuer/holding_type
-    on every holding from the (now-clean) registry. This function's sole
-    remaining job is keeping cusip_map honest so the registry stays
-    honest.
-
-    Returns the number of losing claims pruned from cusip_map."""
-    demote, ambiguous = _detect_ticker_collisions()
-    protected = {
-        str(ticker).strip().upper()
-        for ticker in (protected_tickers or set())
-        if str(ticker).strip()
-    }
-    protected_demotions = [
-        row for row in demote if str(row[0]).strip().upper() in protected
-    ]
-    demote = [
-        row for row in demote if str(row[0]).strip().upper() not in protected
-    ]
-    if protected_demotions:
-        log.info(
-            "  retained %s collision claim(s) across %s SEC-proven "
-            "historical ticker alias(es)",
-            len(protected_demotions),
-            len({row[0] for row in protected_demotions}),
-        )
-
-    for ticker, cusips in ambiguous:
-        log.warning(
-            f"  ambiguous equity ticker {ticker!r} claimed by "
-            f"{len(cusips)} CUSIPs without clear dominance: {', '.join(cusips)}"
-        )
-
-    if not demote:
-        log.info("  no ticker/CUSIP collisions to resolve")
-        return 0
-
-    for ticker, kept_cusip, kept_v, losing_cusip, losing_v in sorted(
-        demote, key=lambda d: d[4], reverse=True
-    )[:10]:
-        log.info(
-            f"  demote {ticker}: keep {kept_cusip} (${kept_v:,}) "
-            f"drop {losing_cusip} (${losing_v:,})"
-        )
-    if len(demote) > 10:
-        log.info(f"  ... and {len(demote) - 10} more demotions")
-
-    losing_cusips = {d[3] for d in demote}
-    removed_from_map = 0
-    for losing_cusip in losing_cusips:
-        if losing_cusip in cusip_map:
-            del cusip_map[losing_cusip]
-            removed_from_map += 1
-
-    log.info(
-        f"  removed {removed_from_map} losing CUSIPs from cusip_map "
-        f"({len(demote)} spurious ticker claims across {len(losing_cusips)} CUSIPs)"
-    )
-    return removed_from_map
-
-
 # Stripped before tokenizing issuer names — drops corporate-entity noise so
 # "WALT DISNEY CO/THE" and "DISNEY WALT CO" don't hinge on whether "CO" or
 # "THE" happen to match.
-_ISSUER_STOPWORDS = frozenset({
-    "CO", "COMPANY", "CORP", "CORPORATION", "INC", "INCORPORATED", "THE",
-    "LTD", "LIMITED", "LLC", "LP", "PLC", "SA", "AG", "NA", "NV", "AB",
-    "CLASS", "CL", "COM", "COMMON", "STOCK", "ADR", "SHARES", "SHS", "NEW",
-    "OLD", "ORD", "ORDINARY", "HOLDINGS", "HLDGS", "HLDG", "GROUP", "GRP",
-    "TR", "TRUST", "FUND", "ETF", "INDEX",
-})
-
-
-def _issuer_tokens(s: str) -> set[str]:
-    """Significant words from an issuer name — drops punctuation, stopwords,
-    and 1-char fragments so word-reorder / abbreviation differences don't
-    register as mismatches."""
-    tokens = re.split(r"[^A-Z0-9]+", (s or "").upper())
-    return {t for t in tokens if len(t) >= 2 and t not in _ISSUER_STOPWORDS}
-
-
-def _issuer_alnum(s: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
-
-
-def _issuers_likely_same(a: str, b: str) -> bool:
-    """Loose same-company check. Returns True for:
-      - word-reorders ("ELI LILLY" vs "LILLY ELI")
-      - abbreviated variants that still share a significant token
-      - typos / fragments that share a >=5-char substring
-    and False when the significant tokens are disjoint and no long
-    substring overlaps (TESLA vs AIRBNB, APPLE vs APOGEE)."""
-    ta = _issuer_tokens(a)
-    tb = _issuer_tokens(b)
-    if ta and tb and ta & tb:
-        return True
-    # Fall back to substring: catches "TESLA" vs "1TESLA", "ESLA INC" vs
-    # "TESLA INC", or "TELSA MOTORS" vs "TESLA INC" (shared "ESLA"/"TESL").
-    # 5-char minimum is tight enough that TESLA vs AIRBNB still fails.
-    a_clean = _issuer_alnum(a)
-    b_clean = _issuer_alnum(b)
-    if len(a_clean) < 5 or len(b_clean) < 5:
-        return False
-    short, long = (a_clean, b_clean) if len(a_clean) <= len(b_clean) else (b_clean, a_clean)
-    for i in range(len(short) - 4):
-        if short[i : i + 5] in long:
-            return True
-    return False
-
-
 @_serialize_pipeline_maintenance
 def rebuild_tickers_in_place(
     *,
     full_refresh: bool = False,
+    refresh_master: bool = False,
     company_ticker_data: dict | list | None = None,
 ) -> int:
-    """Refresh CUSIP->ticker mappings across stored fund files.
+    """Rewrite only ticker metadata from the exact SEC security master.
 
-    In normal mode this is an incremental repair pass: it re-resolves missing
-    CUSIPs plus CUSIPs that collide under the same ticker/type within a quarter,
-    then rewrites every fund file with the refreshed cache.
+    A security-master refresh is not an identity migration.  In particular,
+    it must not opportunistically reclassify a retained row while replacing a
+    vendor ticker: the cutover invariant is keyed by ``CUSIP | instrument
+    type``.  Dedicated filing replay/canonicalization paths own any proven
+    identity repair.
+    """
 
-    In full-refresh mode it prunes the persisted map down to CUSIPs that still
-    appear in current fund files, re-resolves *all* current CUSIPs via OpenFIGI,
-    and then rewrites every fund file with the refreshed/pruned cache. Any
-    current CUSIP that OpenFIGI does not resolve keeps its existing per-holding
-    ticker fallback, but stale map entries for no-longer-present CUSIPs are
-    removed.
-
-    Returns the number of fund files that actually changed."""
-    if full_refresh:
-        log.info("Fully refreshing the CUSIP map across all fund files...")
-    else:
-        log.info("Re-resolving tickers across all fund files...")
-
+    _ = company_ticker_data
     if not FUNDS_DIR.exists():
         log.info("  no funds directory; nothing to rebuild")
         return 0
-
-    old_cusip_map: dict[str, str] = load_cusip_map()
-    log.info(f"  loaded {len(old_cusip_map)} entries from the private CUSIP cache")
-    if company_ticker_data is None:
-        company_ticker_data = _load_company_tickers_data()
-    sec_titles, _name_to_ticker = _company_ticker_indexes(
-        company_ticker_data
+    log.info(
+        "%s the SEC security master and stored holding metadata...",
+        "Rebuilding" if full_refresh else "Refreshing",
     )
-    prior_registry = load_cusip_registry()
-    prior_aliases = _proven_registry_ticker_aliases(
-        prior_registry,
-        sec_titles,
+    result = (
+        refresh_sec_security_master_from_funds(full_rebuild=full_refresh)
+        if refresh_master or full_refresh
+        else None
     )
-    prior_openfigi_details = load_openfigi_details()
-    missing_cusips: set[str] = set()
-    suspect_cusips: set[str] = set()
-    current_cusips: set[str] = set()
-    seed_candidates: dict[str, dict[str, tuple[int, int, str]]] = defaultdict(dict)
-    synthetic_cusips: set[str] = set()
+    master = (
+        result.master
+        if result is not None
+        else load_security_master(SEC_SECURITY_MASTER_PATH)
+    )
 
     fund_paths = sorted(FUNDS_DIR.glob("*.json"))
-    total = len(fund_paths)
-    log.info(f"  scanning {total} fund files for missing/suspect CUSIPs...")
-    for idx, fp in enumerate(fund_paths):
-        if idx % 2000 == 0 and idx > 0:
-            log.info(
-                f"    scan progress: {idx}/{total} files "
-                f"({len(missing_cusips)} missing, {len(suspect_cusips)} suspect)"
-            )
-        try:
-            with open(fp) as f:
-                fund = json.load(f)
-        except json.JSONDecodeError:
-            continue
-        for q in fund.get("quarters", []):
-            holdings = q.get("holdings", [])
-            rep_date = q.get("report_date") or ""
-            suspect_cusips.update(find_ambiguous_ticker_cusips(holdings))
-            for h in holdings:
-                cusip = h.get("cusip")
-                if not cusip:
-                    continue
-                current_cusips.add(cusip)
-                if is_synthetic_identifier(cusip):
-                    synthetic_cusips.add(cusip)
-                    continue
-                ticker = str(h.get("ticker") or "").strip().upper()
-                if ticker and ticker != cusip:
-                    score = seed_candidates[cusip].get(ticker, (0, 0, ""))
-                    seed_candidates[cusip][ticker] = (
-                        score[0] + 1,
-                        score[1] + int(h.get("value", 0) or 0),
-                        max(score[2], rep_date),
-                    )
-                if full_refresh or cusip not in old_cusip_map:
-                    missing_cusips.add(cusip)
-
-    if full_refresh:
-        stale_removed = len(set(old_cusip_map) - current_cusips)
-        retained_current = {
-            cusip: ticker
-            for cusip, ticker in old_cusip_map.items()
-            if cusip in current_cusips
-        }
-        cusip_map: dict[str, str] = retained_current
-        log.info(
-            f"  pruned {stale_removed} stale cached mappings; "
-            f"retained {len(cusip_map)} current entries before OpenFIGI refresh"
-        )
-    else:
-        cusip_map = dict(old_cusip_map)
-
-    active_aliases = {
-        cusip: alias
-        for cusip, alias in prior_aliases.items()
-        if cusip in current_cusips
-    }
-    for cusip, (source_ticker, _canonical_ticker) in active_aliases.items():
-        # Keep the mechanically provable source symbol in the private map.
-        # The snapshot registry canonicalizes it after this repair pass.
-        cusip_map[cusip] = source_ticker
-    suspect_cusips.difference_update(active_aliases)
-    if active_aliases:
-        log.info(
-            "  retained %s SEC-proven historical ticker alias source(s)",
-            len(active_aliases),
-        )
-
-    # Claim set of tickers already mapped to a canonical CUSIP (from the
-    # cached map or a retained full-refresh entry). Used to reject seed
-    # candidates whose ticker is already taken — the most common cause of
-    # duplicates is a filer that typo'd the CUSIP but entered the correct
-    # ticker, which would otherwise pollute the map with a second CUSIP
-    # claiming the same ticker.
-    claimed_tickers: set[str] = {
-        t.upper() for t in cusip_map.values() if t
-    }
-    seeded_from_holdings: dict[str, str] = {}
-    skipped_collisions = 0
-    for cusip, ticker_scores in seed_candidates.items():
-        if cusip in cusip_map or not ticker_scores:
-            continue
-        best_ticker = max(
-            ticker_scores.items(),
-            key=lambda item: (item[1][0], item[1][1], item[1][2], item[0]),
-        )[0]
-        if best_ticker.upper() in claimed_tickers:
-            skipped_collisions += 1
-            continue
-        seeded_from_holdings[cusip] = best_ticker
-        claimed_tickers.add(best_ticker.upper())
-    if seeded_from_holdings:
-        cusip_map.update(seeded_from_holdings)
-        log.info(
-            f"  seeded {len(seeded_from_holdings)} CUSIP mappings from stored fund holdings"
-        )
-    if skipped_collisions:
-        log.info(
-            f"  skipped {skipped_collisions} seed candidates whose ticker was "
-            "already claimed by another CUSIP (likely filer CUSIP typos)"
-        )
-
-    manual_overrides = manual_cusip_ticker_overrides(current_cusips)
-    if manual_overrides:
-        cusip_map.update(manual_overrides)
-        log.info(f"  applied {len(manual_overrides)} manual CUSIP ticker overrides")
-    if synthetic_cusips:
-        log.info(
-            f"  detected {len(synthetic_cusips)} synthetic identifiers; "
-            "skipping OpenFIGI / seeded ticker resolution for them"
-        )
-
-    # Public OpenFIGI mode has lower batch/rate limits but is fully supported.
-    # The resolver logs its keyed/unkeyed mode and estimated duration.
-    resolve_missing = True
-
-    manual_override_cusips = set(manual_overrides)
-    kind_enrichment_cusips = {
-        cusip
-        for cusip in current_cusips
-        if (
-            cusip not in synthetic_cusips
-            and cusip not in manual_override_cusips
-            and not (
-                isinstance(prior_openfigi_details.get(cusip), dict)
-                and prior_openfigi_details[cusip].get("status") == "matched"
-            )
-            and _FUND_KIND_DISCOVERY_RE.search(
-                " ".join(
-                    str((prior_registry.get(cusip) or {}).get(field) or "")
-                    for field in (
-                        "name",
-                        "dominant_issuer",
-                        "dominant_class",
-                    )
-                )
-            )
-        )
-    }
-    if full_refresh:
-        to_resolve = sorted(
-            cusip
-            for cusip in (current_cusips if resolve_missing else set())
-            if cusip not in manual_override_cusips
-            and cusip not in synthetic_cusips
-            and cusip not in active_aliases
-        )
-    else:
-        to_resolve = sorted(
-            (suspect_cusips - manual_override_cusips)
-            | kind_enrichment_cusips
-            | {
-                cusip
-                for cusip in missing_cusips
-                if resolve_missing
-                and cusip not in cusip_map
-                and cusip not in synthetic_cusips
-            }
-        )
-    if to_resolve:
-        if full_refresh:
-            log.info(
-                f"  fully refreshing {len(to_resolve)} current CUSIPs via OpenFIGI"
-            )
-        else:
-            log.info(
-                f"  resolving {len(to_resolve)} CUSIPs via OpenFIGI "
-                f"({len(missing_cusips) if resolve_missing else 0} missing, "
-                f"{len(suspect_cusips)} suspect, "
-                f"{len(kind_enrichment_cusips)} fund-kind enrichment)"
-            )
-        figi_map = resolve_cusips_via_openfigi(
-            to_resolve,
-            force_refresh=full_refresh,
-        )
-        cusip_map.update(figi_map)
-        unresolved = len(to_resolve) - len(figi_map)
-        if unresolved:
-            log.info(f"  {unresolved} CUSIPs still unresolved after OpenFIGI")
-    else:
-        log.info("  no CUSIPs need OpenFIGI refresh")
-
-    # Prune losing-CUSIP entries from cusip_map when multiple CUSIPs claim a
-    # ticker (filer typos). Runs AFTER OpenFIGI so dominant-vs-losing CUSIPs
-    # can be judged from the final map + fund-file values. Phase 3:
-    # fund-file mutation for mismatches is handled by canonicalize_fund_files,
-    # which rewrites ticker/issuer from the registry after build_cusip_registry.
-    apply_ticker_collision_fixes(
-        cusip_map,
-        protected_tickers={
-            canonical_ticker
-            for _source_ticker, canonical_ticker in active_aliases.values()
-        },
-    )
-
-    log.info(f"  writing {len(cusip_map)} ticker mappings to {total} fund files...")
     updated = 0
     reassigned = 0
-    for idx, fp in enumerate(fund_paths):
-        if idx % 2000 == 0 and idx > 0:
-            log.info(f"    write progress: {idx}/{total} files ({updated} changed, {reassigned} holdings reassigned)")
+    for index, fund_path in enumerate(fund_paths):
+        if index and index % 2000 == 0:
+            log.info(
+                "    SEC rewrite progress: %s/%s files (%s changed)",
+                index,
+                len(fund_paths),
+                updated,
+            )
         try:
-            with open(fp) as f:
-                fund = json.load(f)
-        except json.JSONDecodeError:
+            fund = json.loads(fund_path.read_text())
+        except (OSError, json.JSONDecodeError):
             continue
         changed = False
-        for q in fund.get("quarters", []):
-            for h in q.get("holdings", []):
-                cusip = h.get("cusip")
+        for quarter in fund.get("quarters", []):
+            for holding in quarter.get("holdings", []):
+                cusip = normalize_security_identifier(
+                    holding.get("reported_cusip") or holding.get("cusip")
+                )
                 if not cusip:
                     continue
-                new_ht = _canonical_holding_type_for_quarter(q, h)
-                new_ticker = display_ticker_for_holding_type(
-                    cusip_map.get(cusip, h.get("ticker")),
-                    new_ht,
+                instrument_type = holding_instrument_type(holding)
+                resolution = _resolve_loaded_security(
+                    master,
+                    cusip,
+                    instrument_type,
                 )
-                if h.get("ticker") != new_ticker:
-                    h["ticker"] = new_ticker
+                if (
+                    resolution.get("mapping_status") != "resolved"
+                    and instrument_type in {"CALL", "PUT", "OPT"}
+                ):
+                    resolution = _resolve_loaded_security(
+                        master,
+                        cusip,
+                        "EQUITY",
+                    )
+                new_ticker = display_ticker_for_holding_type(
+                    resolution.get("ticker")
+                    if resolution.get("mapping_status") == "resolved"
+                    else None,
+                    instrument_type,
+                )
+                if holding.get("ticker") != new_ticker:
+                    holding["ticker"] = new_ticker
                     changed = True
                     reassigned += 1
-                # Classify holding type
-                if h.get("holding_type") != new_ht:
-                    h["holding_type"] = new_ht
-                    changed = True
-                if "option_type" in h:
-                    del h["option_type"]
-                    changed = True
         if changed:
-            _atomic_write_json(fp, fund)
+            _atomic_write_json(fund_path, fund)
             updated += 1
 
-    # Replace the persisted cusip_map with the freshly-built one.
-    save_cusip_map(cusip_map)
-    if full_refresh:
-        unresolved_current = len(current_cusips - set(cusip_map))
-        log.info(
-            f"  updated {updated}/{total} fund files "
-            f"({reassigned} individual holding ticker changes); "
-            f"cusip_map now has {len(cusip_map)} current entries with "
-            f"{unresolved_current} current CUSIPs still unmapped"
-        )
-    else:
-        log.info(
-            f"  updated {updated}/{total} fund files "
-            f"({reassigned} individual holding ticker changes); "
-            f"cusip_map now has {len(cusip_map)} entries"
-        )
+    log.info(
+        "  updated %s/%s fund files (%s holding ticker changes) from "
+        "SEC-only evidence",
+        updated,
+        len(fund_paths),
+        reassigned,
+    )
     return updated
-
 
 def quarter_health_key(cik: int, report_date: str) -> str:
     normalized = normalize_report_date(report_date)
@@ -6034,7 +7871,7 @@ def infer_proven_split_adjustments(
             current = history.get(current_date)
             if not previous or not current:
                 continue
-            if previous.get("shares_imputed") or current.get("shares_imputed"):
+            if previous.get("shares_imputed") or current.get("shares_imputed") or previous.get("quantity_unknown") or current.get("quantity_unknown"):
                 continue
             raw_numbers = (
                 previous.get("shares"),
@@ -6125,16 +7962,11 @@ def infer_proven_split_adjustments(
 def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
     """Rebuild stock files, the full search index, and the fund bootstrap.
 
-    Phase 2 of the CUSIP-as-source-of-truth refactor: the displayed
-    ticker and issuer name come from the CUSIP registry when available.
-    Filer-typed `ticker` and `issuer` fields on individual holdings are
-    a fallback only, used when a CUSIP somehow isn't in the registry
-    (shouldn't happen since Phase 1 builds a registry entry for every
-    fund-file CUSIP). The per-holding `holding_type` still drives the
-    stock_id suffix so one CUSIP can host both equity and option holdings on
-    separate stock files. Registry-confirmed bonds publish under NOTE, while
-    registry-confirmed listed funds collapse every non-option parser bucket to
-    EQUITY. The raw filing evidence remains unchanged.
+    Display tickers come only from the provenance-bearing CUSIP registry. A
+    missing registry row fails closed to an identifier-only display and the
+    immutable as-filed issuer; it never reuses a legacy holding ticker. The
+    per-holding `holding_type` still drives the stock_id suffix so one CUSIP can
+    host both equity and option holdings on separate stock files.
     """
     log.info("Rebuilding stock files and search index...")
     _recover_interrupted_derived_publishes()
@@ -6147,7 +7979,7 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
     if registry:
         log.info(f"  using CUSIP registry ({len(registry)} entries) as display source")
     else:
-        log.info("  no CUSIP registry found; falling back to per-holding filer strings")
+        log.warning("  no CUSIP registry found; all display tickers will fail closed")
 
     funds_summary: list[dict] = []
     stocks: dict[str, dict] = {}
@@ -6226,10 +8058,8 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
             rep_date = q.get("report_date")
             total_value = q.get("total_value", 0) or 0
             for h in q.get("holdings", []):
-                ticker_raw = h.get("ticker")
-                issuer_raw = h.get("issuer") or ""
                 cusip = str(h.get("cusip") or "").strip().upper()
-                stock_key = cusip or str(ticker_raw or "").strip().upper()
+                stock_key = cusip
                 if not stock_key:
                     continue
 
@@ -6243,24 +8073,30 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
                     # the registry means "we know this CUSIP has no resolvable
                     # ticker" — show the CUSIP rather than backing off to
                     # whatever the filer happened to type.
-                    registry_ticker = display_ticker_for_holding_type(
-                        reg_entry.get("ticker"),
+                    registry_ticker = _registry_position_ticker(
+                        reg_entry,
                         holding_type,
                     )
                     display_ticker = registry_ticker or cusip or stock_key
-                    display_issuer = reg_entry.get("name") or issuer_raw or cusip
+                    display_issuer = (
+                        reg_entry.get("name")
+                        or normalize_security_label(
+                            h.get("reported_issuer"),
+                            identifier=cusip,
+                        )
+                        or cusip
+                    )
                 else:
                     registry_fallback_count += 1
                     registry_ticker = None
-                    display_ticker = (
-                        display_ticker_for_holding_type(
-                            ticker_raw,
-                            holding_type,
+                    display_ticker = cusip
+                    display_issuer = (
+                        normalize_security_label(
+                            h.get("reported_issuer"),
+                            identifier=cusip,
                         )
                         or cusip
-                        or stock_key
                     )
-                    display_issuer = issuer_raw or cusip
 
                 stock_id = stock_lookup_id(stock_key, holding_type)
                 s = stocks.setdefault(stock_id, {
@@ -6306,6 +8142,8 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
                 }
                 if h.get("shares_imputed"):
                     new_entry["shares_imputed"] = True
+                if h.get("quantity_unknown"):
+                    new_entry["quantity_unknown"] = True
 
                 existing = holder["history"].setdefault(rep_date, {
                     "date": rep_date,
@@ -6318,6 +8156,8 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
                 existing["pct_of_fund"] += new_entry["pct_of_fund"]
                 if new_entry.get("shares_imputed"):
                     existing["shares_imputed"] = True
+                if new_entry.get("quantity_unknown"):
+                    existing["quantity_unknown"] = True
 
     # Build a complete replacement beside the live outputs. The current
     # generation remains untouched unless every stock and both indexes render.
@@ -6483,8 +8323,8 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
     )
     if registry_fallback_count:
         log.warning(
-            f"  {registry_fallback_count} holdings fell back to filer fields "
-            "(CUSIP not in registry); registry build may have been skipped"
+            f"  {registry_fallback_count} holdings had no registry proof; "
+            "published identifier-only displays with no search ticker"
         )
 
 
@@ -6492,7 +8332,7 @@ def regenerate_stock_files_and_index(*, state: dict | None = None) -> None:
 # Ticker health report
 # ----------------------------------------------------------------------------
 
-# Match OpenFIGI results that look like debt/preferred/warrant symbols rather
+# Match SEC evidence results that look like debt/preferred/warrant symbols rather
 # than plain equity tickers (e.g. "MITT 8.25 PERP A", "BAC-PB", "GM 5.5 NOTE").
 # Kept intentionally loose — false positives go in the "suspicious_symbol"
 # bucket for human review, not auto-quarantine.
@@ -6529,20 +8369,73 @@ def _classify_ticker_health(
     return None
 
 
+def _has_complete_sec_ftd_health_proof(
+    registry_entry: dict,
+    sec_title: str,
+) -> bool:
+    """Recognize a resolved FTD symbol with the full current SEC proof chain.
+
+    ``security_kind_source == sec_13f_list`` is emitted only when the master
+    has an active, non-deleted official-list row.  ``sec_company_tickers`` is
+    added to public provenance only from the master record's current-symbol
+    validation sources.  Requiring both keeps a ticker such as the real NYSE
+    symbol ``PFD`` out of the text-only heuristic without forgiving a symbol
+    merely because its spelling resembles the issuer name.
+
+    Official-list issuer fields are fixed-width, so the diagnostic comparison
+    admits a substantial normalized prefix in addition to equality.  This is
+    only a health-report suppression after exact CUSIP-based resolution; it is
+    never used to publish a ticker.
+    """
+
+    if not isinstance(registry_entry, dict) or not sec_title:
+        return False
+    sources = {
+        str(source).strip()
+        for source in (registry_entry.get("sources") or [])
+        if str(source).strip()
+    }
+    if not (
+        registry_entry.get("mapping_status") == "resolved"
+        and registry_entry.get("ticker_source") == "sec_ftd"
+        and registry_entry.get("security_kind_source") == "sec_13f_list"
+        and {"sec_ftd", "sec_company_tickers", "sec_13f_list"} <= sources
+    ):
+        return False
+
+    normalized_title = normalize_name(sec_title)
+    normalized_issuer = normalize_name(
+        registry_entry.get("name")
+        or registry_entry.get("dominant_issuer")
+        or ""
+    )
+    if not normalized_title or not normalized_issuer:
+        return False
+    if normalized_title == normalized_issuer:
+        return True
+    shorter, longer = sorted(
+        (normalized_title, normalized_issuer),
+        key=len,
+    )
+    return len(shorter) >= 12 and longer.startswith(shorter)
+
+
 def write_ticker_health_report() -> dict:
     """Scan every fund file and emit data/ticker_health.json.
 
     Ticker health and display-label coverage are deliberately separate:
     non-traded notes and pools may have no canonical ticker while still having
-    a useful human label. Ticker buckets drive resolver retries; label coverage
-    is the release-facing guarantee that the UI never needs a raw CUSIP as its
-    primary security name.
+    a useful human label. Ticker buckets are informational diagnostics only;
+    SEC-master discovery and retry state are driven by exact source evidence.
+    Label coverage is the release-facing guarantee that the UI never needs a
+    raw CUSIP as its primary security name.
     """
     log.info("Writing ticker health report...")
     if not FUNDS_DIR.exists():
         log.info("  no funds directory; skipping health report")
         return {}
 
+    registry = load_cusip_registry()
     records: dict[str, dict] = {}
     for fp in sorted(FUNDS_DIR.glob("*.json")):
         try:
@@ -6554,15 +8447,26 @@ def write_ticker_health_report() -> dict:
         for q in fund.get("quarters", []):
             rep_date = q.get("report_date") or ""
             for h in q.get("holdings", []):
-                cusip = str(h.get("cusip") or "").strip().upper()
+                cusip = normalize_security_identifier(
+                    h.get("reported_cusip") or h.get("cusip")
+                )
                 if not cusip:
                     continue
-                ticker = str(h.get("ticker") or "").strip().upper() or None
+                instrument_type = classify_saved_holding(h)
+                registry_entry = registry.get(cusip)
+                ticker = (
+                    _registry_position_ticker(registry_entry, instrument_type)
+                    if registry_entry is not None
+                    else None
+                )
                 value = int(h.get("value", 0) or 0)
                 rec = records.setdefault(cusip, {
                     "cusip": cusip,
                     "ticker": ticker,
-                    "issuer": h.get("issuer") or "",
+                    "issuer": _reported_descriptor_text(
+                        h,
+                        "reported_issuer",
+                    ),
                     "holder_ciks": set(),
                     "ticker_variants": set(),
                     "type_value": Counter(),
@@ -6571,7 +8475,6 @@ def write_ticker_health_report() -> dict:
                     "first_seen": rep_date,
                     "last_seen": rep_date,
                 })
-                instrument_type = classify_saved_holding(h)
                 rec["type_value"][instrument_type] += value
                 rec["type_count"][instrument_type] += 1
                 if cik is not None:
@@ -6580,7 +8483,10 @@ def write_ticker_health_report() -> dict:
                     rec["ticker_variants"].add(ticker)
                 if value > rec["max_value"]:
                     rec["max_value"] = value
-                    rec["issuer"] = h.get("issuer") or rec["issuer"]
+                    rec["issuer"] = (
+                        _reported_descriptor_text(h, "reported_issuer")
+                        or rec["issuer"]
+                    )
                     rec["ticker"] = ticker
                 if rep_date:
                     if not rec["first_seen"] or rep_date < rec["first_seen"]:
@@ -6588,7 +8494,6 @@ def write_ticker_health_report() -> dict:
                     if rep_date > (rec["last_seen"] or ""):
                         rec["last_seen"] = rep_date
 
-    registry = load_cusip_registry()
     resolved_equity_prefixes = {
         cusip[:6]
         for cusip, entry in registry.items()
@@ -6601,9 +8506,7 @@ def write_ticker_health_report() -> dict:
     company_ticker_data = _read_json_object(
         DATA_DIR / "company_tickers.json"
     ) or {}
-    sec_titles, _name_to_ticker = _company_ticker_indexes(
-        company_ticker_data
-    )
+    sec_titles = sec_ticker_titles(company_ticker_data)
     buckets_out: dict[str, list[dict]] = defaultdict(list)
     unlabeled_cusips: list[str] = []
     for rec in records.values():
@@ -6631,15 +8534,9 @@ def write_ticker_health_report() -> dict:
             )
         )
         ticker = (
-            display_ticker_for_holding_type(
-                registry_entry.get("ticker"),
-                instrument_type,
-            )
+            _registry_position_ticker(registry_entry, instrument_type)
             if registry_entry
-            else display_ticker_for_holding_type(
-                rec["ticker"],
-                instrument_type,
-            )
+            else None
         )
         bucket = _classify_ticker_health(
             rec["cusip"],
@@ -6658,15 +8555,25 @@ def write_ticker_health_report() -> dict:
             # separate this structurally actionable queue from ordinary debt,
             # retired securities, and safe ticker-collision demotions.
             bucket = "option_family_artifact"
+        sec_title = sec_titles.get(ticker) if ticker else None
+        normalized_sec_title = normalize_name(sec_title or "")
+        normalized_registry_issuer = normalize_name(
+            registry_entry.get("name")
+            or registry_entry.get("dominant_issuer")
+            or ""
+        )
         if (
             bucket == "suspicious_symbol"
             and ticker
-            and normalize_name(sec_titles.get(ticker) or "")
-            and normalize_name(sec_titles.get(ticker) or "")
-            == normalize_name(
-                registry_entry.get("name")
-                or registry_entry.get("dominant_issuer")
-                or ""
+            and (
+                (
+                    normalized_sec_title
+                    and normalized_sec_title == normalized_registry_issuer
+                )
+                or _has_complete_sec_ftd_health_proof(
+                    registry_entry,
+                    sec_title or "",
+                )
             )
         ):
             # A word such as NOTE can be both a debt descriptor and a real
@@ -6778,7 +8685,9 @@ def _aggregate_cusip_evidence() -> dict[str, dict]:
         for q in fund.get("quarters", []):
             rep_date = q.get("report_date") or ""
             for h in q.get("holdings", []):
-                cusip = str(h.get("cusip") or "").strip().upper()
+                cusip = normalize_security_identifier(
+                    h.get("reported_cusip") or h.get("cusip")
+                )
                 if not cusip:
                     continue
                 rec = evidence.setdefault(cusip, {
@@ -6803,10 +8712,16 @@ def _aggregate_cusip_evidence() -> dict[str, dict]:
                 rec["instrument_type_count"][row_instrument_type] += 1
                 if cik is not None:
                     rec["holder_ciks"].add(cik)
-                issuer = str(h.get("issuer") or "").strip().upper()
+                issuer = _reported_descriptor_text(
+                    h,
+                    "reported_issuer",
+                ).upper()
                 if issuer:
                     rec["issuer_value"][issuer] += value
-                cls = str(h.get("class") or "").strip().upper()
+                cls = _reported_descriptor_text(
+                    h,
+                    "reported_class",
+                ).upper()
                 if cls:
                     rec["class_value"][cls] += value
                 pc = str(h.get("put_call") or "").strip().upper()
@@ -6825,1133 +8740,6 @@ def _aggregate_cusip_evidence() -> dict[str, dict]:
                     if rep_date > (rec["last_seen"] or ""):
                         rec["last_seen"] = rep_date
     return evidence
-
-
-def _company_ticker_indexes(
-    data: dict | list | None,
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Return SEC title and normalized-name indexes from one raw payload."""
-    if not data:
-        return {}, {}
-
-    entries = data.values() if isinstance(data, dict) else data
-    buckets: dict[str, set[str]] = {}
-    for entry in entries:
-        ticker = (entry.get("ticker") or "").upper()
-        title = (entry.get("title") or "").strip()
-        if not (ticker and title):
-            continue
-        norm = normalize_name(title)
-        if norm:
-            buckets.setdefault(norm, set()).add(ticker)
-
-    name_to_ticker: dict[str, str] = {}
-    for norm, tickers in buckets.items():
-        if len(tickers) == 1:
-            name_to_ticker[norm] = next(iter(tickers))
-    return sec_ticker_titles(data), name_to_ticker
-
-
-_LEGACY_TICKER_CURRENCY_SUFFIX_RE = re.compile(
-    r"^([A-Z0-9][A-Z0-9.-]*?)[0-9]?(?:EUR|GBP|GBX|USD|CHF|CAD|JPY)$"
-)
-
-
-def _validated_sec_ticker_alias(
-    source_ticker: str | None,
-    dominant_issuer: str | None,
-    sec_titles: dict[str, str],
-) -> str | None:
-    """Return a narrowly normalized legacy ticker when SEC proves the alias.
-
-    This deliberately does not resolve a ticker from the issuer name.  It only
-    makes one of two mechanical edits to the existing ticker:
-
-    * replace a slash with the SEC share-class separator (``BF/B`` -> ``BF-B``)
-    * remove an explicit currency suffix and at most one preceding digit
-
-    The edited candidate must be present in SEC's ticker list and its SEC title
-    must normalize exactly to the filing corpus' dominant issuer.  Any
-    ambiguity therefore fails closed and leaves the legacy ticker untouched.
-    """
-    raw_ticker = str(source_ticker or "").strip().upper()
-    issuer_norm = normalize_name(dominant_issuer or "")
-    if not raw_ticker or not issuer_norm:
-        return None
-    if raw_ticker in sec_titles:
-        return None
-
-    candidates: list[str] = []
-    if "/" in raw_ticker:
-        candidates.append(raw_ticker.replace("/", "-"))
-
-    suffix_match = _LEGACY_TICKER_CURRENCY_SUFFIX_RE.fullmatch(raw_ticker)
-    if suffix_match:
-        candidates.append(suffix_match.group(1))
-
-    for candidate in dict.fromkeys(candidates):
-        sec_title = sec_titles.get(candidate)
-        if sec_title and normalize_name(sec_title) == issuer_norm:
-            return candidate
-    return None
-
-
-def _proven_registry_ticker_aliases(
-    registry: dict[str, dict],
-    sec_titles: dict[str, str],
-) -> dict[str, tuple[str, str]]:
-    """Return CUSIP -> (source ticker, canonical ticker) proof.
-
-    Existing marker-backed aliases remain stable across repeated rebuilds.
-    Before the first normalized rebuild, the current registry ticker itself
-    can supply the same mechanical proof.
-    """
-    aliases: dict[str, tuple[str, str]] = {}
-    for cusip, entry in registry.items():
-        if not isinstance(entry, dict) or entry.get("type") != "EQUITY":
-            continue
-        source_ticker = (
-            entry.get("source_ticker")
-            if "sec_validated_ticker_alias" in set(entry.get("sources") or [])
-            else entry.get("ticker")
-        )
-        canonical = _validated_sec_ticker_alias(
-            source_ticker,
-            entry.get("dominant_issuer"),
-            sec_titles,
-        )
-        normalized_source = str(source_ticker or "").strip().upper()
-        if canonical and normalized_source:
-            aliases[str(cusip).strip().upper()] = (
-                normalized_source,
-                canonical,
-            )
-    return aliases
-
-
-def _registry_type_from_evidence(
-    rec: dict,
-    openfigi_detail: dict | None = None,
-    *,
-    identifier: str | None = None,
-    prior_entry: dict | None = None,
-    filer_kind: str | None = None,
-    filer_fund_identity: bool = False,
-) -> str:
-    """Infer a CUSIP's security type from its aggregated class/put_call.
-
-    Options often reuse the underlying equity's CUSIP and distinguish
-    themselves solely via the putCall field.  Any non-option position is
-    therefore direct evidence for the CUSIP's canonical security identity;
-    option notional must not turn that underlying identity into CALL or PUT.
-    Dedicated option CUSIPs, which have no non-option evidence, retain their
-    option identity so their per-holding stock files remain separate.
-
-    Exact CUSIP-level BOND evidence is canonical instrument evidence, not just
-    a display label. It therefore normalizes legacy EQUITY/PREF/option parser
-    buckets to NOTE. Confirmed listed-fund evidence normalizes only non-option
-    parser buckets to EQUITY. Trusted prior evidence is retained on cold-cache
-    rebuilds so canonical identity cannot drift with a private cache."""
-    current_kind = _openfigi_security_kind(openfigi_detail)
-    manual_kind = normalize_security_kind(
-        MANUAL_SECURITY_KIND_OVERRIDES.get(
-            normalize_security_identifier(identifier)
-        )
-    )
-    prior_kind = normalize_security_kind(
-        (prior_entry or {}).get("security_kind")
-    )
-    prior_source = str(
-        (prior_entry or {}).get("security_kind_source") or ""
-    ).strip()
-    normalized_filer_kind = normalize_security_kind(filer_kind)
-    trusted_prior_kind = (
-        current_kind is None
-        and prior_kind is not None
-        and (
-            prior_source.startswith("openfigi")
-            or prior_source == "manual_verified"
-        )
-    )
-    trusted_prior_bond = (
-        trusted_prior_kind and prior_kind == "BOND"
-    )
-    prior_untyped_fund_identity = (
-        prior_kind is None
-        and _registry_entry_has_equity_fund_identity(prior_entry)
-    )
-    generic_fund_identity = (
-        filer_fund_identity or prior_untyped_fund_identity
-    )
-    trusted_prior_conflicting_kind = (
-        prior_kind
-        if (
-            prior_source.startswith("openfigi")
-            or prior_source == "manual_verified"
-        )
-        else None
-    )
-    generic_fund_identity_is_compatible = all(
-        kind in {None, "COMMON", *_EQUITY_FUND_SECURITY_KINDS}
-        for kind in (
-            manual_kind,
-            current_kind,
-            normalized_filer_kind,
-            trusted_prior_conflicting_kind,
-        )
-    )
-    if (
-        current_kind == "BOND"
-        or manual_kind == "BOND"
-        or trusted_prior_bond
-    ):
-        return "NOTE"
-    confirmed_fund_kind = None
-    if manual_kind in _EQUITY_FUND_SECURITY_KINDS:
-        confirmed_fund_kind = manual_kind
-    elif (
-        current_kind in _EQUITY_FUND_SECURITY_KINDS
-        and manual_kind != "ETN"
-        and normalized_filer_kind != "ETN"
-    ):
-        confirmed_fund_kind = current_kind
-    elif (
-        current_kind in {None, "COMMON"}
-        and normalized_filer_kind in {"ETF", "MUTUAL FUND"}
-    ):
-        confirmed_fund_kind = normalized_filer_kind
-    elif (
-        trusted_prior_kind
-        and prior_kind in _EQUITY_FUND_SECURITY_KINDS
-        and manual_kind != "ETN"
-        and normalized_filer_kind != "ETN"
-    ):
-        confirmed_fund_kind = prior_kind
-    elif generic_fund_identity and generic_fund_identity_is_compatible:
-        # A vetted five-letter-X symbol proves generic fund-share identity,
-        # but not whether the vehicle is open-end or closed-end. Preserve the
-        # Equity instrument identity on a cold-cache rebuild without inventing
-        # a reader-facing subtype.
-        confirmed_fund_kind = "UNTYPED FUND"
-
-    def canonical_non_option_type(instrument_type: str) -> str:
-        if (
-            confirmed_fund_kind
-            and instrument_type not in {"CALL", "PUT", "OPT"}
-        ):
-            return "EQUITY"
-        return instrument_type
-
-    type_values = rec.get("instrument_type_value") or {}
-    type_counts = rec.get("instrument_type_count") or {}
-    non_option_types = {
-        instrument_type
-        for instrument_type, count in type_counts.items()
-        if count > 0 and instrument_type not in {"CALL", "PUT", "OPT"}
-    }
-    if non_option_types:
-        selected_type = max(
-            non_option_types,
-            key=lambda instrument_type: (
-                type_values.get(instrument_type, 0),
-                type_counts.get(instrument_type, 0),
-                instrument_type,
-            ),
-        )
-        if selected_type != "EQUITY":
-            return canonical_non_option_type(selected_type)
-
-        class_values = (
-            rec.get("non_option_class_value")
-            or rec.get("class_value")
-            or {}
-        )
-        class_counts = rec.get("non_option_class_count") or {}
-        top_cls = max(
-            class_values,
-            key=lambda cls: (
-                class_values.get(cls, 0),
-                class_counts.get(cls, 0),
-                cls,
-            ),
-            default="",
-        )
-        issuer_values = (
-            rec.get("non_option_issuer_value")
-            or rec.get("issuer_value")
-            or {}
-        )
-        issuer_counts = rec.get("non_option_issuer_count") or {}
-        top_issuer = max(
-            issuer_values,
-            key=lambda issuer: (
-                issuer_values.get(issuer, 0),
-                issuer_counts.get(issuer, 0),
-                issuer,
-            ),
-            default="",
-        )
-        return canonical_non_option_type(_classify_holding({
-            "class": top_cls,
-            "issuer": top_issuer,
-            "put_call": "",
-        }))
-
-    option_types = {
-        instrument_type
-        for instrument_type, count in type_counts.items()
-        if count > 0 and instrument_type in {"CALL", "PUT", "OPT"}
-    }
-    if option_types:
-        selected_option = max(
-            option_types,
-            key=lambda instrument_type: (
-                type_values.get(instrument_type, 0),
-                type_counts.get(instrument_type, 0),
-                {"OPT": 0, "PUT": 1, "CALL": 2}[instrument_type],
-            ),
-        )
-        return selected_option
-
-    # Compatibility for direct unit fixtures and any older in-memory evidence
-    # object that predates structural row counts.
-    call_value = rec["put_call_value"].get("CALL", 0)
-    put_value = rec["put_call_value"].get("PUT", 0)
-    non_option_value = rec["total_value"] - call_value - put_value
-    if non_option_value > 0:
-        top_cls = max(
-            rec["class_value"],
-            key=rec["class_value"].get,
-            default="",
-        )
-        top_issuer = max(
-            rec["issuer_value"],
-            key=rec["issuer_value"].get,
-            default="",
-        )
-        return canonical_non_option_type(_classify_holding({
-            "class": top_cls,
-            "issuer": top_issuer,
-            "put_call": "",
-        }))
-    return "CALL" if call_value >= put_value else "PUT"
-
-
-_OPTION_ROOT_TICKER_RE = re.compile(r"\bROOT\s*=\s*([A-Z]{1,6})\b")
-_OPTION_LEADING_OCC_TICKER_RE = re.compile(
-    r"^\s*([A-Z]{1,6})\s+\d{6,8}[CP]\d+\b"
-)
-_OPTION_PREFIX_ISSUER_RE = re.compile(r"^\s*(?:PUT|CALL)\s+\d+\s+", re.IGNORECASE)
-
-
-def _strip_option_underlying_name(raw_name: str | None) -> str:
-    """Best-effort issuer text for an option row after removing option noise."""
-    name = str(raw_name or "").upper().strip()
-    if not name:
-        return ""
-
-    name = _OPTION_ROOT_TICKER_RE.sub("", name)
-    name = _OPTION_LEADING_OCC_TICKER_RE.sub("", name)
-    name = _OPTION_PREFIX_ISSUER_RE.sub("", name)
-    name = re.sub(r"\s+(?:PUT|CALL|CLL)\s+OPT\b.*$", "", name)
-    name = re.sub(r"\s+OPT(?:ION|IONS)?\b.*$", "", name)
-    name = re.sub(r"\s+OPTION\b.*$", "", name)
-    name = re.sub(r"\s+EXP\b.*$", "", name)
-    name = re.sub(r"\s+", " ", name).strip(" -/\t")
-    return name
-
-
-def _option_ticker_candidates(
-    raw_name: str | None,
-    name_to_ticker: dict[str, str],
-    *,
-    prefix_cache: dict[str, str | None] | None = None,
-) -> list[str]:
-    """Ordered unique ticker candidates extracted from an option label."""
-    name = str(raw_name or "").upper().strip()
-    out: list[str] = []
-
-    def add(candidate: str | None) -> None:
-        ticker = str(candidate or "").strip().upper()
-        if ticker and ticker not in out:
-            out.append(ticker)
-
-    root = _OPTION_ROOT_TICKER_RE.search(name)
-    if root:
-        add(root.group(1))
-
-    leading = _OPTION_LEADING_OCC_TICKER_RE.match(name)
-    if leading:
-        add(leading.group(1))
-
-    stripped = _strip_option_underlying_name(name)
-    if stripped:
-        add(resolve_ticker_from_name(
-            stripped,
-            "",
-            name_to_ticker,
-            prefix_cache=prefix_cache,
-        ))
-
-    return out
-
-
-def _apply_option_underlying_derivations(
-    registry: dict[str, dict],
-    *,
-    name_to_ticker: dict[str, str],
-    sec_titles: dict[str, str],
-) -> tuple[int, int]:
-    """Backfill option entries from underlying equity records when safe."""
-    equity_by_prefix6: dict[str, set[str]] = defaultdict(set)
-    equity_by_ticker: dict[str, set[str]] = defaultdict(set)
-    for cusip, entry in registry.items():
-        if entry.get("type") != "EQUITY":
-            continue
-        if len(cusip) >= 6:
-            equity_by_prefix6[cusip[:6]].add(cusip)
-        ticker = str(entry.get("ticker") or "").strip().upper()
-        if ticker:
-            equity_by_ticker[ticker].add(cusip)
-
-    derived_tickers = 0
-    linked_underlyings = 0
-    prefix_cache: dict[str, str | None] = {}
-    for cusip, entry in registry.items():
-        if entry.get("type") not in {"CALL", "PUT", "OPT"}:
-            continue
-
-        sources: list[str] = list(entry.get("sources") or [])
-        underlying_cusip = str(entry.get("underlying_cusip") or "").strip().upper() or None
-        candidate_ticker = str(entry.get("ticker") or "").strip().upper() or None
-
-        prefix_matches = sorted(equity_by_prefix6.get(cusip[:6], ()))
-        if not underlying_cusip and len(prefix_matches) == 1:
-            underlying_cusip = prefix_matches[0]
-            if underlying_cusip != cusip and "derived_prefix6" not in sources:
-                sources.append("derived_prefix6")
-
-        candidates = _option_ticker_candidates(
-            entry.get("dominant_issuer"),
-            name_to_ticker,
-            prefix_cache=prefix_cache,
-        )
-        if not candidate_ticker and len(candidates) == 1:
-            ticker_guess = candidates[0]
-            if (
-                ticker_guess in equity_by_ticker
-                or ticker_guess in sec_titles
-                or ticker_guess in MANUAL_CUSIP_TICKER_OVERRIDES.values()
-            ):
-                candidate_ticker = ticker_guess
-                if "derived_option_text" not in sources:
-                    sources.append("derived_option_text")
-
-        if not underlying_cusip and candidate_ticker:
-            ticker_matches = sorted(equity_by_ticker.get(candidate_ticker, ()))
-            if len(ticker_matches) == 1:
-                underlying_cusip = ticker_matches[0]
-                if "derived_underlying" not in sources:
-                    sources.append("derived_underlying")
-
-        underlying_entry = registry.get(underlying_cusip or "") if underlying_cusip else None
-        if not candidate_ticker and underlying_entry:
-            candidate_ticker = underlying_entry.get("ticker") or None
-            if candidate_ticker and "derived_underlying" not in sources:
-                sources.append("derived_underlying")
-
-        if candidate_ticker and not entry.get("ticker"):
-            entry["ticker"] = candidate_ticker
-            derived_tickers += 1
-
-        if underlying_cusip and underlying_cusip != cusip:
-            if entry.get("underlying_cusip") != underlying_cusip:
-                entry["underlying_cusip"] = underlying_cusip
-                linked_underlyings += 1
-
-        canonical_name = ""
-        if candidate_ticker and candidate_ticker in sec_titles:
-            canonical_name = sec_titles[candidate_ticker]
-        elif underlying_entry and underlying_entry.get("name"):
-            canonical_name = underlying_entry["name"]
-        if canonical_name and entry.get("name") != canonical_name:
-            entry["name"] = canonical_name
-
-        entry["sources"] = sources
-
-    return derived_tickers, linked_underlyings
-
-
-def _backfill_equity_tickers_from_option_consensus(
-    registry: dict[str, dict],
-    *,
-    sec_titles: dict[str, str],
-    openfigi_details: dict[str, dict] | None = None,
-    prior_registry: dict[str, dict] | None = None,
-) -> int:
-    """Recover a missing equity ticker from one unambiguous option family.
-
-    This is intentionally fail-closed. At least one CALL and one PUT sharing
-    the equity's CUSIP prefix and SEC-proof issuer key must agree on one
-    SEC-verified ticker. The equity must be at least as current as every proof
-    row and every same-family equity, and no other equity may already own the
-    ticker. When a prefix has multiple equity CUSIPs, only one unique newest
-    successor can receive it. Trusted non-common security-kind evidence also
-    excludes a candidate before any option-derived ticker is considered.
-    """
-
-    openfigi_details = openfigi_details or {}
-    prior_registry = prior_registry or {}
-
-    equity_ticker_owners: dict[str, set[str]] = defaultdict(set)
-    family_equities: dict[
-        tuple[str, str],
-        list[tuple[str, dict]],
-    ] = defaultdict(list)
-    equity_candidates: dict[
-        tuple[str, str],
-        list[tuple[str, dict]],
-    ] = defaultdict(list)
-    option_families: dict[
-        tuple[str, str],
-        list[tuple[str, dict]],
-    ] = defaultdict(list)
-
-    for cusip, entry in registry.items():
-        instrument_type = normalize_instrument_type(entry.get("type"))
-        ticker = str(entry.get("ticker") or "").strip().upper()
-        issuer_key = sec_issuer_proof_key(
-            entry.get("dominant_issuer") or entry.get("name") or ""
-        )
-        if instrument_type == "EQUITY":
-            if ticker:
-                equity_ticker_owners[ticker].add(cusip)
-            if len(cusip) >= 6 and issuer_key:
-                family_key = (cusip[:6], issuer_key)
-                family_equities[family_key].append((cusip, entry))
-            else:
-                family_key = None
-            candidate_kind, _candidate_kind_source = _registry_security_kind(
-                identifier=cusip,
-                openfigi_detail=openfigi_details.get(cusip),
-                prior_entry=prior_registry.get(cusip),
-                entry=entry,
-            )
-            if (
-                not ticker
-                and family_key is not None
-                and not is_synthetic_identifier(cusip)
-                and "ticker_collision_demoted"
-                not in set(entry.get("sources") or [])
-                and candidate_kind in {None, "COMMON"}
-                and _filer_security_kind(entry)
-                not in {
-                    "ETF",
-                    "ETN",
-                    "MUTUAL FUND",
-                    "CLOSED-END FUND",
-                    "PREFERRED",
-                    "WARRANT",
-                    "RIGHT",
-                    "UNIT",
-                }
-            ):
-                equity_candidates[family_key].append(
-                    (cusip, entry)
-                )
-        elif (
-            instrument_type in {"CALL", "PUT", "OPT"}
-            and len(cusip) >= 6
-            and issuer_key
-            and "derived_option_text" in set(entry.get("sources") or [])
-        ):
-            option_families[(cusip[:6], issuer_key)].append((cusip, entry))
-
-    proposals: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-    for family_key, options in option_families.items():
-        candidates = equity_candidates.get(family_key, [])
-        all_family_equities = family_equities.get(family_key, [])
-        option_cusips = {cusip for cusip, _entry in options}
-        option_types = {
-            normalize_instrument_type(entry.get("type"))
-            for _cusip, entry in options
-        }
-        if (
-            not candidates
-            or not all_family_equities
-            or len(option_cusips) < 2
-            or not {"CALL", "PUT"}.issubset(option_types)
-        ):
-            continue
-        option_tickers = {
-            str(entry.get("ticker") or "").strip().upper()
-            for _cusip, entry in options
-        }
-        if len(option_tickers) != 1 or "" in option_tickers:
-            continue
-        ticker = next(iter(option_tickers))
-        family_issuer_key = family_key[1]
-        if (
-            equity_ticker_owners.get(ticker)
-            or ticker not in sec_titles
-            or not _OPENFIGI_PLAIN_TICKER_RE.fullmatch(ticker)
-            or sec_issuer_proof_key(sec_titles[ticker]) != family_issuer_key
-        ):
-            continue
-
-        linked_targets = {
-            str(entry.get("underlying_cusip") or "").strip().upper()
-            for _cusip, entry in options
-            if str(entry.get("underlying_cusip") or "").strip()
-        }
-        if len(linked_targets) > 1:
-            continue
-        if linked_targets:
-            target_cusip = next(iter(linked_targets))
-            winners = [
-                candidate
-                for candidate in candidates
-                if candidate[0] == target_cusip
-            ]
-        else:
-            newest_equity_date = max(
-                str(entry.get("last_seen") or "")
-                for _cusip, entry in all_family_equities
-            )
-            newest_family_equities = [
-                family_equity
-                for family_equity in all_family_equities
-                if str(family_equity[1].get("last_seen") or "")
-                == newest_equity_date
-            ]
-            winners = (
-                newest_family_equities
-                if len(newest_family_equities) == 1
-                and newest_family_equities[0] in candidates
-                else []
-            )
-        if len(winners) != 1:
-            continue
-
-        target_cusip, target_entry = winners[0]
-        target_date = str(target_entry.get("last_seen") or "")
-        newest_proof_date = max(
-            str(entry.get("last_seen") or "")
-            for _cusip, entry in options
-        )
-        newest_family_equity_date = max(
-            str(entry.get("last_seen") or "")
-            for _cusip, entry in all_family_equities
-        )
-        if (
-            not target_date
-            or target_date < newest_proof_date
-            or target_date < newest_family_equity_date
-            or target_entry.get("ticker")
-            or is_synthetic_identifier(target_cusip)
-            or "ticker_collision_demoted"
-            in set(target_entry.get("sources") or [])
-        ):
-            continue
-        proposals[ticker].append((target_cusip, target_entry))
-
-    backfilled = 0
-    for ticker, ticker_proposals in proposals.items():
-        if len(ticker_proposals) != 1:
-            continue
-        target_cusip, entry = ticker_proposals[0]
-        family_key = (
-            target_cusip[:6],
-            sec_issuer_proof_key(
-                entry.get("dominant_issuer") or entry.get("name") or ""
-            ),
-        )
-        entry["ticker"] = ticker
-        sources = list(entry.get("sources") or [])
-        if "option_family_consensus" not in sources:
-            sources.append("option_family_consensus")
-        entry["name"] = sec_titles[ticker]
-        if "sec_title" not in sources:
-            sources.append("sec_title")
-        entry["sources"] = sources
-        entry["ticker_evidence_cusips"] = sorted(
-            cusip for cusip, _option_entry in option_families[family_key]
-        )
-        backfilled += 1
-
-    return backfilled
-
-
-def _deduplicate_registry_equity_tickers(
-    registry: dict[str, dict],
-) -> int:
-    """Keep one current canonical equity CUSIP per searchable ticker."""
-
-    by_ticker: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-    for cusip, entry in registry.items():
-        ticker = str(entry.get("ticker") or "").strip().upper()
-        if ticker and entry.get("type") == "EQUITY":
-            by_ticker[ticker].append((cusip, entry))
-
-    demoted = 0
-    ticker_sources = {
-        "cusip_map_vetted",
-        "manual_override",
-        "openfigi_plain_ticker",
-        "openfigi_prior_registry_ticker",
-        "sec_validated_ticker_alias",
-        "sec_title",
-    }
-    for ticker, claims in by_ticker.items():
-        if len(claims) < 2:
-            continue
-        alias_claims = [
-            entry
-            for _cusip, entry in claims
-            if "sec_validated_ticker_alias"
-            in set(entry.get("sources") or [])
-        ]
-        alias_names = {
-            normalize_name(entry.get("name") or "")
-            for entry in alias_claims
-        }
-        issuer_names = {
-            normalize_name(
-                entry.get("dominant_issuer") or entry.get("name") or ""
-            )
-            for _cusip, entry in claims
-        }
-        if (
-            alias_claims
-            and len(alias_names) == 1
-            and "" not in alias_names
-            and issuer_names == alias_names
-        ):
-            continue
-
-        def rank(claim: tuple[str, dict]) -> tuple:
-            cusip, entry = claim
-            sources = set(entry.get("sources") or [])
-            return (
-                "manual_override" in sources,
-                str(entry.get("last_seen") or ""),
-                str(entry.get("first_seen") or ""),
-                bool({
-                    "openfigi_plain_ticker",
-                    "openfigi_prior_registry_ticker",
-                } & sources),
-                int(entry.get("holder_count") or 0),
-                int(entry.get("total_value") or 0),
-                cusip,
-            )
-
-        winner_cusip, _winner = max(claims, key=rank)
-        for cusip, entry in claims:
-            if cusip == winner_cusip:
-                continue
-            sources = [
-                source
-                for source in list(entry.get("sources") or [])
-                if source not in ticker_sources
-            ]
-            dominant_name = normalize_security_label(
-                entry.get("dominant_issuer"),
-                identifier=cusip,
-            )
-            if dominant_name:
-                entry["name"] = dominant_name
-                if "filer_dominant" not in sources:
-                    sources.append("filer_dominant")
-            else:
-                entry["name"] = ""
-            if "ticker_collision_demoted" not in sources:
-                sources.append("ticker_collision_demoted")
-            entry["sources"] = sources
-            entry["ticker"] = None
-            entry.pop("source_ticker", None)
-            demoted += 1
-        log.info(
-            "  canonical ticker %s retained on %s; demoted %s duplicate "
-            "equity CUSIP(s)",
-            ticker,
-            winner_cusip,
-            len(claims) - 1,
-        )
-    return demoted
-
-
-def _allow_legacy_registry_ticker(
-    *,
-    cusip: str,
-    ticker: str | None,
-    instrument_type: str,
-    legacy_equity_claims: Counter[str],
-    dominant_class: str | None = None,
-    openfigi_detail: dict | None = None,
-) -> bool:
-    """Whether a CUSIP-cache value is safe to expose as a canonical ticker.
-
-    Canonical tickers remain unique, plain equity-style symbols. Descriptive
-    OpenFIGI note strings are label metadata and are handled separately.
-    """
-    raw_ticker = str(ticker or "").strip().upper()
-    if not raw_ticker:
-        return False
-    if instrument_type != "EQUITY":
-        return False
-    if is_synthetic_identifier(cusip):
-        return False
-    if _is_display_only_security_symbol(raw_ticker, dominant_class):
-        return False
-    if _classify_ticker_health(cusip, raw_ticker):
-        return False
-    if (
-        isinstance(openfigi_detail, dict)
-        and openfigi_detail.get("status") == "matched"
-        and str(openfigi_detail.get("ticker") or "").strip().upper()
-        == raw_ticker
-        and not _openfigi_plain_ticker_is_vetted(
-            openfigi_detail,
-            raw_ticker,
-        )
-    ):
-        return False
-    if legacy_equity_claims.get(raw_ticker, 0) > 1:
-        return False
-    return True
-
-
-def _openfigi_is_us_exchange(detail: dict) -> bool:
-    exchange_code = str(detail.get("exchCode") or "").strip().upper()
-    return (
-        exchange_code in _OPENFIGI_US_EXCHANGE_CODES
-        or exchange_code.startswith("NASDAQ")
-        or exchange_code.startswith("NYSE")
-    )
-
-
-def _is_display_only_security_symbol(
-    ticker: str | None,
-    dominant_class: str | None = None,
-) -> bool:
-    """Whether a symbol describes a right/warrant rather than common stock."""
-
-    raw_ticker = str(ticker or "").strip().upper()
-    raw_class = str(dominant_class or "").strip().upper()
-    return bool(
-        _DISPLAY_ONLY_TICKER_SUFFIX_RE.search(raw_ticker)
-        or _DISPLAY_ONLY_SECURITY_CLASS_RE.search(raw_class)
-    )
-
-
-def _openfigi_is_structured_terms_label(label: str) -> bool:
-    return (
-        not label[:1].isdigit()
-        and bool(re.search(r"\s", label))
-        and bool(_OPENFIGI_STRUCTURED_TERMS_RE.search(label))
-    )
-
-
-def _openfigi_plain_ticker_is_vetted(
-    detail: dict,
-    ticker: str,
-) -> bool:
-    """Accept a public symbol only when it is plain and on a US venue."""
-
-    return bool(
-        _OPENFIGI_PLAIN_TICKER_RE.fullmatch(ticker)
-        and _openfigi_is_us_exchange(detail)
-    )
-
-
-def _openfigi_display_ticker_is_vetted(
-    detail: dict,
-    ticker: str,
-) -> bool:
-    """Accept useful US display symbols, including warrant/right suffixes."""
-
-    return bool(
-        _OPENFIGI_DISPLAY_TICKER_RE.fullmatch(ticker)
-        and _openfigi_is_us_exchange(detail)
-    )
-
-
-def _openfigi_security_label(
-    detail: dict | None,
-    identifier: str,
-) -> str | None:
-    """Return useful FIGI metadata without promoting opaque venue symbols."""
-
-    if not isinstance(detail, dict) or detail.get("status") != "matched":
-        return None
-
-    ticker = normalize_security_label(
-        detail.get("ticker"),
-        identifier=identifier,
-    )
-    if ticker and _openfigi_is_structured_terms_label(ticker):
-        return ticker
-
-    description = normalize_security_label(
-        detail.get("securityDescription"),
-        identifier=identifier,
-    )
-    structured_description = normalize_note_security_label(description)
-    if structured_description and description != ticker:
-        return structured_description
-
-    if ticker and _openfigi_display_ticker_is_vetted(detail, ticker):
-        return ticker
-
-    if (
-        description
-        and description != ticker
-        and not description[:1].isdigit()
-        and not _OPENFIGI_TICKER_LIKE_TOKEN_RE.fullmatch(description)
-    ):
-        return description
-
-    name = normalize_security_label(
-        detail.get("name"),
-        identifier=identifier,
-    )
-    if name:
-        return name
-    return None
-
-
-def _openfigi_security_kind(detail: dict | None) -> str | None:
-    """Map high-confidence FIGI metadata to a display-only kind."""
-
-    if not isinstance(detail, dict) or detail.get("status") != "matched":
-        return None
-    security_type = str(detail.get("securityType") or "").strip().upper()
-    security_type2 = str(detail.get("securityType2") or "").strip().upper()
-    market_sector = str(detail.get("marketSector") or "").strip().upper()
-    combined = f"{security_type} {security_type2} {market_sector}"
-    descriptive = " ".join(
-        (
-            combined,
-            str(detail.get("name") or ""),
-            str(detail.get("securityDescription") or ""),
-        )
-    )
-
-    # ETP is structural but does not distinguish a fund from a note. Use an
-    # explicit ETN description only to refine that structural ETP category.
-    # Check it before the broader debt terms because real ETNs can also carry
-    # Corp or Note in FIGI's secondary structural fields.
-    if security_type == "ETP":
-        if _FILER_ETN_KIND_RE.search(descriptive):
-            return "ETN"
-        return "ETF"
-    # Prefer FIGI's remaining structural taxonomy to words in a ticker, name,
-    # or description. For example, Eaton's corporate bond description begins
-    # with "ETN", but its security type is GLOBAL and securityType2 is Corp.
-    if re.search(
-        r"\b(?:CORP|BOND|NOTE|ABS|CMBS|MTGE|MBS|MUNI|GOVT|LL)\b"
-        r"|\bASSET[- ]BACKED\b|\bMORTGAGE\b|\bWHOLE LOAN\b",
-        combined,
-    ):
-        return "BOND"
-    if re.search(r"\bCLOSED-END FUND\b", combined):
-        return "CLOSED-END FUND"
-    if (
-        re.search(r"\bPREFER(?:RED|ENCE)\b", combined)
-        or market_sector == "PFD"
-    ):
-        return "PREFERRED"
-    if re.search(r"\b(?:WARRANT|EQUITY WRT)\b", combined):
-        return "WARRANT"
-    if re.search(r"\bRIGHTS?\b", combined):
-        return "RIGHT"
-    if re.search(r"\bUNITS?\b", combined):
-        return "UNIT"
-    if re.search(r"\b(?:OPEN-END|MUTUAL) FUND\b", combined):
-        return "MUTUAL FUND"
-    if _openfigi_is_depositary_receipt(detail):
-        return None
-    if re.search(r"\bCOMMON STOCK\b", combined):
-        return "COMMON"
-    if _FILER_ETN_KIND_RE.search(descriptive):
-        return "ETN"
-    return None
-
-
-def _openfigi_is_depositary_receipt(detail: dict | None) -> bool:
-    """Return whether FIGI structurally identifies a depositary receipt."""
-
-    if not isinstance(detail, dict) or detail.get("status") != "matched":
-        return False
-    combined = " ".join(
-        str(detail.get(field) or "").strip().upper()
-        for field in ("securityType", "securityType2", "marketSector")
-    )
-    return bool(
-        re.search(r"\b(?:DEPOSITARY RECEIPT|ADR|ADS)\b", combined)
-    )
-
-
-def _filer_is_depositary_receipt(entry: dict | None) -> bool:
-    """Return whether retained filer metadata identifies a depositary receipt."""
-
-    if not isinstance(entry, dict):
-        return False
-    combined = " ".join(
-        str(entry.get(field) or "").strip()
-        for field in ("name", "dominant_issuer", "dominant_class")
-    )
-    return bool(
-        re.search(
-            r"\b(?:ADRS?|ADS|DEPOSITARY|DEP(?:OSITARY)?(?:\s+SHS?)?)\b",
-            combined,
-            re.IGNORECASE,
-        )
-    )
-
-
-def _openfigi_fund_conflicts_with_filer_common(
-    entry: dict | None,
-    detail: dict | None,
-) -> bool:
-    """Fail closed when a fund match contradicts explicit common-stock data."""
-
-    if (
-        not isinstance(entry, dict)
-        or _openfigi_security_kind(detail) not in _FUND_PRODUCT_NAME_KINDS
-        or normalize_instrument_type(entry.get("type")) != "EQUITY"
-    ):
-        return False
-    dominant_class = " ".join(
-        str(entry.get("dominant_class") or "").upper().split()
-    )
-    if not (
-        _FILER_COMMON_KIND_RE.search(dominant_class)
-        or _FILER_COMMON_CLASS_ONLY_RE.fullmatch(dominant_class)
-    ):
-        return False
-    issuer_text = " ".join(
-        str(entry.get(field) or "").strip()
-        for field in ("name", "dominant_issuer")
-    )
-    combined = " ".join(
-        (issuer_text, dominant_class)
-    )
-    if (
-        _FILER_COMMON_CLASS_EXCLUSION_RE.search(dominant_class)
-        or _FILER_COMMON_ISSUER_EXCLUSION_RE.search(issuer_text)
-        or _FUND_KIND_DISCOVERY_RE.search(combined)
-    ):
-        return False
-
-    detail_ticker = str(
-        (detail or {}).get("ticker") or ""
-    ).strip().upper()
-    if (
-        detail_ticker
-        and _openfigi_plain_ticker_is_vetted(detail, detail_ticker)
-    ):
-        return False
-
-    existing_name = str(
-        entry.get("name")
-        or entry.get("dominant_issuer")
-        or ""
-    )
-    detail_name = str((detail or {}).get("name") or "")
-    return not _issuers_likely_same(existing_name, detail_name)
-
-
-def _registry_security_kind(
-    *,
-    identifier: str,
-    openfigi_detail: dict | None,
-    prior_entry: dict | None,
-    entry: dict | None = None,
-) -> tuple[str | None, str | None]:
-    manual = normalize_security_kind(
-        MANUAL_SECURITY_KIND_OVERRIDES.get(identifier)
-    )
-    if manual:
-        return manual, "manual_verified"
-    filer_kind = _filer_security_kind(entry)
-    current = normalize_security_kind(
-        _openfigi_security_kind(openfigi_detail)
-    )
-    openfigi_depositary_receipt = _openfigi_is_depositary_receipt(
-        openfigi_detail
-    )
-    filer_depositary_receipt = _filer_is_depositary_receipt(entry)
-    is_depositary_receipt = (
-        openfigi_depositary_receipt or filer_depositary_receipt
-    )
-    openfigi_fund_conflict = _openfigi_fund_conflicts_with_filer_common(
-        entry,
-        openfigi_detail,
-    )
-    if openfigi_fund_conflict:
-        current = None
-    # OpenFIGI's broad ETP taxonomy includes exchange-traded notes. Preserve
-    # an explicit filer ETN description instead of presenting debt as an ETF.
-    if filer_kind == "ETN" and current == "ETF":
-        return "ETN", "filer_metadata"
-    # A specific SEC titleOfClass is stronger evidence than OpenFIGI's generic
-    # common-stock bucket. This prevents units, preferreds, warrants, and funds
-    # from being flattened to Common Stock.
-    if current == "COMMON" and filer_kind not in {None, "COMMON"}:
-        return filer_kind, "filer_metadata"
-    # Generic OpenFIGI COMMON metadata must not erase filer-side ADR/ADS
-    # evidence. Depositary receipts remain broad Equity unless a more specific
-    # kind (for example PREFERRED) is present.
-    if current == "COMMON" and filer_depositary_receipt:
-        current = None
-    if current:
-        return current, "openfigi"
-    # Depositary receipts are equity securities, but they are not the issuer's
-    # common stock. Suppress generic COMMON fallbacks while retaining any
-    # specific filer classification such as PREFERRED.
-    if is_depositary_receipt and filer_kind == "COMMON":
-        filer_kind = None
-    if (
-        not openfigi_fund_conflict
-        and isinstance(prior_entry, dict)
-    ):
-        prior_source = str(
-            prior_entry.get("security_kind_source") or ""
-        ).strip()
-        prior = normalize_security_kind(
-            prior_entry.get("security_kind")
-        )
-        compatible_prior = not (
-            prior == "COMMON"
-            and (
-                normalize_instrument_type(
-                    (entry or {}).get("type")
-                ) != "EQUITY"
-                or is_depositary_receipt
-            )
-        )
-        # Filer-derived kinds must be reproducible from today's retained SEC
-        # evidence.  Otherwise a retired inference rule becomes permanent via
-        # the prior registry.  Keep only the legacy COMMON compatibility path;
-        # older registry rows predate the current common-stock classifier.
-        if prior_source == "filer_metadata":
-            if filer_kind:
-                return filer_kind, "filer_metadata"
-            if prior == "COMMON" and compatible_prior:
-                return prior, prior_source
-            prior = None
-        trusted_prior = (
-            prior_source.startswith("openfigi")
-            or prior_source == "manual_verified"
-        )
-        if prior and trusted_prior and compatible_prior:
-            if prior_source.startswith("openfigi"):
-                return prior, "openfigi_prior_registry"
-            return prior, prior_source
-    if filer_kind:
-        return filer_kind, "filer_metadata"
-    return None, None
 
 
 def _filer_exclusive_etf_issuer(entry: dict | None) -> bool:
@@ -7977,7 +8765,7 @@ def _filer_guarded_series_etf(entry: dict | None) -> bool:
         str(entry.get("dominant_class") or "").upper().split()
     )
     if (
-        not _OPENFIGI_PLAIN_TICKER_RE.fullmatch(ticker)
+        not _SEC_PLAIN_TICKER_RE.fullmatch(ticker)
         or is_mutual_fund_ticker(ticker)
         or "ticker_collision_demoted" in sources
         or not (sources & _FUND_IDENTITY_TICKER_SOURCES)
@@ -8063,1124 +8851,12 @@ def _filer_security_kind(entry: dict | None) -> str | None:
         or _FILER_COMMON_CLASS_ONLY_RE.fullmatch(normalized_class)
     ) and (
         str(entry.get("ticker") or "").strip()
-        and "sec_title" in entry_sources
+        and "sec_company_tickers" in entry_sources
         and not _FILER_COMMON_CLASS_EXCLUSION_RE.search(dominant_class)
         and not _FILER_COMMON_ISSUER_EXCLUSION_RE.search(issuer_text)
     ):
         return "COMMON"
     return None
-
-
-def _fund_product_name_terms(name: str | None) -> set[str]:
-    """Return semantic product terms without legal/feed boilerplate."""
-
-    tokens = set(re.findall(r"[A-Z0-9]+", str(name or "").upper()))
-    # OpenFIGI commonly prefixes State Street fund names with "SS". It is
-    # publisher shorthand rather than reader-facing product detail.
-    return {
-        token
-        for token in tokens
-        if (
-            len(token) >= 2
-            and token not in _FUND_PRODUCT_NAME_GENERIC_TOKENS
-            and token not in _ISSUER_STOPWORDS
-            and token != "SS"
-        )
-    }
-
-
-def _fund_product_name_is_probable_truncation(
-    current_name: str | None,
-    prior_name: str | None,
-) -> bool:
-    """Recognize the cache's fixed-width prefix truncation, not fund renames."""
-
-    current = " ".join(str(current_name or "").upper().split())
-    prior = " ".join(str(prior_name or "").upper().split())
-    if (
-        len(current) < _OPENFIGI_COMPACT_NAME_LIMIT
-        or len(prior) <= len(current)
-    ):
-        return False
-    current_key = re.sub(r"[^A-Z0-9]", "", current)
-    prior_key = re.sub(r"[^A-Z0-9]", "", prior)
-    return bool(current_key and prior_key.startswith(current_key))
-
-
-def _fund_product_name_only_abbreviates_existing(
-    existing_name: str | None,
-    candidate_name: str | None,
-) -> bool:
-    """Return whether a shorter candidate adds no non-abbreviated terms."""
-
-    existing = " ".join(str(existing_name or "").upper().split())
-    candidate = " ".join(str(candidate_name or "").upper().split())
-    if not existing or not candidate or len(candidate) >= len(existing):
-        return False
-    existing_tokens = set(re.findall(r"[A-Z0-9]+", existing))
-    candidate_tokens = {
-        token
-        for token in re.findall(r"[A-Z0-9]+", candidate)
-        if (
-            token not in _FUND_PRODUCT_NAME_GENERIC_TOKENS
-            and token not in _FUND_PRODUCT_ABBREVIATION_NOISE_TOKENS
-            and token not in _ISSUER_STOPWORDS
-        )
-    }
-
-    return bool(candidate_tokens) and all(
-        any(
-            _fund_product_token_is_abbreviation(token, existing_token)
-            for existing_token in existing_tokens
-        )
-        for token in candidate_tokens
-    )
-
-
-def _fund_product_token_is_abbreviation(
-    token: str,
-    expanded: str,
-) -> bool:
-    """Return whether token is an ordered abbreviation of expanded."""
-
-    if token == expanded:
-        return True
-    if not token or not expanded or token[0] != expanded[0]:
-        return False
-    expanded_chars = iter(expanded[1:])
-    return all(
-        any(char == expanded_char for expanded_char in expanded_chars)
-        for char in token[1:]
-    )
-
-
-def _fund_product_name_is_self_referential(
-    name: str | None,
-    *,
-    aliases: tuple[object, ...],
-) -> bool:
-    """Reject ticker-only names and pipeline-added ``name — TICKER`` labels."""
-
-    normalized = " ".join(str(name or "").upper().split())
-    normalized_aliases = {
-        " ".join(str(alias or "").upper().split())
-        for alias in aliases
-        if str(alias or "").strip()
-    }
-    if not normalized or not normalized_aliases:
-        return False
-    if normalized in normalized_aliases:
-        return True
-    return any(
-        normalized.endswith(f" — {alias}")
-        for alias in normalized_aliases
-    )
-
-
-def _fund_product_name_degrades_existing(
-    existing_name: str | None,
-    candidate_name: str | None,
-    *,
-    aliases: tuple[object, ...] = (),
-) -> bool:
-    """Return whether candidate loses readable detail from an existing name."""
-
-    existing = " ".join(str(existing_name or "").upper().split())
-    candidate = " ".join(str(candidate_name or "").upper().split())
-    if not existing:
-        return False
-    if not candidate:
-        return True
-    if _fund_product_name_is_self_referential(
-        candidate,
-        aliases=aliases,
-    ):
-        return True
-    if _fund_product_name_is_probable_truncation(candidate, existing):
-        return True
-    if _fund_product_name_only_abbreviates_existing(existing, candidate):
-        return True
-
-    existing_terms = _fund_product_name_terms(existing)
-    candidate_terms = _fund_product_name_terms(candidate)
-    if (
-        existing_terms
-        and candidate_terms == existing_terms
-        and len(candidate) < len(existing)
-    ):
-        return True
-
-    alias_terms = {
-        token
-        for alias in aliases
-        for token in re.findall(r"[A-Z0-9]+", str(alias or "").upper())
-    }
-    comparable_candidate_terms = candidate_terms - alias_terms
-    if not existing_terms or not comparable_candidate_terms:
-        return False
-    abbreviation_matches = {
-        token
-        for token in comparable_candidate_terms
-        if any(
-            _fund_product_token_is_abbreviation(token, existing_token)
-            for existing_token in existing_terms
-        )
-    }
-    if (
-        len(abbreviation_matches) < 2
-        or len(abbreviation_matches) * 5
-        < len(comparable_candidate_terms) * 3
-    ):
-        return False
-
-    existing_vowels = sum(
-        char in "AEIOU"
-        for token in existing_terms
-        for char in token
-    )
-    candidate_vowels = sum(
-        char in "AEIOU"
-        for token in comparable_candidate_terms
-        for char in token
-    )
-    return candidate_vowels < existing_vowels
-
-
-def _fund_product_name_materially_adds_detail(
-    *,
-    identifier: str,
-    entry: dict,
-    existing_name: str,
-    candidate: str,
-) -> bool:
-    """Require real product detail before overriding an existing name."""
-
-    if _fund_product_name_is_probable_truncation(
-        candidate,
-        existing_name,
-    ):
-        return False
-    if _fund_product_name_only_abbreviates_existing(
-        existing_name,
-        candidate,
-    ):
-        return False
-
-    existing_terms = _fund_product_name_terms(existing_name)
-    candidate_terms = _fund_product_name_terms(candidate)
-    existing_semantic_score = (
-        len(existing_terms),
-        sum(len(term) for term in existing_terms),
-    )
-    candidate_semantic_score = (
-        len(candidate_terms),
-        sum(len(term) for term in candidate_terms),
-    )
-    if candidate_semantic_score <= existing_semantic_score:
-        return False
-
-    missing_class_detail = _informative_fund_product_class(
-        entry.get("dominant_class"),
-        identifier=identifier,
-        existing_name=existing_name,
-        aliases=(
-            entry.get("ticker"),
-            entry.get("security_label"),
-        ),
-    )
-    if missing_class_detail:
-        return True
-
-    additions = candidate_terms - existing_terms
-    substantial_additions = {
-        token
-        for token in additions
-        if (
-            len(re.sub(r"[^A-Z]", "", token)) >= 3
-            or (
-                token.isdigit()
-                and len(token) >= 2
-            )
-        )
-    }
-    existing_raw_tokens = set(
-        re.findall(r"[A-Z0-9]+", existing_name.upper())
-    )
-    is_legal_vehicle_name = bool(
-        existing_raw_tokens & _FUND_PRODUCT_VEHICLE_TOKENS
-    )
-    if (
-        is_legal_vehicle_name
-        and existing_terms.issubset(candidate_terms)
-        and substantial_additions
-    ):
-        return True
-
-    # A legal/sponsor name and a CUSIP-specific product name can use different
-    # abbreviations. Require two new semantic terms in that case so a venue
-    # prefix or country suffix alone cannot displace a descriptive name.
-    return len(existing_terms) <= 2 and len(additions) >= 2
-
-
-def _openfigi_fund_product_name(
-    detail: dict | None,
-    *,
-    identifier: str,
-) -> str | None:
-    """Return a safe CUSIP-specific fund name, never a ticker or note label."""
-
-    if not isinstance(detail, dict) or detail.get("status") != "matched":
-        return None
-    name = normalize_security_label(
-        detail.get("name"),
-        identifier=identifier,
-    )
-    if not name or normalize_note_security_label(name):
-        return None
-
-    aliases = {
-        str(detail.get(field) or "").strip().casefold()
-        for field in ("ticker", "securityDescription")
-        if str(detail.get(field) or "").strip()
-    }
-    if name.casefold() in aliases:
-        return None
-
-    # A handful of compact Bloomberg names arrive as one long concatenated
-    # token. The retained filer issuer/class is more readable in those cases.
-    if (
-        not re.search(r"\s", name)
-        and _OPENFIGI_TICKER_LIKE_TOKEN_RE.fullmatch(name)
-    ):
-        return None
-    return name
-
-
-def _informative_fund_product_class(
-    class_name: object | None,
-    *,
-    identifier: str,
-    existing_name: str | None,
-    aliases: tuple[object, ...] = (),
-) -> str | None:
-    """Return filer class detail only when it adds product-specific terms."""
-
-    normalized = normalize_security_label(
-        class_name,
-        identifier=identifier,
-    )
-    if not normalized:
-        return None
-    normalized_aliases = {
-        normalized_alias
-        for alias in aliases
-        if (normalized_alias := normalize_security_label(alias))
-    }
-    if normalized.casefold() in {
-        alias.casefold()
-        for alias in normalized_aliases
-    }:
-        return None
-    alias_tokens = {
-        token
-        for alias in normalized_aliases
-        for token in re.findall(r"[A-Z0-9]+", alias.upper())
-    }
-    class_tokens = set(re.findall(r"[A-Z0-9]+", normalized.upper()))
-    specific_tokens = {
-        token
-        for token in class_tokens
-        if (
-            token not in _FUND_PRODUCT_CLASS_GENERIC_TOKENS
-            and token not in alias_tokens
-        )
-    }
-    existing_tokens = set(
-        re.findall(r"[A-Z0-9]+", str(existing_name or "").upper())
-    )
-    uncovered_tokens = {
-        token
-        for token in specific_tokens
-        if not any(
-            token == existing_token
-            or (
-                len(token) >= 3
-                and len(existing_token) >= 3
-                and token[:3] == existing_token[:3]
-            )
-            for existing_token in existing_tokens
-        )
-    }
-    if not any(
-        (
-            len(re.sub(r"[^A-Z]", "", token)) >= 3
-            or token in _FUND_PRODUCT_SHORT_SPECIFIC_TOKENS
-            or (
-                token.isdigit()
-                and len(token) >= 2
-            )
-        )
-        for token in uncovered_tokens
-    ):
-        return None
-    return normalized
-
-
-def _fund_product_name_fallback(
-    *,
-    identifier: str,
-    entry: dict,
-    existing_name: str | None,
-) -> tuple[str | None, str | None]:
-    """Compose a readable issuer/class fallback with auditable provenance."""
-
-    class_name = _informative_fund_product_class(
-        entry.get("dominant_class"),
-        identifier=identifier,
-        existing_name=existing_name,
-        aliases=(
-            entry.get("ticker"),
-            entry.get("security_label"),
-        ),
-    )
-    if not class_name:
-        return None, None
-    product_name = normalize_security_label(
-        (
-            f"{existing_name} — {class_name}"
-            if existing_name
-            else class_name
-        ),
-        identifier=identifier,
-    )
-    if not product_name:
-        return None, None
-
-    sources = set(entry.get("sources") or [])
-    if existing_name:
-        if "manual_name_override" in sources:
-            source = "manual_name_class"
-        elif "sec_title" in sources:
-            source = "sec_title_class"
-        else:
-            source = "filer_issuer_class"
-    else:
-        source = "filer_class"
-    return product_name, source
-
-
-def _registry_fund_product_name(
-    *,
-    identifier: str,
-    entry: dict,
-    openfigi_detail: dict | None,
-    prior_entry: dict | None,
-) -> tuple[str | None, str | None]:
-    """Choose a display-only fund product name without changing issuer identity."""
-
-    kind = normalize_security_kind(entry.get("security_kind"))
-    if kind not in _FUND_PRODUCT_NAME_KINDS:
-        return None, None
-    if _openfigi_fund_conflicts_with_filer_common(
-        entry,
-        openfigi_detail,
-    ):
-        return None, None
-
-    existing_name = (
-        normalize_security_label(
-            entry.get("name"),
-            identifier=identifier,
-        )
-        or normalize_security_label(
-            entry.get("dominant_issuer"),
-            identifier=identifier,
-        )
-    )
-    # Publish an explicit product name as well as the canonical registry name.
-    # This lets already-generated fund rows display the correction immediately
-    # through security_labels.json, even before their retained filer issuer is
-    # rewritten by the next canonicalization pass.
-    if "manual_name_override" in set(entry.get("sources") or []):
-        return (
-            (existing_name, "manual_name_override")
-            if existing_name
-            else (None, None)
-        )
-    filer_etn_name = (
-        existing_name
-        if (
-            kind == "ETN"
-            and existing_name
-            and _FILER_ETN_KIND_RE.search(existing_name)
-        )
-        else None
-    )
-    filer_etn_source = (
-        "sec_title"
-        if "sec_title" in set(entry.get("sources") or [])
-        else "filer_issuer"
-    )
-
-    current_candidate = _openfigi_fund_product_name(
-        openfigi_detail,
-        identifier=identifier,
-    )
-    prior_candidate = None
-    prior_candidate_source = None
-    if isinstance(prior_entry, dict):
-        prior_source = str(
-            prior_entry.get("product_name_source") or ""
-        ).strip()
-        normalized_prior_candidate = normalize_security_label(
-            prior_entry.get("product_name"),
-            identifier=identifier,
-        )
-        # Older warm-cache runs could relabel a pipeline-decorated
-        # ``OpenFIGI name — filer class/ticker`` as openfigi_prior_registry.
-        # The separator proves this is not the raw vendor name, so do not let
-        # it hide the original duplicate group from SEC disambiguation.
-        if (
-            prior_source
-            and normalized_prior_candidate
-            and not (
-                prior_source.startswith("openfigi")
-                and " — " in normalized_prior_candidate
-            )
-            and not _fund_product_name_is_self_referential(
-                normalized_prior_candidate,
-                aliases=(
-                    identifier,
-                    entry.get("ticker"),
-                    entry.get("security_label"),
-                    prior_entry.get("ticker"),
-                    prior_entry.get("security_label"),
-                ),
-            )
-        ):
-            prior_candidate = normalized_prior_candidate
-            prior_candidate_source = (
-                "openfigi_prior_registry"
-                if prior_source.startswith("openfigi")
-                else prior_source
-            )
-
-    candidate = current_candidate
-    candidate_source = "openfigi"
-    selected_prior_candidate = False
-    if prior_candidate and (
-        not candidate
-        or _fund_product_name_degrades_existing(
-            prior_candidate,
-            candidate,
-            aliases=(
-                identifier,
-                entry.get("ticker"),
-                entry.get("security_label"),
-            ),
-        )
-    ):
-        candidate = prior_candidate
-        candidate_source = prior_candidate_source
-        selected_prior_candidate = True
-
-    if candidate:
-        if not existing_name:
-            return candidate, candidate_source
-        if (
-            selected_prior_candidate
-            and candidate.casefold() != existing_name.casefold()
-        ):
-            return candidate, candidate_source
-        candidate_is_better = _fund_product_name_materially_adds_detail(
-            identifier=identifier,
-            entry=entry,
-            existing_name=existing_name,
-            candidate=candidate,
-        )
-        if (
-            candidate_is_better
-            and candidate.casefold() != existing_name.casefold()
-        ):
-            return candidate, candidate_source
-        if filer_etn_name:
-            return filer_etn_name, filer_etn_source
-        # A compact OpenFIGI name can be less descriptive than the SEC/filer
-        # name. In that case retain the fuller existing name, but still add
-        # genuinely product-specific class detail when the issuer alone lacks
-        # it.
-        return _fund_product_name_fallback(
-            identifier=identifier,
-            entry=entry,
-            existing_name=existing_name,
-        )
-
-    if filer_etn_name:
-        return filer_etn_name, filer_etn_source
-    return _fund_product_name_fallback(
-        identifier=identifier,
-        entry=entry,
-        existing_name=existing_name,
-    )
-
-
-def _registry_fund_symbol(
-    *,
-    identifier: str,
-    entry: dict,
-) -> str | None:
-    """Return one plain listed symbol for fund-name disambiguation only."""
-
-    for candidate in (
-        entry.get("security_label"),
-        entry.get("ticker"),
-    ):
-        symbol = str(candidate or "").strip().upper()
-        if (
-            symbol != identifier
-            and _OPENFIGI_PLAIN_TICKER_RE.fullmatch(symbol)
-        ):
-            return symbol
-    return None
-
-
-def _duplicate_fund_product_name_groups(
-    registry: dict[str, dict],
-) -> list[list[tuple[str, dict]]]:
-    """Return same-name product groups that still contain multiple entries."""
-
-    grouped: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-    for identifier, entry in registry.items():
-        product_name = str(entry.get("product_name") or "").strip()
-        if product_name:
-            grouped[product_name.casefold()].append((identifier, entry))
-    return [group for group in grouped.values() if len(group) > 1]
-
-
-def _fund_product_name_needs_official_name(entry: dict) -> bool:
-    """Return whether a listed ETF/MF needs the SEC's complete product name."""
-
-    product_name = " ".join(
-        str(entry.get("product_name") or "").split()
-    )
-    if not product_name:
-        return True
-
-    source = str(entry.get("product_name_source") or "").strip()
-    if (
-        source.startswith("openfigi")
-        and len(product_name) == _OPENFIGI_COMPACT_NAME_LIMIT
-    ):
-        return True
-
-    raw_tokens = set(re.findall(r"[A-Z0-9]+", product_name.upper()))
-    return bool(
-        raw_tokens & _FUND_PRODUCT_VEHICLE_TOKENS
-        and len(_fund_product_name_terms(product_name)) <= 1
-    )
-
-
-def _apply_registry_fund_product_names(
-    registry: dict[str, dict],
-    *,
-    openfigi_details: dict[str, dict],
-    prior_registry: dict[str, dict],
-    sec_fund_names: dict[str, str] | None = None,
-    ambiguous_symbols: set[str] | None = None,
-    force_official_symbols: set[str] | None = None,
-) -> int:
-    """Populate sparse display names without rebuilding registry identities."""
-
-    for entry in registry.values():
-        entry.pop("product_name", None)
-        entry.pop("product_name_source", None)
-
-    product_name_count = 0
-    for identifier, entry in registry.items():
-        product_name, product_name_source = _registry_fund_product_name(
-            identifier=identifier,
-            entry=entry,
-            openfigi_detail=openfigi_details.get(identifier),
-            prior_entry=prior_registry.get(identifier),
-        )
-        if product_name:
-            entry["product_name"] = product_name
-            entry["product_name_source"] = product_name_source
-            product_name_count += 1
-
-    # Prefer the SEC's official series/class name for listed ETFs and mutual
-    # funds when the vendor name is absent, is only a sponsor/trust vehicle, or
-    # hits OpenFIGI's fixed-width compact-name limit. Including retained recent
-    # symbols avoids dropping lagging filers during quarter transitions. The
-    # same resolver also disambiguates compact names shared by multiple
-    # products. Collection is symbol-based so the caller can refresh all names
-    # in one bounded batch.
-    official_names = {
-        str(symbol).strip().upper(): name
-        for symbol, raw_name in (sec_fund_names or {}).items()
-        if (
-            _OPENFIGI_PLAIN_TICKER_RE.fullmatch(
-                str(symbol).strip().upper()
-            )
-            and (name := normalize_security_label(raw_name))
-        )
-    }
-    official_name_symbols = {
-        str(symbol).strip().upper()
-        for symbol in (force_official_symbols or set())
-        if _OPENFIGI_PLAIN_TICKER_RE.fullmatch(
-            str(symbol).strip().upper()
-        )
-    }
-    for identifier, entry in registry.items():
-        if (
-            normalize_security_kind(
-                entry.get("security_kind")
-            ) not in {"ETF", "MUTUAL FUND"}
-            or not _fund_product_name_needs_official_name(entry)
-        ):
-            continue
-        symbol = _registry_fund_symbol(
-            identifier=identifier,
-            entry=entry,
-        )
-        if symbol:
-            official_name_symbols.add(symbol)
-
-    for group in _duplicate_fund_product_name_groups(registry):
-        symbols = {
-            symbol
-            for identifier, entry in group
-            if (
-                normalize_security_kind(
-                    entry.get("security_kind")
-                ) in {"ETF", "MUTUAL FUND"}
-                and (
-                    symbol := _registry_fund_symbol(
-                        identifier=identifier,
-                        entry=entry,
-                    )
-                )
-            )
-        }
-        if len(symbols) <= 1:
-            continue
-        official_name_symbols.update(symbols)
-
-    if ambiguous_symbols is not None:
-        ambiguous_symbols.update(official_name_symbols)
-    for identifier, entry in registry.items():
-        if normalize_security_kind(
-            entry.get("security_kind")
-        ) not in {"ETF", "MUTUAL FUND"}:
-            continue
-        symbol = _registry_fund_symbol(
-            identifier=identifier,
-            entry=entry,
-        )
-        if symbol not in official_name_symbols:
-            continue
-        official_name = official_names.get(symbol or "")
-        if official_name:
-            entry["product_name"] = official_name
-            entry["product_name_source"] = "sec_fund_series"
-
-    # Bloomberg product names are compact and can collapse distinct monthly
-    # series or share classes to the same truncated text. Keep the CUSIP as
-    # identity, and restore only missing filer class detail for those duplicate
-    # display names.
-    duplicate_groups: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-    for identifier, entry in registry.items():
-        product_name = str(entry.get("product_name") or "").strip()
-        source = str(entry.get("product_name_source") or "").strip()
-        if product_name and source.startswith("openfigi"):
-            duplicate_groups[product_name.casefold()].append(
-                (identifier, entry)
-            )
-
-    for group in duplicate_groups.values():
-        if len(group) <= 1:
-            continue
-        tickers = {
-            str(entry.get("ticker") or "").strip().upper()
-            for _, entry in group
-            if str(entry.get("ticker") or "").strip()
-        }
-        if len(tickers) <= 1:
-            continue
-        differentiators: dict[str, str] = {}
-        for identifier, entry in group:
-            product_name = str(entry.get("product_name") or "").strip()
-            class_name = _informative_fund_product_class(
-                entry.get("dominant_class"),
-                identifier=identifier,
-                existing_name=product_name,
-                aliases=(
-                    entry.get("ticker"),
-                    entry.get("security_label"),
-                ),
-            )
-            if class_name:
-                differentiators[identifier] = class_name
-        # Append filer class text only when the duplicate group itself proves
-        # that the classes differ. This avoids decorating every alias with
-        # boilerplate such as CMN while restoring JAN/FEB monthly-series or
-        # other genuinely distinguishing detail.
-        if len({
-            differentiators.get(identifier, "").casefold()
-            for identifier, _ in group
-        }) <= 1:
-            continue
-        for identifier, entry in group:
-            class_name = differentiators.get(identifier)
-            if not class_name:
-                continue
-            product_name = str(entry.get("product_name") or "").strip()
-            source = str(entry.get("product_name_source") or "").strip()
-            differentiated_name = normalize_security_label(
-                f"{product_name} — {class_name}",
-                identifier=identifier,
-            )
-            if differentiated_name:
-                entry["product_name"] = differentiated_name
-                entry["product_name_source"] = (
-                    source if source.endswith("_class") else f"{source}_class"
-                )
-
-    # If neither SEC series data nor filer class text can distinguish a
-    # remaining same-name group, append the already-visible listed symbol.
-    # This is an explicit last resort: it prevents two different CUSIPs from
-    # claiming the same product label without inventing unsupported terms.
-    for group in _duplicate_fund_product_name_groups(registry):
-        symbols = {
-            identifier: _registry_fund_symbol(
-                identifier=identifier,
-                entry=entry,
-            )
-            for identifier, entry in group
-        }
-        distinct_symbols = {
-            symbol for symbol in symbols.values() if symbol
-        }
-        if len(distinct_symbols) <= 1:
-            continue
-        for identifier, entry in group:
-            symbol = symbols.get(identifier)
-            if not symbol:
-                continue
-            product_name = str(entry.get("product_name") or "").strip()
-            disambiguated_name = normalize_security_label(
-                f"{product_name} — {symbol}",
-                identifier=identifier,
-            )
-            if not disambiguated_name:
-                continue
-            source = str(entry.get("product_name_source") or "").strip()
-            entry["product_name"] = disambiguated_name
-            entry["product_name_source"] = (
-                source if source.endswith("_ticker") else f"{source}_ticker"
-            )
-    return sum(
-        bool(entry.get("product_name"))
-        for entry in registry.values()
-    )
-
-
-def _openfigi_canonical_ticker(
-    detail: dict | None,
-    *,
-    identifier: str,
-    instrument_type: str,
-    dominant_class: str | None = None,
-) -> str | None:
-    """Return an exchange-style OpenFIGI symbol, never a debt description."""
-
-    if (
-        not isinstance(detail, dict)
-        or detail.get("status") != "matched"
-        or instrument_type not in {"EQUITY", "PREF", "WARRANT"}
-    ):
-        return None
-    market_sector = str(detail.get("marketSector") or "").strip().upper()
-    if market_sector not in {"EQUITY", "PFD"}:
-        return None
-    ticker = str(detail.get("ticker") or "").strip().upper()
-    if (
-        not ticker
-        or ticker == identifier
-        or is_synthetic_identifier(identifier)
-        or (
-            instrument_type == "EQUITY"
-            and _is_display_only_security_symbol(ticker, dominant_class)
-        )
-        or _SUSPICIOUS_TICKER_RE.search(ticker)
-        or not _openfigi_plain_ticker_is_vetted(detail, ticker)
-    ):
-        return None
-    return ticker
-
-
-def _prior_registry_fund_ticker(
-    prior_entry: dict | None,
-    *,
-    identifier: str,
-    instrument_type: str,
-    filer_kind: str | None = None,
-) -> str | None:
-    """Retain a vetted listed-fund symbol when the private cache is cold."""
-
-    if (
-        not isinstance(prior_entry, dict)
-        or instrument_type != "EQUITY"
-        or "ticker_collision_demoted"
-        in set(prior_entry.get("sources") or [])
-    ):
-        return None
-    prior_kind = normalize_security_kind(
-        prior_entry.get("security_kind")
-    )
-    untyped_fund_identity = (
-        prior_kind is None
-        and _registry_entry_has_equity_fund_identity(prior_entry)
-    )
-    if (
-        prior_kind not in _EQUITY_FUND_SECURITY_KINDS
-        and not untyped_fund_identity
-    ):
-        return None
-    kind_source = str(
-        prior_entry.get("security_kind_source") or ""
-    ).strip()
-    label_source = str(prior_entry.get("label_source") or "").strip()
-    sources = set(prior_entry.get("sources") or [])
-    if not (
-        kind_source.startswith("openfigi")
-        or kind_source == "manual_verified"
-        or (
-            kind_source == "filer_metadata"
-            and normalize_security_kind(filer_kind) == prior_kind
-            and bool(sources & _FUND_IDENTITY_TICKER_SOURCES)
-        )
-        or untyped_fund_identity
-    ) or not (
-        label_source.startswith("openfigi")
-        or label_source in {"canonical_ticker", "manual_verified"}
-    ):
-        return None
-    # Display labels may come from a vendor name or description. Only a prior
-    # canonical ticker is strong enough to republish as a search symbol.
-    ticker = str(prior_entry.get("ticker") or "").strip().upper()
-    if (
-        not _OPENFIGI_PLAIN_TICKER_RE.fullmatch(ticker)
-        or ticker == identifier
-        or is_synthetic_identifier(identifier)
-        or _SUSPICIOUS_TICKER_RE.search(ticker)
-    ):
-        return None
-    return ticker
-
-
-def _fund_identity_ticker_candidate(
-    *,
-    identifier: str,
-    dominant_class: str,
-    legacy_ticker: str | None,
-    legacy_ticker_claims: Counter[str],
-    openfigi_detail: dict | None,
-    prior_entry: dict | None,
-    filer_kind: str | None,
-) -> tuple[str | None, str | None]:
-    """Return a vetted symbol usable during pre-type fund classification.
-
-    This is an evidence-only first pass. The normal registry ticker resolver
-    runs again after canonical type inference and remains authoritative.
-    """
-
-    identifier = normalize_security_identifier(identifier)
-    manual_ticker = str(
-        MANUAL_CUSIP_TICKER_OVERRIDES.get(identifier) or ""
-    ).strip().upper()
-    if manual_ticker:
-        return manual_ticker, "manual_override"
-    openfigi_ticker = _openfigi_canonical_ticker(
-        openfigi_detail,
-        identifier=identifier,
-        instrument_type="EQUITY",
-        dominant_class=dominant_class,
-    )
-    if openfigi_ticker:
-        return openfigi_ticker, "openfigi_plain_ticker"
-    prior_ticker = _prior_registry_fund_ticker(
-        prior_entry,
-        identifier=identifier,
-        instrument_type="EQUITY",
-        filer_kind=filer_kind,
-    )
-    if prior_ticker:
-        return prior_ticker, "openfigi_prior_registry_ticker"
-    if _allow_legacy_registry_ticker(
-        cusip=identifier,
-        ticker=legacy_ticker,
-        instrument_type="EQUITY",
-        legacy_equity_claims=legacy_ticker_claims,
-        dominant_class=dominant_class,
-        openfigi_detail=openfigi_detail,
-    ):
-        return str(legacy_ticker).strip().upper(), "cusip_map_vetted"
-    return None, None
-
-
-def _registry_security_label(
-    *,
-    identifier: str,
-    entry: dict,
-    openfigi_detail: dict | None,
-    prior_entry: dict | None,
-    legacy_openfigi_label: str | None,
-) -> tuple[str, str]:
-    """Choose one universal label without changing ticker/search semantics."""
-
-    verified_manual_label = normalize_security_label(
-        MANUAL_VERIFIED_SECURITY_LABEL_OVERRIDES.get(identifier),
-        identifier=identifier,
-    )
-    if verified_manual_label:
-        return verified_manual_label, "manual_verified"
-
-    manual_label = normalize_security_label(
-        MANUAL_SECURITY_LABEL_OVERRIDES.get(identifier),
-        identifier=identifier,
-    )
-    if manual_label:
-        source = (
-            "synthetic_identifier"
-            if is_synthetic_identifier(identifier)
-            else "historical_invalid_identifier"
-        )
-        return manual_label, source
-
-    ticker_collision_demoted = (
-        "ticker_collision_demoted" in set(entry.get("sources") or [])
-    )
-    openfigi_fund_conflict = _openfigi_fund_conflicts_with_filer_common(
-        entry,
-        openfigi_detail,
-    )
-    if openfigi_fund_conflict:
-        current_openfigi_label = None
-        current_openfigi_source = "filer_common_conflict"
-    elif ticker_collision_demoted and isinstance(openfigi_detail, dict):
-        current_openfigi_label = normalize_security_label(
-            openfigi_detail.get("name"),
-            identifier=identifier,
-        )
-        current_openfigi_source = "openfigi_collision_name"
-    else:
-        current_openfigi_label = _openfigi_security_label(
-            openfigi_detail,
-            identifier,
-        )
-        current_openfigi_source = "openfigi"
-    current_openfigi_note_label = normalize_note_security_label(
-        current_openfigi_label
-    )
-    if current_openfigi_note_label:
-        return current_openfigi_note_label, current_openfigi_source
-
-    prior_openfigi_label = None
-    if (
-        not ticker_collision_demoted
-        and not openfigi_fund_conflict
-        and isinstance(prior_entry, dict)
-        and str(prior_entry.get("label_source") or "").startswith("openfigi")
-    ):
-        prior_openfigi_label = normalize_security_label(
-            prior_entry.get("security_label"),
-            identifier=identifier,
-        )
-        prior_openfigi_note_label = normalize_note_security_label(
-            prior_openfigi_label
-        )
-        if prior_openfigi_note_label:
-            return prior_openfigi_note_label, "openfigi_prior_registry"
-
-    if isinstance(prior_entry, dict) and (
-        "note_label_vetted" in set(prior_entry.get("sources") or [])
-    ):
-        prior_note_label = normalize_security_label(
-            normalize_note_security_label(prior_entry.get("ticker")),
-            identifier=identifier,
-        )
-        if prior_note_label:
-            return prior_note_label, "openfigi_prior_registry"
-
-    migrated_legacy_label = normalize_security_label(
-        None if openfigi_fund_conflict else legacy_openfigi_label,
-        identifier=identifier,
-    )
-    if migrated_legacy_label:
-        return migrated_legacy_label, "openfigi_legacy_ticker"
-
-    if current_openfigi_label:
-        return current_openfigi_label, current_openfigi_source
-
-    if prior_openfigi_label:
-        return prior_openfigi_label, "openfigi_prior_registry"
-
-    ticker_label = normalize_security_label(
-        entry.get("ticker"),
-        identifier=identifier,
-    )
-    if ticker_label:
-        return ticker_label, "canonical_ticker"
-
-    dominant_issuer = (
-        normalize_security_label(
-            entry.get("name"),
-            identifier=identifier,
-        )
-        or entry.get("dominant_issuer")
-    )
-    dominant_class = entry.get("dominant_class")
-    fallback = compose_security_label(
-        dominant_issuer,
-        dominant_class,
-        entry.get("type"),
-        identifier=identifier,
-    )
-    issuer_label = normalize_security_label(
-        dominant_issuer,
-        identifier=identifier,
-    )
-    type_fallback = (
-        f"{normalize_instrument_type(entry.get('type'))} SECURITY"
-    )
-    if is_synthetic_identifier(identifier) and fallback == type_fallback:
-        instrument_type = normalize_instrument_type(entry.get("type"))
-        return (
-            f"UNIDENTIFIED {instrument_type} SECURITY",
-            "synthetic_identifier",
-        )
-    entry_sources = set(entry.get("sources") or [])
-    if issuer_label and fallback.startswith(f"{issuer_label} — "):
-        if "manual_name_override" in entry_sources:
-            fallback_source = "manual_name_class"
-        elif "sec_title" in entry_sources:
-            fallback_source = "sec_title_class"
-        else:
-            fallback_source = "filer_issuer_class"
-    elif issuer_label and fallback == issuer_label:
-        if "manual_name_override" in entry_sources:
-            fallback_source = "manual_name"
-        elif "sec_title" in entry_sources:
-            fallback_source = "sec_title"
-        else:
-            fallback_source = "filer_issuer"
-    elif fallback != type_fallback:
-        fallback_source = "filer_class"
-    else:
-        fallback_source = "instrument_type"
-    return fallback, fallback_source
 
 
 def write_security_labels(registry: dict[str, dict]) -> None:
@@ -9238,682 +8914,11 @@ def write_security_labels(registry: dict[str, dict]) -> None:
         sort_keys=True,
     )
 
-
-class CusipRegistry(dict[str, dict]):
-    """Registry result carrying the CUSIP set observed during its build."""
-
-    def __init__(
-        self,
-        registry: dict[str, dict] | None = None,
-        *,
-        observed_cusips: set[str] | frozenset[str] = frozenset(),
-    ) -> None:
-        super().__init__(registry or {})
-        self.observed_cusips = frozenset(observed_cusips)
-
-
-def build_cusip_registry(
-    *,
-    full_refresh: bool = False,
-    company_ticker_data: dict | list | None = None,
-    refresh_official_fund_names: bool | None = None,
-) -> CusipRegistry:
-    """Build the canonical per-CUSIP registry from current fund-file evidence.
-
-    Sources, by priority:
-      ticker   manual overrides -> SEC-validated normalization of an existing
-               cusip_map ticker -> existing vetted cusip_map ticker
-      name     SEC company_tickers title when ticker is known and listed
-               -> dominant filer issuer name (fallback)
-      type     put_call majority if set, else _classify_holding against
-               the dominant (class, issuer) pair
-      label    current OpenFIGI description -> prior OpenFIGI-backed registry
-               label -> canonical ticker -> dominant filer issuer/class
-      kind     current OpenFIGI type -> prior OpenFIGI-backed display kind;
-               exact/manual BOND evidence also canonicalizes type to NOTE
-      product  display-only ETF/ETN/mutual/closed-end fund name; preserves a
-               full SEC/filer name, uses CUSIP-specific OpenFIGI metadata,
-               resolves incomplete ETF/mutual-fund names through official SEC
-               series/class data, then falls back to informative filer class
-               text
-    """
-    log.info("Building CUSIP registry...")
-    if not FUNDS_DIR.exists():
-        log.info("  no funds directory; skipping registry build")
-        return CusipRegistry()
-
-    if refresh_official_fund_names is None:
-        # Preserve the side-effect-free injected-data path used by callers
-        # that provide fixtures, while normal production builds refresh SEC
-        # series/class metadata.
-        refresh_official_fund_names = company_ticker_data is None
-    prior_registry = load_cusip_registry()
-    openfigi_details = load_openfigi_details()
-    evidence = _aggregate_cusip_evidence()
-    log.info(f"  collected evidence for {len(evidence)} CUSIPs from fund files")
-
-    cusip_map = load_cusip_map()
-    if company_ticker_data is None:
-        company_ticker_data = _load_company_tickers_data()
-    sec_titles, name_to_ticker = _company_ticker_indexes(company_ticker_data)
-    log.info(
-        f"  ticker source: {len(cusip_map)} cached mappings; "
-        f"SEC title index has {len(sec_titles)} tickers"
-    )
-    # full_refresh is accepted for API parity with rebuild_tickers_in_place;
-    # label fallback deliberately retains prior OpenFIGI-backed descriptions
-    # when a fresh lookup has no safe descriptive result.
-    _ = full_refresh
-
-    # The pre-type fund-identity pass must be at least as conservative as the
-    # final ticker resolver. Count every current raw-map claim so a duplicate
-    # symbol cannot be used to turn NOTE/PREF evidence into Equity.
-    all_legacy_ticker_claims: Counter[str] = Counter(
-        raw_ticker
-        for cusip in evidence
-        if (
-            raw_ticker := str(cusip_map.get(cusip) or "").strip().upper()
-        )
-    )
-
-    dominant_issuers: dict[str, str] = {}
-    dominant_classes: dict[str, str] = {}
-    filer_kinds: dict[str, str | None] = {}
-    instrument_types: dict[str, str] = {}
-    legacy_openfigi_labels: dict[str, str] = {}
-    for cusip, rec in evidence.items():
-        dominant_issuer = ""
-        if rec["issuer_value"]:
-            dominant_issuer = max(
-                rec["issuer_value"].items(), key=lambda kv: kv[1]
-            )[0]
-        dominant_class = ""
-        if rec["class_value"]:
-            dominant_class = max(
-                rec["class_value"].items(), key=lambda kv: kv[1]
-            )[0]
-        dominant_issuers[cusip] = dominant_issuer
-        dominant_classes[cusip] = dominant_class
-        base_filer_probe = {
-            "name": dominant_issuer,
-            "dominant_issuer": dominant_issuer,
-            "dominant_class": dominant_class,
-        }
-        prior_entry = prior_registry.get(cusip)
-        prior_filer_probe = dict(base_filer_probe)
-        if isinstance(prior_entry, dict):
-            prior_sources = set(prior_entry.get("sources") or [])
-            if (
-                prior_entry.get("ticker")
-                and "ticker_collision_demoted" not in prior_sources
-                and bool(prior_sources & _FUND_IDENTITY_TICKER_SOURCES)
-            ):
-                # Reapply a prior vetted symbol only as evidence alongside
-                # current issuer/class metadata. This lets guarded mixed-series
-                # trusts prove ETF identity before raw NOTE/PREF parsing chooses
-                # the canonical instrument type.
-                prior_filer_probe["ticker"] = prior_entry["ticker"]
-                prior_filer_probe["sources"] = sorted(prior_sources)
-        prior_filer_kind = _filer_security_kind(prior_filer_probe)
-        legacy_ticker = str(
-            cusip_map.get(cusip) or ""
-        ).strip().upper() or None
-        identity_ticker, identity_ticker_source = (
-            _fund_identity_ticker_candidate(
-                identifier=cusip,
-                dominant_class=dominant_class,
-                legacy_ticker=legacy_ticker,
-                legacy_ticker_claims=all_legacy_ticker_claims,
-                openfigi_detail=openfigi_details.get(cusip),
-                prior_entry=prior_entry,
-                filer_kind=prior_filer_kind,
-            )
-        )
-        filer_probe = dict(base_filer_probe)
-        if identity_ticker:
-            filer_probe["ticker"] = identity_ticker
-            filer_probe["sources"] = [identity_ticker_source]
-        filer_kind = _filer_security_kind(filer_probe)
-        filer_kinds[cusip] = filer_kind
-        filer_fund_identity = _entry_has_trusted_fund_symbol_evidence(
-            filer_probe
-        )
-        instrument_types[cusip] = _registry_type_from_evidence(
-            rec,
-            openfigi_details.get(cusip),
-            identifier=cusip,
-            prior_entry=prior_entry,
-            filer_kind=filer_kind,
-            filer_fund_identity=filer_fund_identity,
-        )
-
-    legacy_equity_claims: Counter[str] = Counter()
-    for cusip, ticker in cusip_map.items():
-        raw_cusip = str(cusip or "").strip().upper()
-        raw_ticker = str(ticker or "").strip().upper()
-        if instrument_types.get(raw_cusip) == "EQUITY" and raw_ticker:
-            legacy_equity_claims[raw_ticker] += 1
-
-    registry: dict[str, dict] = {}
-    counts = {
-        "with_ticker": 0,
-        "with_sec_name": 0,
-        "fallback_issuer_name": 0,
-        "null_ticker": 0,
-        "by_type": defaultdict(int),
-    }
-
-    for cusip, rec in evidence.items():
-        dominant_issuer = dominant_issuers.get(cusip, "")
-        dominant_class = dominant_classes.get(cusip, "")
-        instrument_type = instrument_types[cusip]
-        legacy_ticker = str(cusip_map.get(cusip) or "").strip().upper() or None
-        if instrument_type == "NOTE":
-            legacy_note_label = normalize_note_security_label(legacy_ticker)
-            if legacy_note_label:
-                legacy_openfigi_labels[cusip] = legacy_note_label
-
-        ticker = None
-        ticker_source = None
-        source_ticker = None
-        if cusip in MANUAL_CUSIP_TICKER_OVERRIDES:
-            ticker = MANUAL_CUSIP_TICKER_OVERRIDES[cusip]
-            ticker_source = "manual_override"
-        elif (
-            instrument_type == "EQUITY"
-            and not is_synthetic_identifier(cusip)
-            and (
-                normalized_alias := _validated_sec_ticker_alias(
-                    legacy_ticker,
-                    dominant_issuer,
-                    sec_titles,
-                )
-            )
-        ):
-            ticker = normalized_alias
-            ticker_source = "sec_validated_ticker_alias"
-            source_ticker = legacy_ticker
-        elif (
-            openfigi_ticker := _openfigi_canonical_ticker(
-                openfigi_details.get(cusip),
-                identifier=cusip,
-                instrument_type=instrument_type,
-                dominant_class=dominant_class,
-            )
-        ):
-            ticker = openfigi_ticker
-            ticker_source = "openfigi_plain_ticker"
-        elif (
-            prior_fund_ticker := _prior_registry_fund_ticker(
-                prior_registry.get(cusip),
-                identifier=cusip,
-                instrument_type=instrument_type,
-                filer_kind=filer_kinds.get(cusip),
-            )
-        ):
-            ticker = prior_fund_ticker
-            ticker_source = "openfigi_prior_registry_ticker"
-        elif _allow_legacy_registry_ticker(
-            cusip=cusip,
-            ticker=legacy_ticker,
-            instrument_type=instrument_type,
-            legacy_equity_claims=legacy_equity_claims,
-            dominant_class=dominant_class,
-            openfigi_detail=openfigi_details.get(cusip),
-        ):
-            ticker = legacy_ticker
-            ticker_source = "cusip_map_vetted"
-
-        if ticker:
-            counts["with_ticker"] += 1
-        else:
-            counts["null_ticker"] += 1
-
-        # Canonical name: prefer the SEC title for the resolved ticker;
-        # fall back to the dominant filer-typed issuer when we can't
-        # reach SEC (ADRs, foreign issuers, options, notes).
-        sources: list[str] = []
-        name = ""
-        if cusip in MANUAL_CUSIP_NAME_OVERRIDES:
-            name = MANUAL_CUSIP_NAME_OVERRIDES[cusip]
-            counts["fallback_issuer_name"] += 1
-            sources.append("manual_name_override")
-        elif ticker and ticker in sec_titles:
-            name = sec_titles[ticker]
-            counts["with_sec_name"] += 1
-            sources.append("sec_title")
-        elif (
-            dominant_issuer_label := normalize_security_label(
-                dominant_issuer,
-                identifier=cusip,
-            )
-        ):
-            name = dominant_issuer_label
-            counts["fallback_issuer_name"] += 1
-            sources.append("filer_dominant")
-
-        if ticker_source:
-            sources.append(ticker_source)
-
-        counts["by_type"][instrument_type] += 1
-
-        registry_entry = {
-            "ticker": ticker,
-            "name": name,
-            "type": instrument_type,
-            "dominant_issuer": dominant_issuer,
-            "dominant_class": dominant_class,
-            "holder_count": len(rec["holder_ciks"]),
-            "total_value": rec["total_value"],
-            "first_seen": rec["first_seen"],
-            "last_seen": rec["last_seen"],
-            "sources": sources,
-        }
-        if source_ticker:
-            registry_entry["source_ticker"] = source_ticker
-        registry[cusip] = registry_entry
-
-    deduplicated_tickers = _deduplicate_registry_equity_tickers(registry)
-    derived_tickers, linked_underlyings = _apply_option_underlying_derivations(
-        registry,
-        name_to_ticker=name_to_ticker,
-        sec_titles=sec_titles,
-    )
-    consensus_tickers = _backfill_equity_tickers_from_option_consensus(
-        registry,
-        sec_titles=sec_titles,
-        openfigi_details=openfigi_details,
-        prior_registry=prior_registry,
-    )
-    counts["with_ticker"] = sum(
-        bool(entry.get("ticker")) for entry in registry.values()
-    )
-    counts["null_ticker"] = len(registry) - counts["with_ticker"]
-    for cusip, entry in registry.items():
-        security_label, label_source = _registry_security_label(
-            identifier=cusip,
-            entry=entry,
-            openfigi_detail=openfigi_details.get(cusip),
-            prior_entry=prior_registry.get(cusip),
-            legacy_openfigi_label=legacy_openfigi_labels.get(cusip),
-        )
-        entry["security_label"] = security_label
-        entry["label_source"] = label_source
-        security_kind, security_kind_source = _registry_security_kind(
-            identifier=cusip,
-            openfigi_detail=openfigi_details.get(cusip),
-            prior_entry=prior_registry.get(cusip),
-            entry=entry,
-        )
-        if security_kind:
-            entry["security_kind"] = security_kind
-            entry["security_kind_source"] = security_kind_source
-
-    sec_fund_names = _sec_fund_name_map(load_sec_fund_name_cache())
-    for identifier, prior_entry in prior_registry.items():
-        prior_source = str(
-            prior_entry.get("product_name_source") or ""
-        ).strip()
-        prior_name = normalize_security_label(
-            prior_entry.get("product_name"),
-            identifier=identifier,
-        )
-        prior_symbol = _registry_fund_symbol(
-            identifier=identifier,
-            entry=prior_entry,
-        )
-        if (
-            prior_source.startswith("sec_fund_")
-            and not prior_source.endswith("_ticker")
-            and prior_name
-            and prior_symbol
-        ):
-            sec_fund_names.setdefault(prior_symbol, prior_name)
-
-    prior_sec_fund_metadata: dict[str, tuple[str, str, str]] = {}
-    for identifier, entry in registry.items():
-        prior_entry = prior_registry.get(identifier)
-        if (
-            not isinstance(prior_entry, dict)
-            or normalize_security_kind(entry.get("security_kind"))
-            not in {"ETF", "MUTUAL FUND"}
-        ):
-            continue
-        prior_source = str(
-            prior_entry.get("product_name_source") or ""
-        ).strip()
-        prior_name = normalize_security_label(
-            prior_entry.get("product_name"),
-            identifier=identifier,
-        )
-        current_symbol = _registry_fund_symbol(
-            identifier=identifier,
-            entry=entry,
-        )
-        prior_symbol = _registry_fund_symbol(
-            identifier=identifier,
-            entry=prior_entry,
-        )
-        if (
-            prior_source.startswith("sec_fund_")
-            and prior_name
-            and current_symbol
-            and current_symbol == prior_symbol
-        ):
-            prior_sec_fund_metadata[identifier] = (
-                current_symbol,
-                prior_name,
-                prior_source,
-            )
-
-    forced_official_symbols = {
-        symbol
-        for symbol, _name, _source in prior_sec_fund_metadata.values()
-    }
-    official_fund_name_symbols: set[str] = set()
-    product_name_count = _apply_registry_fund_product_names(
-        registry,
-        openfigi_details=openfigi_details,
-        prior_registry=prior_registry,
-        sec_fund_names=sec_fund_names,
-        ambiguous_symbols=official_fund_name_symbols,
-        force_official_symbols=(
-            forced_official_symbols
-            if refresh_official_fund_names
-            else None
-        ),
-    )
-    if not refresh_official_fund_names:
-        # The snapshot registry is the durability floor when a daily runner
-        # has a cold or partial private cache. Restore only exact CUSIP + symbol
-        # matches; full refreshes deliberately skip this guard so SEC-confirmed
-        # renames, liquidations, and symbol reuse can replace stale metadata.
-        for identifier, (
-            _symbol,
-            prior_name,
-            prior_source,
-        ) in prior_sec_fund_metadata.items():
-            registry[identifier]["product_name"] = prior_name
-            registry[identifier]["product_name_source"] = prior_source
-        product_name_count = sum(
-            bool(entry.get("product_name")) for entry in registry.values()
-        )
-    if refresh_official_fund_names:
-        if official_fund_name_symbols:
-            # The current SEC symbol -> CIK/series/class join is authoritative
-            # for incomplete, ambiguous, and previously SEC-backed fund names.
-            # Drop prior values first so renamed, liquidated, or reused symbols
-            # cannot retain stale product names.
-            refreshed_sec_fund_names = {
-                symbol: name
-                for symbol, name in sec_fund_names.items()
-                if symbol not in official_fund_name_symbols
-            }
-            refreshed_sec_fund_names.update(
-                refresh_sec_fund_names(official_fund_name_symbols)
-            )
-            if refreshed_sec_fund_names != sec_fund_names:
-                product_name_count = _apply_registry_fund_product_names(
-                    registry,
-                    openfigi_details=openfigi_details,
-                    prior_registry=prior_registry,
-                    sec_fund_names=refreshed_sec_fund_names,
-                    force_official_symbols=forced_official_symbols,
-                )
-    save_cusip_registry(registry)
-
-    by_type = ", ".join(
-        f"{n} {t}" for t, n in sorted(counts["by_type"].items(), key=lambda kv: -kv[1])
-    )
-    log.info(
-        f"  wrote registry: {len(registry)} entries "
-        f"({counts['with_ticker']} with ticker, "
-        f"{counts['with_sec_name']} SEC-named, "
-            f"{counts['fallback_issuer_name']} filer-named, "
-            f"{counts['null_ticker']} null ticker)"
-    )
-    if derived_tickers or linked_underlyings:
-        log.info(
-            f"  option derivations: {derived_tickers} tickers backfilled, "
-            f"{linked_underlyings} underlying links added"
-        )
-    if consensus_tickers:
-        log.info(
-            "  option-family consensus: "
-            f"{consensus_tickers} equity tickers backfilled"
-        )
-    if deduplicated_tickers:
-        log.info(
-            f"  demoted {deduplicated_tickers} duplicate canonical equity "
-            "ticker claim(s)"
-        )
-    log.info(
-        f"  published {product_name_count} descriptive fund product name(s)"
-    )
-    log.info(f"  types: {by_type}")
-    return CusipRegistry(registry, observed_cusips=set(evidence))
-
-
-def validate_cusip_registry(
-    *,
-    current_cusips: set[str] | frozenset[str] | None = None,
-) -> list[str]:
-    """Return human-readable warnings about the snapshot registry copies."""
-    issues: list[str] = []
-    registry = load_cusip_registry()
-    if not registry:
-        issues.append("registry is empty")
-        return issues
-
-    if not LEGACY_CUSIP_REGISTRY_PATH.exists():
-        issues.append(
-            f"snapshot data copy missing at {LEGACY_CUSIP_REGISTRY_PATH.name}"
-        )
-    else:
-        try:
-            with open(LEGACY_CUSIP_REGISTRY_PATH) as f:
-                snapshot_registry = json.load(f)
-        except json.JSONDecodeError:
-            issues.append(
-                f"snapshot data copy {LEGACY_CUSIP_REGISTRY_PATH.name} is invalid JSON"
-            )
-        else:
-            if snapshot_registry != registry:
-                issues.append(
-                    f"snapshot data copy {LEGACY_CUSIP_REGISTRY_PATH.name} differs from cache registry"
-                )
-
-    missing_name = sum(1 for e in registry.values() if not e.get("name"))
-    missing_type = sum(1 for e in registry.values() if not e.get("type"))
-    if missing_name:
-        issues.append(f"{missing_name}/{len(registry)} entries have no name")
-    if missing_type:
-        issues.append(f"{missing_type}/{len(registry)} entries have no type")
-
-    raw_legacy_sources = sorted(
-        cusip for cusip, entry in registry.items()
-        if "cusip_map" in set(entry.get("sources") or [])
-    )
-    if raw_legacy_sources:
-        issues.append(
-            f"{len(raw_legacy_sources)} entries still record raw cusip_map as a source; "
-            f"samples: {raw_legacy_sources[:5]}"
-        )
-
-    vetted_claims: Counter[str] = Counter(
-        str(entry.get("ticker") or "").strip().upper()
-        for entry in registry.values()
-        if (
-            entry.get("type") == "EQUITY"
-            and "cusip_map_vetted" in set(entry.get("sources") or [])
-            and entry.get("ticker")
-        )
-    )
-    bad_vetted = []
-    for cusip, entry in registry.items():
-        sources = set(entry.get("sources") or [])
-        if "cusip_map_vetted" not in sources:
-            continue
-        if not _allow_legacy_registry_ticker(
-            cusip=cusip,
-            ticker=entry.get("ticker"),
-            instrument_type=normalize_instrument_type(entry.get("type")),
-            legacy_equity_claims=vetted_claims,
-            dominant_class=entry.get("dominant_class"),
-        ):
-            bad_vetted.append(cusip)
-    if bad_vetted:
-        issues.append(
-            f"{len(bad_vetted)} vetted legacy ticker entries failed plausibility checks; "
-            f"samples: {bad_vetted[:5]}"
-        )
-
-    bad_note_labels = sorted(
-        cusip
-        for cusip, entry in registry.items()
-        if (
-            (
-                normalize_instrument_type(entry.get("type")) == "NOTE"
-                and entry.get("ticker")
-                and (
-                    normalize_note_security_label(entry.get("ticker"))
-                    != entry.get("ticker")
-                    or "note_label_vetted"
-                    not in set(entry.get("sources") or [])
-                )
-            )
-            or (
-                "note_label_vetted" in set(entry.get("sources") or [])
-                and (
-                    normalize_instrument_type(entry.get("type")) != "NOTE"
-                    or normalize_note_security_label(entry.get("ticker"))
-                    != entry.get("ticker")
-                )
-            )
-            or (
-                normalize_instrument_type(entry.get("type")) != "NOTE"
-                and normalize_note_security_label(entry.get("ticker"))
-            )
-        )
-    )
-    if bad_note_labels:
-        issues.append(
-            f"{len(bad_note_labels)} vetted note labels failed format/type checks; "
-            f"samples: {bad_note_labels[:5]}"
-        )
-
-    manual_kind_mismatches = sorted(
-        f"{cusip}:{expected_kind}"
-        for cusip, raw_expected_kind in MANUAL_SECURITY_KIND_OVERRIDES.items()
-        if cusip in registry
-        and (
-            (expected_kind := normalize_security_kind(raw_expected_kind))
-            != normalize_security_kind(
-                registry[cusip].get("security_kind")
-            )
-            or str(
-                registry[cusip].get("security_kind_source") or ""
-            ).strip()
-            != "manual_verified"
-        )
-    )
-    if manual_kind_mismatches:
-        issues.append(
-            f"{len(manual_kind_mismatches)} entries differ from manual "
-            f"security-kind proof; samples: {manual_kind_mismatches[:5]}"
-        )
-
-    validated_aliases: set[str] = set()
-    malformed_aliases: list[str] = []
-    for cusip, entry in registry.items():
-        sources = set(entry.get("sources") or [])
-        if "sec_validated_ticker_alias" not in sources:
-            continue
-        ticker = str(entry.get("ticker") or "").strip().upper()
-        reconstructed = _validated_sec_ticker_alias(
-            entry.get("source_ticker"),
-            entry.get("dominant_issuer"),
-            {ticker: str(entry.get("name") or "")},
-        )
-        if ticker and reconstructed == ticker:
-            validated_aliases.add(cusip)
-        else:
-            malformed_aliases.append(cusip)
-    if malformed_aliases:
-        issues.append(
-            f"{len(malformed_aliases)} SEC-validated ticker aliases lost their proof; "
-            f"samples: {malformed_aliases[:5]}"
-        )
-
-    # A correct registry normally has one EQUITY CUSIP per ticker.  A narrow
-    # exception covers SEC-validated aliases for the same issuer: historical
-    # CUSIPs can legitimately converge on one current ticker.  We still flag
-    # the group if any claim names a different issuer, so an unrelated
-    # collision cannot hide behind one approved alias.
-    by_ticker: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-    for cusip, entry in registry.items():
-        ticker = entry.get("ticker")
-        if ticker and entry.get("type") == "EQUITY":
-            by_ticker[ticker].append((cusip, entry))
-
-    collisions: dict[str, list[str]] = {}
-    for ticker, claims in by_ticker.items():
-        if len(claims) <= 1:
-            continue
-        alias_claims = [
-            entry for cusip, entry in claims if cusip in validated_aliases
-        ]
-        alias_norms = {
-            normalize_name(entry.get("name") or "") for entry in alias_claims
-        }
-        issuer_norms = {
-            normalize_name(entry.get("dominant_issuer") or entry.get("name") or "")
-            for _cusip, entry in claims
-        }
-        same_sec_confirmed_issuer = (
-            alias_claims
-            and len(alias_norms) == 1
-            and "" not in alias_norms
-            and issuer_norms == alias_norms
-        )
-        if not same_sec_confirmed_issuer:
-            collisions[ticker] = [cusip for cusip, _entry in claims]
-    if collisions:
-        sample = sorted(collisions.items())[:5]
-        issues.append(
-            f"{len(collisions)} equity tickers still claimed by multiple CUSIPs; "
-            f"samples: {sample}"
-        )
-
-    if current_cusips is None:
-        current_cusips = set(_aggregate_cusip_evidence())
-    missing_cusips = sorted(current_cusips - set(registry))
-    if missing_cusips:
-        issues.append(
-            f"{len(missing_cusips)} fund-file CUSIPs missing from registry; "
-            f"samples: {missing_cusips[:5]}"
-        )
-
-    apple = registry.get("037833100")
-    if apple and apple.get("ticker") != "AAPL":
-        issues.append("037833100 should resolve to ticker AAPL")
-
-    typo = registry.get("378331003")
-    if typo and typo.get("ticker"):
-        issues.append("378331003 should stay null-ticker (not inherit AAPL)")
-
-    for option_cusip in ("99QA1RO84", "7769499XX", "7879869CC"):
-        entry = registry.get(option_cusip)
-        if entry and entry.get("ticker") != "AAPL":
-            issues.append(
-                f"{option_cusip} should derive ticker AAPL from the underlying option text"
-            )
-
-    return issues
-
-
 @_serialize_pipeline_maintenance
-def canonicalize_fund_files() -> int:
+def canonicalize_fund_files(
+    *,
+    preserve_position_identity: bool = False,
+) -> int:
     """Normalize row type and refresh display metadata in every fund file.
 
     Phase 3: filer-typed strings are no longer trusted for display. After
@@ -9923,15 +8928,16 @@ def canonicalize_fund_files() -> int:
       ticker         registry.ticker (canonical, possibly null for
                      uncovered CUSIPs — don't fall back to filer string)
       issuer         registry.name (SEC title or filer-dominant) when
-                     registry has a name; otherwise retains only a safe
-                     non-identifier filer label and clears raw-CUSIP text
-      holding_type   hash-v2 parser identity when present; otherwise
+    registry has a name; otherwise uses only immutable as-filed issuer
+                     evidence or the identifier itself
+      holding_type   hash-v3 parser identity when present; otherwise
                      classify_saved_holding(h) from put_call + class, NOT
                      registry.type (a CUSIP can host both equity and option
                      holdings on different rows)
 
     Fields left alone: cusip, class (raw filer text for audit), put_call,
-    value, shares, shares_imputed.
+    value, shares, shares_imputed, reported_issuer, reported_class,
+    reported_cusip, reported_figi, accession, report_date.
 
     Stale legacy field `option_type` is removed when present. Registry data is
     never allowed to rewrite public position identity. Must run AFTER
@@ -9943,7 +8949,7 @@ def canonicalize_fund_files() -> int:
 
     registry = load_cusip_registry()
     if not registry:
-        log.info("  no registry; normalizing holding types without display refresh")
+        log.warning("  no registry; clearing every unproven display ticker")
 
     fund_paths = sorted(FUNDS_DIR.glob("*.json"))
     total = len(fund_paths)
@@ -9988,7 +8994,18 @@ def canonicalize_fund_files() -> int:
                     not in {"CALL", "PUT"}
                 ):
                     ambiguous_legacy_options += 1
-                new_type = _canonical_holding_type_for_quarter(q, h)
+                # An explicit security-master refresh is a display-metadata
+                # operation.  Preserve the exact identity visible to the
+                # pre-cutover projection; separate SEC filing replay owns
+                # evidence-backed type corrections.  Canonicalizing a legacy
+                # ``option_type`` spelling to ``holding_type`` is harmless
+                # because holding_instrument_type already projects it this
+                # way (and explicit put_call still has precedence).
+                new_type = (
+                    holding_instrument_type(h)
+                    if preserve_position_identity
+                    else _canonical_holding_type_for_quarter(q, h)
+                )
                 if h.get("holding_type") != new_type:
                     h["holding_type"] = new_type
                     type_changes += 1
@@ -10000,12 +9017,24 @@ def canonicalize_fund_files() -> int:
                 reg_entry = registry.get(cusip)
                 if reg_entry is None:
                     missing_registry += 1
+                    if h.get("ticker") is not None:
+                        h["ticker"] = None
+                        ticker_changes += 1
+                        changed = True
+                    new_issuer = (
+                        normalize_security_label(
+                            h.get("reported_issuer"),
+                            identifier=cusip,
+                        )
+                        or cusip
+                    )
+                    if h.get("issuer") != new_issuer:
+                        h["issuer"] = new_issuer
+                        issuer_changes += 1
+                        changed = True
                     continue
 
-                new_ticker = display_ticker_for_holding_type(
-                    reg_entry.get("ticker"),
-                    new_type,
-                )
+                new_ticker = _registry_position_ticker(reg_entry, new_type)
                 if h.get("ticker") != new_ticker:
                     h["ticker"] = new_ticker
                     ticker_changes += 1
@@ -10038,7 +9067,7 @@ def canonicalize_fund_files() -> int:
     if missing_registry:
         log.warning(
             f"  {missing_registry} holdings had CUSIPs missing from registry "
-            "(type normalized; display refresh skipped)"
+            "(display ticker cleared; as-filed label retained)"
         )
     if ambiguous_legacy_options:
         log.warning(
@@ -10050,14 +9079,15 @@ def canonicalize_fund_files() -> int:
 
 @_serialize_pipeline_maintenance
 def upgrade_composition_hashes_in_place() -> int:
-    """Bind current parser-backed security identity into retained hashes.
+    """Bind exact parser-backed filing identity into retained hashes.
 
-    Older composition-v2 quarters were created before holding type became part
-    of the immutable composition hash. They can be upgraded without another
-    SEC fetch only when the retained legacy hash still verifies and every
-    applied source carries the current parser identity marker. Anything else
-    is left untouched so the release validator can fail closed or the normal
-    replay queue can repair it.
+    Hash v2 added holding type. Hash v3 also binds the immutable as-filed
+    issuer, class, CUSIP, optional FIGI, accession, and report date. Retained
+    v1/v2 quarters can be upgraded only when their old hash still verifies,
+    every applied source carries the parser identity marker, and every holding
+    already has the complete exact-row provenance. Anything else is left
+    untouched so validation fails closed until the SEC identity backfill or a
+    normal replay repairs it.
     """
     if not FUNDS_DIR.exists():
         return 0
@@ -10083,13 +9113,22 @@ def upgrade_composition_hashes_in_place() -> int:
                 != AMENDMENT_REDUCER_VERSION
                 or quarter.get("security_identity_version")
                 != SECURITY_IDENTITY_VERSION
-                or quarter.get("composition_hash_version", 1) != 1
+                or quarter.get("composition_hash_version", 1) not in {1, 2}
             ):
                 continue
 
             holdings = quarter.get("holdings")
             applied_accessions = quarter.get("applied_accessions")
             source_filings = quarter.get("source_filings")
+            # Empty parser-proven filings have no information-table rows to
+            # reference. Upgrade their verified legacy hash with an explicit
+            # empty evidence list; nonempty quarters still require exact refs.
+            empty_identity_sources = (
+                holdings == []
+                and quarter.get("num_holdings") == 0
+                and quarter.get("total_value") == 0
+                and "reported_identity_sources" not in quarter
+            )
             if (
                 not isinstance(holdings, list)
                 or not all(isinstance(holding, dict) for holding in holdings)
@@ -10106,6 +9145,15 @@ def upgrade_composition_hashes_in_place() -> int:
                 )
                 or not isinstance(quarter.get("report_date"), str)
                 or not isinstance(quarter.get("base_accession"), str)
+                or not (
+                    empty_identity_sources
+                    or _quarter_has_complete_reported_identity_sources(quarter)
+                )
+                or any(
+                    not _holding_has_hashable_reported_identity(holding)
+                    or holding.get("report_date") != quarter.get("report_date")
+                    for holding in holdings
+                )
             ):
                 continue
 
@@ -10158,13 +9206,16 @@ def upgrade_composition_hashes_in_place() -> int:
                 "source_filings": source_filings,
                 "security_identity_version": SECURITY_IDENTITY_VERSION,
             }
+            prior_hash_version = quarter.get("composition_hash_version", 1)
             legacy_hash = calculate_composition_hash(
                 **hash_args,
-                composition_hash_version=1,
+                composition_hash_version=prior_hash_version,
             )
             if quarter.get("composition_hash") != legacy_hash:
                 continue
 
+            if empty_identity_sources:
+                quarter["reported_identity_sources"] = []
             quarter["composition_hash_version"] = COMPOSITION_HASH_VERSION
             quarter["composition_hash"] = calculate_composition_hash(
                 **hash_args,
@@ -10190,6 +9241,8 @@ def rebuild_registry_backed_outputs(
     full_refresh: bool = False,
     company_ticker_data: dict | list | None = None,
     refresh_official_fund_names: bool = True,
+    preserve_position_economics: bool = False,
+    apply_quantity_policy: bool = False,
 ) -> None:
     """Refresh all registry-driven derived artifacts from current fund files."""
     registry = build_cusip_registry(
@@ -10207,213 +9260,41 @@ def rebuild_registry_backed_outputs(
         # Compatibility for injected/mocked builders that predate the
         # observation-carrying registry result.
         registry_issues = validate_cusip_registry()
-    critical_registry_issues = [
-        issue for issue in registry_issues
-        if (
-            "SEC-validated ticker aliases lost their proof" in issue
-            or "equity tickers still claimed by multiple CUSIPs" in issue
-        )
-    ]
-    if critical_registry_issues:
+    if registry_issues:
         raise FundDataError(
-            "registry identity gate failed: "
-            + "; ".join(critical_registry_issues)
+            "SEC registry publication gate failed: "
+            + "; ".join(registry_issues)
         )
-    for issue in registry_issues:
-        log.warning(f"  registry: {issue}")
-    canonicalize_fund_files()
-    repair_zero_share_holdings_in_place()
+    if preserve_position_economics:
+        canonicalize_fund_files(preserve_position_identity=True)
+    else:
+        canonicalize_fund_files()
+    # Quantity estimates are routine maintenance with separate frozen price
+    # evidence. Keep a security-master-only transaction scoped to identities;
+    # the normal ingestion path applies the quantity policy afterwards.
+    if not preserve_position_economics or apply_quantity_policy:
+        repair_zero_share_holdings_in_place()
     upgrade_composition_hashes_in_place()
     regenerate_stock_files_and_index()
     write_ticker_health_report()
 
 
-def retry_unresolved_cusips() -> int:
-    """Re-resolve CUSIPs flagged in data/ticker_health.json.
+def refresh_security_master_incremental() -> int:
+    """Refresh new SEC source files and return the changed-record count."""
 
-    Cheaper than `--full-cusip-refresh`: daily runs prioritize recent
-    Equity/Preferred/Warrant rows plus suspicious and option-family records.
-    Stable debt and direct-option no-matches remain observable in the report
-    and are retried by the weekly full refresh. Results that pass the health
-    check update the private cache before rebuild_tickers_in_place propagates
-    them into fund files and the registry rebuild runs.
-
-    Returns the number of CUSIPs whose mapping actually changed."""
-    log.info("Retrying previously-flagged CUSIPs...")
-    if not TICKER_HEALTH_PATH.exists():
-        log.info("  no ticker_health.json yet; nothing to retry")
+    before = load_security_master(SEC_SECURITY_MASTER_PATH)
+    before_records = before.get("records", {})
+    result = refresh_sec_security_master_from_funds(full_rebuild=False)
+    if result is None:
         return 0
-    try:
-        with open(TICKER_HEALTH_PATH) as f:
-            report = json.load(f)
-    except json.JSONDecodeError:
-        log.warning("  ticker_health.json is invalid JSON; skipping retry")
-        return 0
-
-    buckets = report.get("buckets", {}) or {}
-    registry = load_cusip_registry()
-    priority: set[str] = set()
-    priority_types: dict[str, str] = {}
-    option_family_artifacts: set[str] = set()
-    unresolved_entries = list(buckets.get("unresolved", []) or [])
-    observed_dates = sorted({
-        str(entry.get("last_seen") or "")
-        for entry in unresolved_entries
-        if re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}",
-            str(entry.get("last_seen") or ""),
-        )
-    })
-    recent_dates = set(observed_dates[-2:])
-    daily_types = {"EQUITY", "PREF", "WARRANT"}
-    flagged_count = 0
-    for name in (
-        "unresolved",
-        "suspicious_symbol",
-        "option_family_artifact",
-    ):
-        for entry in buckets.get(name, []) or []:
-            flagged_count += 1
-            cusip = str(entry.get("cusip") or "").strip().upper()
-            if not cusip:
-                continue
-            raw_type = (
-                entry.get("instrument_type")
-                or (registry.get(cusip) or {}).get("type")
-            )
-            instrument_type = (
-                normalize_instrument_type(raw_type)
-                if raw_type
-                else None
-            )
-            last_seen = str(entry.get("last_seen") or "")
-            legacy_report_entry = not last_seen or instrument_type is None
-            should_retry = (
-                name != "unresolved"
-                or legacy_report_entry
-                or (
-                    instrument_type in daily_types
-                    and (not recent_dates or last_seen in recent_dates)
-                )
-                or cusip in MANUAL_CUSIP_TICKER_OVERRIDES
-            )
-            if not should_retry:
-                continue
-            priority.add(cusip)
-            if name == "option_family_artifact":
-                option_family_artifacts.add(cusip)
-            if instrument_type:
-                priority_types[cusip] = instrument_type
-
-    if not priority:
-        log.info("  no daily-priority CUSIPs flagged; nothing to retry")
-        return 0
-
-    deferred = max(0, flagged_count - len(priority))
-    if deferred:
-        log.info(
-            "  deferred %s stable debt/option or stale specialized CUSIP(s) "
-            "to the weekly full refresh",
-            deferred,
-        )
-
-    # Manual overrides win over OpenFIGI — honor them before spending requests.
-    overrides = manual_cusip_ticker_overrides(priority)
-    to_resolve = sorted(priority - set(overrides))
-    log.info(
-        f"  retrying {len(to_resolve)} CUSIPs via OpenFIGI "
-        f"({len(overrides)} covered by manual overrides)"
+    after_records = result.master.get("records", {})
+    keys = set(before_records) | set(after_records)
+    changed = sum(
+        before_records.get(key) != after_records.get(key)
+        for key in keys
     )
-
-    figi_map = resolve_cusips_via_openfigi(to_resolve) if to_resolve else {}
-
-    cusip_map = load_cusip_map()
-    resolved_equity_family_tickers: dict[str, set[str]] = defaultdict(set)
-    for registry_cusip, registry_entry in registry.items():
-        registry_ticker = str(
-            registry_entry.get("ticker") or ""
-        ).strip().upper()
-        if (
-            len(registry_cusip) >= 6
-            and registry_ticker
-            and normalize_instrument_type(registry_entry.get("type"))
-            == "EQUITY"
-        ):
-            resolved_equity_family_tickers[registry_cusip[:6]].add(
-                registry_ticker
-            )
-    removed_family_conflicts = 0
-    changed_cusips: set[str] = set()
-    for cusip in option_family_artifacts - set(overrides):
-        cached_ticker = str(cusip_map.get(cusip) or "").strip().upper()
-        if (
-            cached_ticker
-            and cached_ticker
-            in resolved_equity_family_tickers.get(cusip[:6], set())
-        ):
-            del cusip_map[cusip]
-            removed_family_conflicts += 1
-            changed_cusips.add(cusip)
-    reassigned = 0
-    still_bad = 0
-    family_conflicts = 0
-    for cusip, new_ticker in {**figi_map, **overrides}.items():
-        instrument_type = priority_types.get(cusip)
-        if instrument_type == "NOTE":
-            normalized_note_label = normalize_note_security_label(new_ticker)
-            if normalized_note_label:
-                new_ticker = normalized_note_label
-        # Plain equity-like tickers and strict note labels are safe to retain.
-        # Other bond/preferred/warrant strings remain flagged for review.
-        if _classify_ticker_health(cusip, new_ticker, instrument_type):
-            still_bad += 1
-            continue
-        normalized_new_ticker = str(new_ticker or "").strip().upper()
-        if (
-            cusip in option_family_artifacts
-            and cusip not in overrides
-            and normalized_new_ticker
-            in resolved_equity_family_tickers.get(cusip[:6], set())
-        ):
-            # OpenFIGI can return the common-share ticker for an option-like
-            # identifier. Keep the resolver details as evidence, but never let
-            # a structurally quarantined sibling compete for the common
-            # equity's canonical ticker.
-            still_bad += 1
-            family_conflicts += 1
-            continue
-        if cusip_map.get(cusip) != new_ticker:
-            cusip_map[cusip] = new_ticker
-            reassigned += 1
-            changed_cusips.add(cusip)
-
-    if reassigned or removed_family_conflicts:
-        save_cusip_map(cusip_map)
-        if reassigned:
-            log.info(
-                f"  updated {reassigned} CUSIP mappings; rewriting fund files"
-            )
-        if removed_family_conflicts:
-            log.info(
-                "  removed %s cached option-family mapping(s) that reused "
-                "an existing sibling equity ticker",
-                removed_family_conflicts,
-            )
-    else:
-        log.info("  retry produced no new resolutions")
-    if still_bad:
-        log.info(
-            f"  {still_bad} CUSIPs still resolve to suspicious/unresolved symbols "
-            "after retry — will stay flagged in ticker_health.json"
-        )
-    if family_conflicts:
-        log.info(
-            "  withheld %s option-family resolution(s) that reused an "
-            "existing sibling equity ticker",
-            family_conflicts,
-        )
-    return len(changed_cusips)
-
+    log.info("  incremental SEC security refresh changed %s record(s)", changed)
+    return changed
 
 # ----------------------------------------------------------------------------
 # Main pipeline orchestration
@@ -11012,7 +9893,7 @@ def run_all(
     except KeyboardInterrupt:
         # Hosted-runner timeouts arrive before worker discovery too. Persist
         # any retry that completed before the signal so automatic continuation
-        # does not repeat SEC/OpenFIGI work.
+        # does not repeat completed SEC filing work.
         save_state(state)
         save_cusip_map(cusip_map)
         log.warning("interrupted during pending-target retries; checkpointed")
@@ -11136,7 +10017,7 @@ def run_all(
         stop_event.set()
         with progress_lock:
             failures.append("pipeline interrupted")
-        # A worker can remain inside an SEC/OpenFIGI retry longer than the
+        # A worker can remain inside an SEC filing retry longer than the
         # bounded join below. Persist every mutation completed before the
         # signal now; otherwise the alive-worker return path would discard the
         # newest quarantine/cooldown state and repeat those requests.
@@ -12177,20 +11058,25 @@ def main() -> int:
              "still leave the static site in a consistent state.",
     )
     parser.add_argument(
-        "--full-cusip-refresh",
+        "--refresh-security-master",
         action="store_true",
-        help="with --regenerate-only, prune the private CUSIP cache to current "
-             "holdings, re-resolve all current CUSIPs via OpenFIGI, rebuild the "
-             "snapshot CUSIP registry, and regenerate derived data",
+        help="with --regenerate-only, ingest newly published SEC evidence, "
+             "discover changed EDGAR exceptions, refresh the private security "
+             "master, and regenerate derived data",
     )
     parser.add_argument(
-        "--retry-unresolved",
+        "--rebuild-security-master",
         action="store_true",
-        help="with --regenerate-only, before the normal rebuild, re-resolve "
-             "recent Equity/Preferred/Warrant, suspicious-symbol, and "
-             "option-family CUSIPs from data/ticker_health.json. Cheaper than "
-             "--full-cusip-refresh and meant to run on every daily update "
-             "before the registry rebuild.",
+        help="with --regenerate-only, reconstruct immutable filing identity "
+             "from SEC 13F data, backfill all SEC FTD history, discover exact "
+             "EDGAR exceptions, and deterministically rebuild derived data",
+    )
+    parser.add_argument(
+        "--apply-quantity-policy",
+        action="store_true",
+        help="with --regenerate-only, also apply validated quantity estimates "
+             "during a clean security-master rebuild; incremental refreshes "
+             "already apply this policy",
     )
     parser.add_argument(
         "--quarters",
@@ -12215,49 +11101,99 @@ def main() -> int:
     FUNDS_DIR.mkdir(exist_ok=True)
     STOCKS_DIR.mkdir(exist_ok=True)
 
-    if args.full_cusip_refresh and not args.regenerate_only:
-        log.error("--full-cusip-refresh can only be used with --regenerate-only")
+    if args.refresh_security_master and not args.regenerate_only:
+        log.error("--refresh-security-master requires --regenerate-only")
         return 2
-    if args.retry_unresolved and not args.regenerate_only:
-        log.error("--retry-unresolved can only be used with --regenerate-only")
+    if args.apply_quantity_policy and not args.regenerate_only:
+        log.error("--apply-quantity-policy requires --regenerate-only")
         return 2
-    if args.retry_unresolved and args.full_cusip_refresh:
+    if args.rebuild_security_master and not args.regenerate_only:
+        log.error("--rebuild-security-master requires --regenerate-only")
+        return 2
+    if args.refresh_security_master and args.rebuild_security_master:
         log.error(
-            "--retry-unresolved is redundant with --full-cusip-refresh; "
-            "the full refresh already re-resolves everything"
+            "--refresh-security-master and --rebuild-security-master are "
+            "mutually exclusive"
         )
         return 2
     if args.defer_regeneration and args.regenerate_only:
         log.error("--defer-regeneration cannot be used with --regenerate-only")
         return 2
 
-    # --regenerate-only does not fetch 13F filing payloads or depend on the SEC
-    # user agent. Ordinary runs may still call OpenFIGI for suspect CUSIPs;
-    # official SEC fund-name revalidation is reserved for full refreshes.
+    # Plain --regenerate-only is offline. The two explicit security-master
+    # modes fetch only official SEC-hosted sources and therefore require the
+    # declared SEC user agent.
     if args.regenerate_only:
         log.info("=== Regenerate-only mode ===")
-        # Optional targeted retry pass — runs before the main rebuild so the
-        # updated CUSIP map is picked up when fund files are rewritten below.
-        if args.retry_unresolved:
-            retry_unresolved_cusips()
+        network_refresh = (
+            args.refresh_security_master or args.rebuild_security_master
+        )
+        if network_refresh and (
+            USER_AGENT == DEFAULT_USER_AGENT
+            or "@" not in USER_AGENT
+            or "example.com" in USER_AGENT
+        ):
+            log.error(
+                "SEC_USER_AGENT with a real contact email is required for "
+                "security-master refreshes"
+            )
+            return 2
         state = load_state()
         enforce_published_quarter_health(state)
         save_state(state)
-        company_ticker_data = _load_company_tickers_data()
-        # First pass: refresh missing/suspect CUSIP mappings and rewrite the
-        # stored fund files with the repaired tickers.
+        cutover_baseline = (
+            capture_cutover_projection(FUNDS_DIR, load_cusip_registry())
+            if args.rebuild_security_master
+            else None
+        )
+        company_ticker_data = {}
+        # First pass: refresh exact SEC security evidence when requested and
+        # rewrite stored fund files from the resulting master.
         rebuild_tickers_in_place(
-            full_refresh=args.full_cusip_refresh,
+            full_refresh=args.rebuild_security_master,
+            refresh_master=network_refresh,
             company_ticker_data=company_ticker_data,
         )
         rebuild_registry_backed_outputs(
-            full_refresh=args.full_cusip_refresh,
+            full_refresh=args.rebuild_security_master,
             company_ticker_data=company_ticker_data,
-            # Fund names are durable display metadata. Daily runs reuse the
-            # snapshot last-known-good names; only weekly/manual full
-            # refreshes may query the SEC for current series/class names.
-            refresh_official_fund_names=args.full_cusip_refresh,
+            # Selected fund series/class pages are refreshed by the explicit
+            # security-master mode and are already checksum-bound here.
+            refresh_official_fund_names=False,
+            preserve_position_economics=network_refresh,
+            apply_quantity_policy=args.refresh_security_master or args.apply_quantity_policy,
         )
+        if cutover_baseline is not None:
+            master = load_security_master(SEC_SECURITY_MASTER_PATH)
+            cutover_result = capture_cutover_projection(
+                FUNDS_DIR,
+                load_cusip_registry(),
+            )
+            migration_report = build_cutover_difference_report(
+                cutover_baseline,
+                cutover_result,
+                generated_at=master.get("generated_at"),
+            )
+            write_cutover_difference_report(
+                migration_report,
+                SEC_SECURITY_MASTER_MIGRATION_REPORT_PATH,
+            )
+            mapping_summary = migration_report["mapping_summary"]
+            log.info(
+                "SEC cutover shadow report: %s mapping difference(s); "
+                "position invariants %s",
+                mapping_summary["differences"],
+                (
+                    "passed"
+                    if migration_report["corpus_invariants_ok"]
+                    else "FAILED"
+                ),
+            )
+            if not migration_report["corpus_invariants_ok"]:
+                raise SecurityMasterRefreshError(
+                    "SEC cutover shadow comparison changed retained fund "
+                    "position identity or value"
+                )
         return 0
 
     # Fail fast on a missing / placeholder SEC_USER_AGENT. SEC 403s every
@@ -12267,9 +11203,9 @@ def main() -> int:
     if USER_AGENT == DEFAULT_USER_AGENT:
         ua_bad_reason = "SEC_USER_AGENT env var not set"
     elif "MYEMAIL" in USER_AGENT or "example.com" in USER_AGENT:
-        ua_bad_reason = f"SEC_USER_AGENT contains a placeholder: {USER_AGENT!r}"
+        ua_bad_reason = "SEC_USER_AGENT contains a placeholder"
     elif "@" not in USER_AGENT:
-        ua_bad_reason = f"SEC_USER_AGENT must contain a contact email, got {USER_AGENT!r}"
+        ua_bad_reason = "SEC_USER_AGENT must contain a contact email"
     if ua_bad_reason:
         log.error(
             f"{ua_bad_reason}. Set SEC_USER_AGENT to something like "

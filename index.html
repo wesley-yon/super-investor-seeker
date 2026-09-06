@@ -676,8 +676,8 @@ const fS = n => {
        : n >= 1e3 ? `${(n/1e3).toFixed(1)}K`
        : `${n}`;
 };
-const formatShares = (shares, imputed = false) =>
-  `${imputed ? "~" : ""}${fS(shares)}`;
+const formatShares = (shares, imputed = false, unknown = false) =>
+  unknown ? "—" : `${imputed ? "~" : ""}${fS(shares)}`;
 const fP = n => {
   if (n == null) return "—";
   if (n === 0) return "0.0%";
@@ -1095,6 +1095,9 @@ function groupHoldingsByKey(holdings) {
     existing.shares_imputed = Boolean(
       existing.shares_imputed || holding?.shares_imputed
     );
+    existing.quantity_unknown = Boolean(
+      existing.quantity_unknown || holding?.quantity_unknown
+    );
     for (const field of ["ticker", "issuer", "cusip", "holding_type", "option_type"]) {
       if (!existing[field] && holding?.[field]) existing[field] = holding[field];
     }
@@ -1318,6 +1321,7 @@ function shareTrendIsComparable(records, adjustments) {
   if (records.some(record =>
     !record ||
     record.shares_imputed === true ||
+    record.quantity_unknown === true ||
     typeof record.shares !== "number" ||
     !Number.isFinite(record.shares)
   )) {
@@ -1346,7 +1350,8 @@ function shareTrendIsComparable(records, adjustments) {
 function positionChange(current, previous, options = {}) {
   // An inferred share count cannot support a share-based filing-to-filing
   // change. Suppress NEW and EXIT too when the only side is estimated.
-  if (current?.shares_imputed || previous?.shares_imputed) return null;
+  if (current?.shares_imputed || previous?.shares_imputed ||
+      current?.quantity_unknown || previous?.quantity_unknown) return null;
   if (!current) return previous ? { t: "EXIT", p: 100 } : null;
   if (!previous) return { t: "NEW" };
   const currentShares = Number(current.shares) || 0;
@@ -1479,7 +1484,7 @@ function partitionHolderStates(classified) {
 
 function exactReportedShareTotal(rows) {
   return (Array.isArray(rows) ? rows : [])
-    .filter(row => !row.sharesImputed)
+    .filter(row => !row.sharesImputed && !row.quantityUnknown)
     .reduce((sum, row) => sum + (Number(row.shares) || 0), 0);
 }
 
@@ -2804,6 +2809,7 @@ function renderFund(f) {
         shares: h.shares || 0,
         value: h.value || 0,
         shares_imputed: h.shares_imputed === true,
+        quantity_unknown: h.quantity_unknown === true,
       };
     });
   });
@@ -2916,7 +2922,7 @@ function renderFund(f) {
       <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>
       <td class="mono" style="text-align:right;color:var(--mt)">${fP(h.prevPct)}</td>
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
-      <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed)}</td>
+      <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed, h.quantity_unknown)}</td>
       <td style="text-align:center">${badge(h.ch)}</td>
       <td style="text-align:center">${spark(h.sparkData)}</td>
       <td style="color:var(--tx);white-space:nowrap">${esc(holdingDisplayKindLabel(h))}</td>
@@ -3076,7 +3082,7 @@ function renderFundTbody() {
       <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>
       <td class="mono" style="text-align:right;color:${h.pct >= 5 ? "var(--ac)" : "var(--mt)"}">${fP(h.pct)}</td>
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
-      <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed)}</td>
+      <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed, h.quantity_unknown)}</td>
       <td class="mono ${esc(changeClass(h.ch))}" style="text-align:center;font-weight:800">${esc(changeText(h.ch))}</td>
       <td class="mono" style="text-align:right;color:var(--mt)">${h.prevPct > 0 ? fP(h.prevPct) : "—"}</td>
       <td style="text-align:center">${spark(h.sparkData)}</td>
@@ -3182,6 +3188,7 @@ function renderStock(sd, stockEntry = null) {
         ...base,
         shares: Number(current?.shares) || 0,
         sharesImputed: current?.shares_imputed === true,
+        quantityUnknown: current?.quantity_unknown === true,
         value: Number(current?.value) || 0,
         pctOfFund: Number(current?.pct_of_fund) || 0,
         asOfDate: current?.date || null,
@@ -3196,6 +3203,7 @@ function renderStock(sd, stockEntry = null) {
         pctOfFund: 0,
         priorShares: Number(previous?.shares) || 0,
         priorSharesImputed: previous?.shares_imputed === true,
+        priorQuantityUnknown: previous?.quantity_unknown === true,
         priorValue: Number(previous?.value) || 0,
         priorPctOfFund: Number(previous?.pct_of_fund) || 0,
         priorAsOfDate: previous?.date || null,
@@ -3207,6 +3215,7 @@ function renderStock(sd, stockEntry = null) {
         ...base,
         shares: Number(reference?.shares) || 0,
         sharesImputed: reference?.shares_imputed === true,
+        quantityUnknown: reference?.quantity_unknown === true,
         value: Number(reference?.value) || 0,
         pctOfFund: Number(reference?.pct_of_fund) || 0,
         asOfDate: reference?.date || null,
@@ -3228,6 +3237,8 @@ function renderStock(sd, stockEntry = null) {
   const unknownCount = partitions.unknown.length;
   const estimatedCurrentSharesCount = currentHolders
     .filter(h => h.sharesImputed).length;
+  const unknownCurrentSharesCount = currentHolders
+    .filter(h => h.quantityUnknown).length;
 
   const totV = currentHolders.reduce((s, h) => s + (h.value || 0), 0);
   const totS = exactReportedShareTotal(currentHolders);
@@ -3313,7 +3324,7 @@ function renderStock(sd, stockEntry = null) {
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${i + 1}</td>
       <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.priorValue)}</td>
-      <td class="mono" style="text-align:right">${formatShares(h.priorShares, h.priorSharesImputed)}</td>
+      <td class="mono" style="text-align:right">${formatShares(h.priorShares, h.priorSharesImputed, h.priorQuantityUnknown)}</td>
       <td class="mono" style="text-align:right;color:var(--mt)">${h.priorPctOfFund > 0 ? fP(h.priorPctOfFund) : "—"}</td>
       <td style="text-align:center">${badge(h.ch)}</td>
       <td style="text-align:center">${spark(h.sparkData)}</td>
@@ -3341,7 +3352,7 @@ function renderStock(sd, stockEntry = null) {
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${i + 1}</td>
       <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
       <td class="mono" style="text-align:right;font-weight:600">${h.asOfDate ? fV(h.value) : "—"}</td>
-      <td class="mono" style="text-align:right">${h.asOfDate ? formatShares(h.shares, h.sharesImputed) : "—"}</td>
+      <td class="mono" style="text-align:right">${h.asOfDate ? formatShares(h.shares, h.sharesImputed, h.quantityUnknown) : "—"}</td>
       <td class="mono" style="text-align:right;color:var(--mt);font-size:11px">${esc(h.asOfDate || "—")}</td>
       <td class="mono" style="text-align:right;color:var(--mt);font-size:11px">${esc(quarterCodeLabel(h.reportQuarter))}</td>
       <td style="text-align:center"><span class="badge mono" style="color:var(--mt)">${esc(stateLabel(h))}</span></td>
@@ -3382,6 +3393,9 @@ function renderStock(sd, stockEntry = null) {
   }
   if (estimatedCurrentSharesCount) {
     warningParts.push(`<strong>${estimatedCurrentSharesCount.toLocaleString()} current share ${estimatedCurrentSharesCount === 1 ? "count is" : "counts are"} estimated.</strong> Estimated rows are marked with ~, excluded from exact-share totals, and receive no quarter-over-quarter share comparison.`);
+  }
+  if (unknownCurrentSharesCount) {
+    warningParts.push(`<strong>${unknownCurrentSharesCount.toLocaleString()} current share counts are unknown.</strong> A dash preserves the reported position value without treating a missing quantity as an exit. These rows are excluded from exact-share totals and share comparisons.`);
   }
   const classificationWarning = warningParts.length ? `
         <div class="info-note">${warningParts.join(" ")} Excluded or estimated data is never silently treated as exact current data.</div>` : "";
@@ -3439,7 +3453,7 @@ function renderStock(sd, stockEntry = null) {
               <div style="min-width:0">
                 <div class="stock-stat-label">Largest Holder</div>
                 <div class="stock-largest-name">${esc(displayHolderName(topHolder?.name || "—"))}</div>
-                <div class="stock-largest-meta">${topHolder ? `${formatShares(topHolder.shares, topHolder.sharesImputed)} shares  •  ${fV(topHolder.value)}` : "—"}</div>
+                <div class="stock-largest-meta">${topHolder ? `${formatShares(topHolder.shares, topHolder.sharesImputed, topHolder.quantityUnknown)} shares  •  ${fV(topHolder.value)}` : "—"}</div>
               </div>
             </div>
           </div>
@@ -3522,7 +3536,7 @@ function renderStockTbody() {
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${rowNumber}</td>
       <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:${rowBg}" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
-      <td class="mono" style="text-align:right">${formatShares(h.shares, h.sharesImputed)}</td>
+      <td class="mono" style="text-align:right">${formatShares(h.shares, h.sharesImputed, h.quantityUnknown)}</td>
       <td class="mono" style="text-align:right;color:${pctColor}">${pctText}</td>
       <td style="text-align:center">${badge(h.ch)}</td>
       <td style="text-align:center">${spark(h.sparkData)}</td>

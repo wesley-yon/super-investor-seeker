@@ -5,10 +5,154 @@ import threading
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlsplit
 
 import pipeline
 import validate_data
 from scripts import refresh_recent_13f_filings
+
+
+class _RedirectResponse:
+    def __init__(
+        self,
+        url: str,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        content: bytes = b"payload",
+    ) -> None:
+        self.url = url
+        self.status_code = status_code
+        self.headers = {} if headers is None else dict(headers)
+        self.content = content
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise pipeline.requests.HTTPError(
+                f"HTTP {self.status_code}",
+                response=self,
+            )
+
+
+class _RecordingSession:
+    def __init__(self, responses: list[_RedirectResponse]) -> None:
+        self.headers: dict[str, str] = {}
+        self.responses = list(responses)
+        self.calls: list[tuple[str, dict, dict[str, str]]] = []
+
+    def get(self, url: str, **kwargs: object) -> _RedirectResponse:
+        effective_headers = dict(self.headers)
+        supplied_headers = kwargs.get("headers")
+        if isinstance(supplied_headers, dict):
+            effective_headers.update(supplied_headers)
+        self.calls.append((url, dict(kwargs), effective_headers))
+        return self.responses.pop(0)
+
+
+class SECTransportRedirectHardeningTests(unittest.TestCase):
+    _AGENT = "Private Agent private@example.test"
+
+    def _client(
+        self,
+        responses: list[_RedirectResponse],
+    ) -> tuple[pipeline.RateLimitedSession, _RecordingSession]:
+        transport = _RecordingSession(responses)
+        with (
+            mock.patch.object(
+                pipeline.requests,
+                "Session",
+                return_value=transport,
+            ),
+            mock.patch.object(pipeline, "USER_AGENT", self._AGENT),
+        ):
+            client = pipeline.RateLimitedSession()
+        client._claim_slot = mock.Mock()
+        return client, transport
+
+    def test_external_initial_url_is_rejected_before_network(self) -> None:
+        client, transport = self._client([])
+
+        with self.assertRaises(pipeline.NonSECRequestURL):
+            client.get("https://example.com/collect")
+
+        self.assertEqual([], transport.calls)
+
+    def test_external_or_http_redirect_never_receives_user_agent(self) -> None:
+        requested = "https://www.sec.gov/Archives/edgar/full-index/index.json"
+        for target in (
+            "https://example.com/collect",
+            "http://www.sec.gov/Archives/edgar/full-index/index.json",
+        ):
+            with self.subTest(target=target):
+                client, transport = self._client([
+                    _RedirectResponse(
+                        requested,
+                        status_code=302,
+                        headers={"Location": target},
+                    )
+                ])
+
+                with self.assertRaises(pipeline.NonSECRequestURL):
+                    client.get(requested, allow_redirects=True)
+
+                self.assertEqual(1, len(transport.calls))
+                called_url, kwargs, effective_headers = transport.calls[0]
+                self.assertEqual(requested, called_url)
+                self.assertIs(False, kwargs["allow_redirects"])
+                self.assertEqual(
+                    self._AGENT,
+                    effective_headers["User-Agent"],
+                )
+
+    def test_each_safe_redirect_hop_is_validated_paced_and_not_auto_followed(
+        self,
+    ) -> None:
+        first = "https://www.sec.gov/Archives/edgar/full-index/index.json"
+        second = "https://sec.gov/Archives/edgar/full-index/current.json"
+        final = "https://data.sec.gov/submissions/CIK0000000001.json"
+        client, transport = self._client([
+            _RedirectResponse(
+                first,
+                status_code=302,
+                headers={"Location": second},
+            ),
+            _RedirectResponse(
+                second,
+                status_code=307,
+                headers={"Location": final},
+            ),
+            _RedirectResponse(final, content=b"SEC payload"),
+        ])
+
+        response = client.get(first)
+
+        self.assertEqual(b"SEC payload", response.content)
+        self.assertEqual(
+            [first, second, final],
+            [call[0] for call in transport.calls],
+        )
+        self.assertEqual(3, client._claim_slot.call_count)
+        for called_url, kwargs, effective_headers in transport.calls:
+            parsed = urlsplit(called_url)
+            self.assertEqual("https", parsed.scheme)
+            self.assertIn(parsed.hostname, pipeline.SEC_HTTP_HOSTS)
+            self.assertIs(False, kwargs["allow_redirects"])
+            self.assertEqual(
+                self._AGENT,
+                effective_headers["User-Agent"],
+            )
+
+    def test_unexpected_external_final_response_url_is_rejected(self) -> None:
+        requested = "https://www.sec.gov/Archives/edgar/full-index/index.json"
+        client, transport = self._client([
+            _RedirectResponse("https://example.com/collect")
+        ])
+
+        with self.assertRaises(pipeline.NonSECRequestURL):
+            client.get(requested)
+
+        self.assertEqual([requested], [call[0] for call in transport.calls])
+        self.assertIs(False, transport.calls[0][1]["allow_redirects"])
 
 
 class SplitProofHardeningTests(unittest.TestCase):
@@ -253,6 +397,12 @@ class CompositionHashHardeningTests(unittest.TestCase):
             "holdings": [{
                 "cusip": "037833100",
                 "class": "COM",
+                "reported_issuer": "APPLE INC",
+                "reported_class": "COM",
+                "reported_cusip": "037833100",
+                "reported_figi": "BBG000B9XRY4",
+                "accession": accession,
+                "report_date": "2025-03-31",
                 "holding_type": "EQUITY",
                 "value": 100,
                 "shares": 1,
@@ -261,6 +411,13 @@ class CompositionHashHardeningTests(unittest.TestCase):
             "base_accession": accession,
             "applied_accessions": [accession],
             "source_filings": [source],
+            "reported_identity_sources": [{
+                "accession": accession,
+                "report_date": "2025-03-31",
+                "url": "https://www.sec.gov/Archives/edgar/data/1/"
+                "000000000125000001/informationtable.xml",
+                "sha256": "1" * 64,
+            }],
             "accession": accession,
             "filing_date": source["filing_date"],
         }
@@ -268,6 +425,148 @@ class CompositionHashHardeningTests(unittest.TestCase):
             validate_data.calculate_composition_hash(quarter)
         )
         return quarter
+
+    @staticmethod
+    def _validate_fund_quarter(quarter: dict) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            funds_dir = Path(tmpdir)
+            (funds_dir / "1.json").write_text(json.dumps({
+                "cik": 1,
+                "name": "Fixture Fund",
+                "quarters": [quarter],
+            }))
+            errors: list[str] = []
+            with mock.patch.object(validate_data, "FUNDS_DIR", funds_dir):
+                validate_data.validate_funds(errors, {})
+            return errors
+
+    def test_v3_identity_allows_exact_blank_reported_issuer_and_class(
+        self,
+    ) -> None:
+        quarter = self._current_identity_quarter()
+        holding = quarter["holdings"][0]
+        holding.update({
+            "issuer": "DISPLAY ISSUER MUST NOT BECOME REPORTED DATA",
+            "class": "DISPLAY CLASS MUST NOT BECOME REPORTED DATA",
+            "reported_issuer": "",
+            "reported_class": "",
+        })
+        quarter["composition_hash"] = (
+            validate_data.calculate_composition_hash(quarter)
+        )
+
+        errors = self._validate_fund_quarter(quarter)
+
+        self.assertFalse(
+            any(
+                "immutable SEC field reported_issuer" in error
+                or "immutable SEC field reported_class" in error
+                for error in errors
+            ),
+            errors,
+        )
+        self.assertEqual("", holding["reported_issuer"])
+        self.assertEqual("", holding["reported_class"])
+
+    def test_v3_identity_does_not_substitute_display_metadata(self) -> None:
+        for field, display_field in (
+            ("reported_issuer", "issuer"),
+            ("reported_class", "class"),
+        ):
+            for malformed in (None, 42):
+                with self.subTest(field=field, malformed=malformed):
+                    quarter = self._current_identity_quarter()
+                    holding = quarter["holdings"][0]
+                    holding[display_field] = "VALID DISPLAY METADATA"
+                    if malformed is None:
+                        holding.pop(field)
+                    else:
+                        holding[field] = malformed
+                    quarter["composition_hash"] = (
+                        validate_data.calculate_composition_hash(quarter)
+                    )
+
+                    errors = self._validate_fund_quarter(quarter)
+
+                    self.assertTrue(
+                        any(
+                            f"immutable SEC field {field}" in error
+                            for error in errors
+                        ),
+                        errors,
+                    )
+
+    def test_v3_identity_preserves_explicit_null_figi_but_rejects_bad_values(self) -> None:
+        for figi, invalid in ((None, False), ("", True), ("  ", True), (42, True)):
+            with self.subTest(figi=figi):
+                quarter = self._current_identity_quarter()
+                quarter["holdings"][0]["reported_figi"] = figi
+                quarter["composition_hash"] = (
+                    validate_data.calculate_composition_hash(quarter)
+                )
+                errors = self._validate_fund_quarter(quarter)
+                self.assertEqual(invalid, any(
+                    "invalid optional reported_figi" in error for error in errors
+                ), errors)
+
+    def test_holding_local_reported_identity_evidence_is_forbidden(self) -> None:
+        quarter = self._current_identity_quarter()
+        quarter["holdings"][0]["reported_identity_evidence"] = [{
+            "accession": "0000000001-25-999999",
+            "report_date": "2025-03-31",
+            "url": "https://www.sec.gov/Archives/edgar/data/1/"
+            "000000000125999999/informationtable.xml",
+            "sha256": "a" * 64,
+        }]
+        quarter["composition_hash"] = (
+            validate_data.calculate_composition_hash(quarter)
+        )
+
+        errors = self._validate_fund_quarter(quarter)
+
+        self.assertTrue(
+            any(
+                "forbidden holding-local reported_identity_evidence" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_v3_identity_keeps_nonblank_identifiers_and_exact_proof_required(
+        self,
+    ) -> None:
+        for field in ("reported_cusip", "accession", "report_date"):
+            with self.subTest(field=field):
+                quarter = self._current_identity_quarter()
+                quarter["holdings"][0][field] = ""
+                quarter["composition_hash"] = (
+                    validate_data.calculate_composition_hash(quarter)
+                )
+                errors = self._validate_fund_quarter(quarter)
+                self.assertTrue(
+                    any(
+                        f"immutable SEC field {field}" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+        quarter = self._current_identity_quarter()
+        quarter.pop("reported_identity_sources")
+        errors: list[str] = []
+        validate_data.validate_amendment_composition(
+            quarter,
+            "fixture",
+            errors,
+        )
+        self.assertTrue(
+            any(
+                "security identity proof is missing reported_identity_sources"
+                in error
+                for error in errors
+            ),
+            errors,
+        )
 
     def test_invalid_hash_versions_report_errors_without_crashing(self) -> None:
         accession = "0000000001-25-000001"
@@ -281,7 +580,7 @@ class CompositionHashHardeningTests(unittest.TestCase):
             "reported_entry_total": 0,
             "reported_value_total": 0,
         }
-        for invalid in ("2", None, True, 3):
+        for invalid in ("3", None, True, 4):
             with self.subTest(invalid=invalid):
                 quarter = {
                     "composition_version": 1,
@@ -310,6 +609,29 @@ class CompositionHashHardeningTests(unittest.TestCase):
                     "unsupported composition_hash_version" in error
                     for error in errors
                 ))
+
+    def test_current_hash_rejects_reported_identity_mutation(self) -> None:
+        for field in (
+            "reported_issuer",
+            "reported_class",
+            "reported_cusip",
+            "reported_figi",
+            "accession",
+            "report_date",
+        ):
+            with self.subTest(field=field):
+                quarter = self._current_identity_quarter()
+                quarter["holdings"][0][field] = f"changed-{field}"
+                errors: list[str] = []
+                validate_data.validate_amendment_composition(
+                    quarter,
+                    "mutated fixture",
+                    errors,
+                )
+                self.assertTrue(
+                    any("composition_hash does not match" in error for error in errors),
+                    errors,
+                )
 
     def test_malformed_composition_fields_report_without_crashing(self) -> None:
         cases = {
@@ -381,7 +703,7 @@ class CompositionHashHardeningTests(unittest.TestCase):
             legacy_errors,
         )
         self.assertTrue(any(
-            "security identity proof requires composition hash v2" in error
+            "security identity proof requires composition hash v3" in error
             for error in legacy_errors
         ))
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -430,6 +752,108 @@ class CompositionHashHardeningTests(unittest.TestCase):
                 self.assertEqual(
                     0,
                     pipeline.upgrade_composition_hashes_in_place(),
+                )
+
+    def test_hash_v2_upgrades_only_with_complete_reported_identity(self) -> None:
+        for missing_field, expected in (
+            (None, 1),
+            ("reported_issuer", 0),
+            ("reported_class", 0),
+            ("reported_cusip", 0),
+        ):
+            with self.subTest(missing_field=missing_field):
+                quarter = self._current_identity_quarter()
+                quarter["composition_hash_version"] = 2
+                if missing_field is not None:
+                    quarter["holdings"][0].pop(missing_field)
+                quarter["composition_hash"] = (
+                    validate_data.calculate_composition_hash(quarter)
+                )
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    funds_dir = Path(tmpdir)
+                    fund_path = funds_dir / "1.json"
+                    fund_path.write_text(
+                        json.dumps(
+                            {"cik": 1, "name": "Fixture", "quarters": [quarter]}
+                        )
+                    )
+                    with mock.patch.object(pipeline, "FUNDS_DIR", funds_dir):
+                        self.assertEqual(
+                            expected,
+                            pipeline.upgrade_composition_hashes_in_place(),
+                        )
+                    persisted = json.loads(fund_path.read_text())["quarters"][0]
+                    self.assertEqual(
+                        3 if expected else 2,
+                        persisted["composition_hash_version"],
+                    )
+
+    def test_empty_parser_proof_upgrade_requires_verified_legacy_hash(self) -> None:
+        for tampered in (False, True):
+            with self.subTest(tampered=tampered), tempfile.TemporaryDirectory() as tmpdir:
+                quarter = self._current_identity_quarter()
+                quarter.update({"holdings": [], "num_holdings": 0,
+                                "total_value": 0, "composition_hash_version": 2})
+                quarter.pop("reported_identity_sources")
+                quarter["source_filings"][0].update({
+                    "reported_entry_total": 0, "reported_value_total": 0,
+                })
+                quarter["composition_hash"] = (
+                    "f" * 64 if tampered
+                    else validate_data.calculate_composition_hash(quarter)
+                )
+                path = Path(tmpdir) / "1.json"
+                path.write_text(json.dumps({"cik": 1, "quarters": [quarter]}))
+                with mock.patch.object(pipeline, "FUNDS_DIR", Path(tmpdir)):
+                    self.assertEqual(
+                        0 if tampered else 1,
+                        pipeline.upgrade_composition_hashes_in_place(),
+                    )
+                actual = json.loads(path.read_text())["quarters"][0]
+                if tampered:
+                    self.assertEqual(quarter, actual)
+                else:
+                    self.assertEqual([], actual["reported_identity_sources"])
+                    errors = []
+                    validate_data.validate_amendment_composition(actual, "empty", errors)
+                    self.assertEqual([], errors)
+
+    def test_hash_v2_upgrade_preserves_explicit_blank_descriptors(self) -> None:
+        for blank_field in ("reported_issuer", "reported_class"):
+            with self.subTest(blank_field=blank_field):
+                quarter = self._current_identity_quarter()
+                quarter["composition_hash_version"] = 2
+                quarter["holdings"][0]["issuer"] = "Mutable display issuer"
+                quarter["holdings"][0][blank_field] = ""
+                quarter["composition_hash"] = (
+                    validate_data.calculate_composition_hash(quarter)
+                )
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    funds_dir = Path(tmpdir)
+                    fund_path = funds_dir / "1.json"
+                    fund_path.write_text(json.dumps({
+                        "cik": 1,
+                        "name": "Fixture",
+                        "quarters": [quarter],
+                    }))
+                    with mock.patch.object(pipeline, "FUNDS_DIR", funds_dir):
+                        self.assertEqual(
+                            1,
+                            pipeline.upgrade_composition_hashes_in_place(),
+                        )
+                    persisted = json.loads(fund_path.read_text())["quarters"][0]
+
+                self.assertEqual(
+                    "",
+                    persisted["holdings"][0][blank_field],
+                )
+                self.assertEqual(
+                    pipeline.COMPOSITION_HASH_VERSION,
+                    persisted["composition_hash_version"],
+                )
+                self.assertEqual(
+                    validate_data.calculate_composition_hash(persisted),
+                    persisted["composition_hash"],
                 )
 
 
