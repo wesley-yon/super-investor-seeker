@@ -197,6 +197,18 @@ select another worker count (capped at 12). This parallelizes the local digest
 and evidence checks; it does not change SEC request pacing or the source
 acceptance gates.
 
+Generated JSON uses compact encoding to conserve runner disk space. Before a
+hosted cold rebuild, `scripts/prepare_sec_cold_workspace.py` removes formatting
+whitespace while preserving every JSON string and number token, validates the
+SEC master/source pair under its lock, and discards the reproducible stock
+files that the same job must regenerate. It does not discard fund holdings.
+New Form 13F SQLite generations use the accession primary key and filer/date
+index without redundant CUSIP indexes. The eight-GiB free-space preflight is
+unchanged; these reductions create headroom before that gate is checked.
+The mapping refresh also releases obsolete full-size master and source-state
+copies before constructing their replacements; evidence and rollback gates
+remain unchanged.
+
 Before cutover, save the first successful clean build's master and source-state
 files together, run a second independent `--rebuild-security-master`, and prove
 that both pairs used identical SEC evidence and produced identical normalized

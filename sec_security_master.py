@@ -516,7 +516,7 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
                 payload,
                 out,
                 sort_keys=True,
-                indent=2,
+                separators=(",", ":"),
                 ensure_ascii=False,
             )
             out.write("\n")
@@ -4971,7 +4971,7 @@ def _write_pair_new_keeper(
                 payload,
                 out,
                 sort_keys=True,
-                indent=2,
+                separators=(",", ":"),
                 ensure_ascii=False,
             )
             out.write("\n")
@@ -8602,9 +8602,11 @@ def refresh_security_master(
         source_state_path=Path(source_state_path),
     )
     persisted_state = _read_json_object(Path(source_state_path))
+    persisted_schema_version = persisted_state.get("schema_version")
     persisted_state_requires_migration = bool(persisted_state) and (
-        persisted_state.get("schema_version") != SOURCE_STATE_SCHEMA_VERSION
+        persisted_schema_version != SOURCE_STATE_SCHEMA_VERSION
     )
+    del persisted_state
     if lookback_months is None or persisted_state_requires_migration:
         # A full-rebuild workspace is deliberately non-publishable while its
         # source-only checkpoints are incomplete. Legacy state also has to be
@@ -8625,7 +8627,7 @@ def refresh_security_master(
         in {_FTD_2004_Q1_PERIOD, _FTD_2004_Q2_PERIOD}
     }
     boundary_migration_transaction = bool(
-        persisted_state.get("schema_version")
+        persisted_schema_version
         in {TIMELINE_SOURCE_STATE_SCHEMA_VERSION, SOURCE_STATE_SCHEMA_VERSION}
         and retained_boundary_periods
         == {_FTD_2004_Q1_PERIOD, _FTD_2004_Q2_PERIOD}

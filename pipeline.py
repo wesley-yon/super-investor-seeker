@@ -3901,7 +3901,7 @@ def _atomic_write_json(
     path: Path,
     payload,
     *,
-    indent: int | None = 2,
+    indent: int | None = None,
     sort_keys: bool = False,
     fsync_parent: bool = True,
 ) -> None:
@@ -6206,6 +6206,7 @@ def _apply_sec_edgar_batch_journal(
     # transaction will publish. Merely replacing the digest here would hide a
     # future dependency on discovery state and could publish a master derived
     # from a different state than the one beside it.
+    del rebuilt
     rebuilt = rebuild_sec_security_master(
         candidate_state,
         universe,
@@ -6396,6 +6397,7 @@ def refresh_sec_security_master_from_funds(
             published_master,
             published_state,
         )
+        del published_master, published_state
         before_backfill = reported_identity_backfill_audit(FUNDS_DIR)
         log.info(
             "  verifying immutable reported identity for %s retained "

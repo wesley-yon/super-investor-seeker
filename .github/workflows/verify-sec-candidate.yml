@@ -13,7 +13,7 @@ concurrency:
 
 env:
   DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
-  CANDIDATE_RELEASE_TAG: candidate-sec-20260906-01
+  CANDIDATE_RELEASE_TAG: candidate-sec-20260906-02
 
 jobs:
   verify:
@@ -120,6 +120,18 @@ jobs:
           phase_status=$?
           set -e
           if [ "$phase_status" -ne 0 ] && [ "$phase_status" -ne 124 ]; then exit "$phase_status"; fi
+
+      - name: Measure cold workspace preparation and disk gate
+        run: |
+          python scripts/measure_runner_phase.py --name cold_preparation \
+            --report-dir "$RUNNER_TEMP/sec-candidate-metrics" -- \
+            python scripts/prepare_sec_cold_workspace.py \
+              --root "$GITHUB_WORKSPACE" --discard-derived-stocks
+          python - <<'PY'
+          import json
+          from sec_13f_bulk_backfill import ensure_clean_rebuild_disk_space
+          print(json.dumps(ensure_clean_rebuild_disk_space(), sort_keys=True))
+          PY
 
       - name: Measure SEC refresh and data regeneration
         timeout-minutes: 60

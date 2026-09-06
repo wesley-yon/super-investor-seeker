@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -957,6 +958,32 @@ class Sec13FBulkDiscoveryTests(unittest.TestCase):
 
 
 class Sec13FBulkParserTests(unittest.TestCase):
+    def test_new_index_keeps_indexed_accession_and_filer_date_lookups(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        try:
+            bulk._create_schema(connection)
+            bulk.ingest_13f_dataset_zip(connection, dataset_zip(), source_url=DATASET_URL)
+            submission = connection.execute("SELECT * FROM submissions").fetchone()
+            parameters = {"cik": submission["cik"], "report_date": submission["report_date"]}
+            by_accession = bulk._query_quarter_evidence(connection, **parameters,
+                                                       accessions=[submission["accession"]])
+            by_filer = bulk._query_quarter_evidence(connection, **parameters, accessions=[])
+            self.assertEqual(by_accession, by_filer)
+            self.assertEqual(len(by_accession), 1)
+            accession_plan = " ".join(row[3] for row in connection.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM information_table WHERE accession = ?",
+                (submission["accession"],)))
+            filer_plan = " ".join(row[3] for row in connection.execute(
+                "EXPLAIN QUERY PLAN SELECT i.* FROM information_table i JOIN submissions s "
+                "USING(accession) WHERE s.cik = ? AND s.report_date = ?",
+                (submission["cik"], submission["report_date"])))
+            self.assertIn("PRIMARY KEY", accession_plan)
+            self.assertIn("submissions_cik_report", filer_plan)
+            self.assertIn("PRIMARY KEY", filer_plan)
+        finally:
+            connection.close()
+
     def test_decimal_canonicalization_preserves_non_none_zero(self) -> None:
         for value in (0, 0.0, Decimal("0"), Decimal("-0"), "0.000"):
             with self.subTest(value=value):

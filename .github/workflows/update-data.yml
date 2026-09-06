@@ -296,6 +296,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "Legacy snapshot detected; forcing clean SEC-only rebuild"
+          python scripts/prepare_sec_cold_workspace.py \
+            --root "$GITHUB_WORKSPACE" --discard-derived-stocks
           set +e
           timeout --signal=TERM --kill-after=120s 260m \
             python pipeline.py --regenerate-only --rebuild-security-master --apply-quantity-policy

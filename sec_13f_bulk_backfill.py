@@ -510,7 +510,7 @@ def _atomic_write_fund_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as out:
-            json.dump(payload, out, indent=2, ensure_ascii=False)
+            json.dump(payload, out, separators=(",", ":"), ensure_ascii=False)
             out.write("\n")
             out.flush()
             os.fsync(out.fileno())
@@ -1167,6 +1167,10 @@ def legacy_index_adoption_receipt_matches(
 
 
 def _create_schema(connection: sqlite3.Connection) -> None:
+    # Evidence lookups use the accession-leading primary key or the filer/date
+    # submissions index. Extra CUSIP indexes duplicate a large part of every
+    # row without supporting a production query. Leave existing immutable
+    # generations alone; newly built generations do not need those indexes.
     connection.executescript(
         """
         PRAGMA foreign_keys = ON;
@@ -1205,10 +1209,6 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY(accession) REFERENCES submissions(accession)
                 ON DELETE CASCADE
         ) WITHOUT ROWID;
-        CREATE INDEX IF NOT EXISTS information_table_accession_cusip
-            ON information_table(accession, cusip_key);
-        CREATE INDEX IF NOT EXISTS information_table_cusip
-            ON information_table(cusip_key);
         CREATE TABLE IF NOT EXISTS filing_chain (
             accession TEXT PRIMARY KEY,
             acceptance_datetime TEXT,
