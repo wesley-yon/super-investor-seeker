@@ -69,7 +69,7 @@ jobs:
     steps:
       - name: Checkout explicitly requested code target
         if: inputs.code_sha != ''
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.code_sha }}
@@ -82,7 +82,7 @@ jobs:
 
       - name: Checkout push code target
         if: inputs.code_sha == '' && github.event_name == 'push'
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
@@ -95,7 +95,7 @@ jobs:
 
       - name: Checkout live main recovery target
         if: inputs.code_sha == '' && github.event_name != 'push'
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: main
@@ -110,7 +110,7 @@ jobs:
       # target. Keep manual rollbacks to commits from before this helper was
       # introduced working by loading it from the commit that defines this job.
       - name: Checkout trusted GitHub retry helper
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -247,7 +247,7 @@ jobs:
       pages: write
     steps:
       - name: Checkout exact public code
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ needs.resolve.outputs.code_sha }}
@@ -416,7 +416,7 @@ jobs:
       page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout live main for stale-deploy guard
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: main
@@ -575,7 +575,7 @@ jobs:
       pages: read
     steps:
       - name: Checkout trusted GitHub retry helper
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
