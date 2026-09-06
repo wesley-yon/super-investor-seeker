@@ -77,8 +77,12 @@ def affected(before, after, changed_cusips, changed_ciks=()):
 
 
 def extend_master_for_changed_funds(paths):
-    master, source = p.load_security_master_pair(master_path=p.SEC_SECURITY_MASTER_PATH,
-                                                source_state_path=p.SEC_SOURCE_STATE_PATH)
+    if not paths:
+        return
+    # The restored master supplies the existing identity keys. Avoid loading
+    # the much larger source state unless an extension is actually required;
+    # the complete source audit remains a mandatory publication gate.
+    master = p.load_security_master(p.SEC_SECURITY_MASTER_PATH)
     records = master.get('records', {})
     additions = []
     for path in paths:
@@ -89,6 +93,8 @@ def extend_master_for_changed_funds(paths):
                     additions.append(identity)
     if not additions:
         return
+    master, source = p.load_security_master_pair(master_path=p.SEC_SECURITY_MASTER_PATH,
+                                                source_state_path=p.SEC_SOURCE_STATE_PATH)
     master = _retain_prior_mappings_with_unresolved_extensions(
         master, source, additions,
         new_identity_reason='sec_evidence_refresh_pending_new_identity')

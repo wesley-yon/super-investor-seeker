@@ -83,6 +83,18 @@ class IncrementalGenerationTests(unittest.TestCase):
         self.assertEqual(normalized, json.loads(json.dumps(normalized)))
         self.assertIn('1', normalized['withheld'])
 
+    def test_known_identities_do_not_load_the_large_private_source_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '1.json'
+            path.write_text(json.dumps(fund(1)))
+            with mock.patch.object(p, 'load_security_master', return_value={'records': {'037833100|EQUITY': {}}}) as read_master, \
+                 mock.patch.object(p, 'load_security_master_pair', side_effect=AssertionError('unnecessary source-state load')), \
+                 mock.patch.object(p, 'save_security_master_pair', side_effect=AssertionError('known identity must not rewrite proof')):
+                inc.extend_master_for_changed_funds([])
+                read_master.assert_not_called()
+                inc.extend_master_for_changed_funds([path])
+                read_master.assert_called_once()
+
 
 class IncrementalValidationTests(unittest.TestCase):
     def setUp(self):
