@@ -65,6 +65,11 @@ jobs:
     needs: filing-window
     if: needs.filing-window.outputs.run_update == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      actions: write            # request continuation after a published batch
+      contents: read
+      deployments: read
+      pages: read
     concurrency:
       group: private-release-publication
       cancel-in-progress: false
@@ -412,6 +417,19 @@ jobs:
           GH_TOKEN: ${{ steps.publish-data-app-token.outputs.token }}
           PUBLIC_GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/publish_private_snapshot.sh
+
+      - name: Continue discovered filing backlog after successful publication
+        if: >-
+          success() &&
+          steps.publish_snapshot.outputs.dataset_id != '' &&
+          steps.recent_filings.outputs.processed_accessions != '' &&
+          steps.recent_filings.outputs.processed_accessions != '0' &&
+          steps.recent_filings.outputs.remaining_due != '' &&
+          steps.recent_filings.outputs.remaining_due != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run update-data.yml --ref main
 
   deploy-pages:
     needs: update

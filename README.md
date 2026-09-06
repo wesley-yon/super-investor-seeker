@@ -326,6 +326,10 @@ accessions are saved in `pipeline_state.json.recent_feed_pending` before replay.
 Unfinished and quarantined accessions remain queued across runs, even after they
 age out of the feed. The existing retry cooldowns still apply. The overnight
 index pass catches filings missed during feed outages or beyond its search window.
+After successful publication, a batch that processed accessions and still has
+eligible pending work requests another workflow run immediately. It uses the
+same publication locks and restores the newest snapshot; a failed or stalled
+batch and quarantined-only backlog do not cause an immediate retry loop.
 
 `scripts/incremental_pipeline.py regenerate` reuses existing SEC mapping decisions.
 A newly reported identity stays tickerless until evidence maintenance resolves

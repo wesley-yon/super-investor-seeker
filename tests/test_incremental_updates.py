@@ -243,13 +243,19 @@ class DurableRecentFeedTests(unittest.TestCase):
                                      load_state=mock.Mock(return_value=state), load_cusip_map=mock.Mock(return_value={}),
                                      save_state=mock.Mock(), save_cusip_map=mock.Mock(), replay_quarters_for_cik=mock.Mock(side_effect=replay)), \
                  mock.patch.object(feed, 'fetch_recent_feed_filings', return_value=[newer]), \
-                 mock.patch.dict('os.environ', {'RECENT_13F_MAX_CIKS': '1'}):
+                 mock.patch.dict('os.environ', {'RECENT_13F_MAX_CIKS': '1', 'GITHUB_OUTPUT': str(data / 'outputs')}):
                 self.assertEqual(0, feed.main())
                 self.assertEqual([9], calls)
                 self.assertEqual({newer['accession']: newer}, state['recent_feed_pending'])
+                self.assertEqual(['processed_accessions=1', 'remaining_due=1'], (data / 'outputs').read_text().splitlines())
                 self.assertEqual(0, feed.main())
                 self.assertEqual([9, 1], calls)
                 self.assertEqual({}, state['recent_feed_pending'])
+                self.assertEqual(['processed_accessions=1', 'remaining_due=0'], (data / 'outputs').read_text().splitlines()[-2:])
+                state['_processed_set'].remove(newer['accession'])
+                with mock.patch.object(p, 'accession_retry_due', return_value=False):
+                    self.assertEqual(0, feed.main())
+                self.assertEqual(['processed_accessions=0', 'remaining_due=0'], (data / 'outputs').read_text().splitlines()[-2:])
 
 
 if __name__ == '__main__':

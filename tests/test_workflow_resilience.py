@@ -616,6 +616,18 @@ gh_mutate_once() {
         self.assertNotRegex(update, r"(?m)^\s*- cron: '0 ")
         self.assertNotRegex(refresh, r"(?m)^\s*- cron: '0 ")
 
+    def test_backlog_continuation_requires_publication_progress_and_eligible_work(self):
+        workflow = read(".github/workflows/update-data.yml")
+        continuation = workflow.split("- name: Continue discovered filing backlog", 1)[1].split("\n  deploy-pages:", 1)[0]
+        self.assertIn("success()", continuation)
+        self.assertIn("steps.publish_snapshot.outputs.dataset_id != ''", continuation)
+        self.assertIn("steps.recent_filings.outputs.processed_accessions != '0'", continuation)
+        self.assertIn("steps.recent_filings.outputs.remaining_due != '0'", continuation)
+        self.assertIn("gh workflow run update-data.yml --ref main", continuation)
+        self.assertLess(workflow.index("run: bash scripts/publish_private_snapshot.sh"),
+                        workflow.index("- name: Continue discovered filing backlog"))
+        self.assertIn("actions: write", workflow.split("  update:", 1)[1].split("    outputs:", 1)[0])
+
     def test_security_master_workflows_use_only_sec_refresh_contracts(self):
         update = read(".github/workflows/update-data.yml")
         rebuild = read(".github/workflows/refresh-cusip-registry.yml")

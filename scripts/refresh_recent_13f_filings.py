@@ -196,6 +196,7 @@ def main() -> int:
     pipeline.STOCKS_DIR.mkdir(exist_ok=True)
 
     state = pipeline.load_state()
+    initially_processed = set(state["_processed_set"])
     cusip_map = pipeline.load_cusip_map()
     state_lock = threading.Lock()
 
@@ -320,6 +321,16 @@ def main() -> int:
                 "could not checkpoint current-feed CUSIP map: %s",
                 exc,
             )
+
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        remaining_due = sum(
+            pipeline.accession_retry_due(state, accession)
+            for accession in state.get("recent_feed_pending", {})
+        )
+        with Path(output_path).open("a") as output:
+            output.write(f"processed_accessions={len(state['_processed_set'] - initially_processed)}\n")
+            output.write(f"remaining_due={remaining_due}\n")
 
     if interrupted or errors or checkpoint_errors:
         pipeline.log.error(
