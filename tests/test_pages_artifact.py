@@ -20,10 +20,11 @@ class PagesArtifactTests(unittest.TestCase):
         (source / "data/stocks").mkdir(parents=True)
         (source / ".nojekyll").write_text("")
         (source / "CNAME").write_text("example.test\n")
+        (source / "app.js").write_text("const DATA_CONTRACT_VERSION = 3;\n")
         (source / "site-data-loader.js").write_text("window.fetch = fetch;\n")
         (source / "index.html").write_text(
             "<html><head><script src=\"site-data-loader.js\"></script>"
-            "</head><body><script>const DATA_CONTRACT_VERSION = 3;</script>"
+            '<script src="app.js"></script></head><body>'
             "</body></html>\n"
         )
         (source / "data/funds-index.json").write_text('{"funds":[]}\n')
@@ -118,6 +119,7 @@ class PagesArtifactTests(unittest.TestCase):
                     "CNAME",
                     "deployment-manifest.json",
                     "index.html",
+                    "app.js",
                     "site-data-loader.js",
                     "data/funds-index.json",
                     "data/index.json",

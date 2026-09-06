@@ -60,9 +60,18 @@ keeps GitHub from disabling inactive public-repository schedules without
 changing `main` or triggering deployments. The latest two validated snapshots
 are retained for rollback.
 
-Automation stores the App client ID in the repository variable
-`DATA_ARCHIVE_APP_CLIENT_ID` and its private key in the repository secret
-`DATA_ARCHIVE_APP_PRIVATE_KEY`. Long maintenance jobs mint a fresh,
+Production jobs use the `private-data` environment, restricted to the `main`
+branch; the Pages deploy job retains the `github-pages` environment with the same
+branch restriction. The App client ID remains the repository variable
+`DATA_ARCHIVE_APP_CLIENT_ID`. Its private key, `DATA_ARCHIVE_APP_PRIVATE_KEY`,
+belongs in both environments, with no repository-level duplicate. Candidate
+verification uses the separate `private-data-readonly` environment and the
+read-only App identified by `SIS_READER_APP_ID`, with its own
+`SIS_READER_APP_PRIVATE_KEY`. The production key is never a candidate fallback.
+These boundaries require owner configuration; naming an environment in YAML
+does not configure its branch restrictions or remove existing repository
+secrets. Complete [the owner setup](SECURITY-OWNER-SETUP.md) before treating the
+credential migration as finished. Long maintenance jobs mint a fresh,
 write-scoped token only when they are ready to publish. Before any release
 mutation, the publisher fails closed unless GitHub's repository API confirms
 that the configured target is the exact private data repository. Ticker
@@ -176,7 +185,7 @@ snapshot packing never overlaps the bulk index. The preflight conservatively
 requires 8 GiB of free headroom for a fresh pass, credits the byte size of a
 validated partial index on resume, and always retains at least a 1 GiB floor.
 After the entire clean command succeeds, the temporary 13F manifest and SQLite
-generation plus any compact EDGAR journals are saved to the private Actions
+generation plus any compact EDGAR journals are saved to the repository's Actions
 cache and then the 13F working set is deleted from the runner before validation
 and snapshot packing. A failed or cooperatively timed-out command skips deletion,
 allowing the `always()` cache-save step to preserve partial work. The large
@@ -185,6 +194,14 @@ archives enter snapshot v2. A local clean rebuild intentionally leaves this
 resumable work set in
 `.cache`; after all local follow-up checks succeed it can be removed with
 `python -c 'from sec_13f_bulk_backfill import cleanup_13f_bulk_working_set; cleanup_13f_bulk_working_set()'`.
+
+Actions caches in this public repository are readable by workflows from fork
+pull requests. They are not private storage. The cache allowlist therefore
+contains only filing-level public SEC reconstruction data, source checksums,
+and bounded discovery journals; never credentials, the complete normalized
+official-list master/state, or the final generated dataset. The checkpoint
+cache preserves interrupted rebuild progress independently of validated private
+snapshots. [GitHub cache access rules](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
 
 The holdings-preservation digest, filing-chain discovery, pre-apply SEC
 verification, and final reported-identity verification use up to six CPU
@@ -255,9 +272,10 @@ universe against the sealed bundle. Missing or altered inputs fail the run.
 Neither command changes the published dataset or its mapping pair. Keep the
 bundle and both build reports privately alongside the strict comparison result.
 
-The only required repository secrets are `SEC_USER_AGENT` and
-`DATA_ARCHIVE_APP_PRIVATE_KEY`; the GitHub App client ID remains the
-`DATA_ARCHIVE_APP_CLIENT_ID` repository variable. Durable SEC mapping state is
+The SEC runtime contact remains the repository secret `SEC_USER_AGENT`. App
+private keys are environment secrets as described in
+[the owner setup](SECURITY-OWNER-SETUP.md); the production App client ID remains
+the `DATA_ARCHIVE_APP_CLIENT_ID` repository variable. Durable SEC mapping state is
 stored privately in `.cache/sec_security_master.json` and
 `.cache/sec_source_state.json`.
 

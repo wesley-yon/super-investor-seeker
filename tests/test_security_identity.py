@@ -133,7 +133,7 @@ class InstrumentIdentityTests(unittest.TestCase):
 class FrontendIdentityContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.html = (Path(__file__).resolve().parents[1] / "index.html").read_text()
+        cls.html = (Path(__file__).resolve().parents[1] / "app.js").read_text()
 
     def test_frontend_supported_types_match_shared_contract(self) -> None:
         match = re.search(

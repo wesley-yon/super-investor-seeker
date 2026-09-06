@@ -1781,6 +1781,17 @@ def _normalize_acceptance_datetime(value: object | None) -> str | None:
     return raw
 
 
+def _parse_archive_xml_document(candidate: str) -> ElementTree.Element:
+    # This input has already been decoded to text. SEC filing XML does not need
+    # DTD declarations, so reject them before Expat can process the internal
+    # subset (including quadratic attribute declarations on older runtimes).
+    # NULs are invalid in decoded XML text; allowing them would let Expat
+    # reinterpret a string as UTF-16 and bypass the declaration check.
+    if "\x00" in candidate or "<!DOCTYPE" in candidate:
+        raise ElementTree.ParseError("DTD declarations and NULs are not allowed in SEC filings")
+    return ElementTree.fromstring(candidate)
+
+
 def _parse_archive_cover_metadata(content: str) -> dict[str, Any] | None:
     """Return structured Form 13F cover metadata from one XML document."""
 
@@ -1790,7 +1801,7 @@ def _parse_archive_cover_metadata(content: str) -> dict[str, Any] | None:
     if "<" not in candidate:
         return None
     try:
-        root = ElementTree.fromstring(candidate)
+        root = _parse_archive_xml_document(candidate)
     except ElementTree.ParseError:
         return None
 
@@ -1852,7 +1863,7 @@ def _parse_archive_xml_rows(
     if "<" not in candidate:
         return None
     try:
-        root = ElementTree.fromstring(candidate)
+        root = _parse_archive_xml_document(candidate)
     except ElementTree.ParseError:
         return None
     info_tables = [

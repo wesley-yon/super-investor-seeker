@@ -9,24 +9,19 @@ permissions:
 
 jobs:
   unit-tests:
-    # A same-repository PR already runs this exact SHA through the branch-push
-    # event. Keep pull_request coverage for forks without paying for, waiting
-    # on, or receiving duplicate failure mail from a second hosted runner.
-    if: >-
-      ${{ github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           # The privacy gate below audits every reachable commit, not only the
           # current code-only tree.
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
 
@@ -61,7 +56,7 @@ jobs:
           fi
 
       - name: Test compressed site loader
-        run: node --test tests/test_site_data_loader.mjs
+        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs
 
       - name: Run data-integrity regression tests
         run: python -m unittest discover -s tests -v

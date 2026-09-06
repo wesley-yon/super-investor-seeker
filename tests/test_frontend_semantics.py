@@ -7,13 +7,14 @@ from typing import cast
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INDEX_HTML = ROOT / "index.html"
+APPLICATION_JS = ROOT / "app.js"
 
 
 class FrontendSemanticsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.html = INDEX_HTML.read_text()
+        cls.application = APPLICATION_JS.read_text()
+        cls.html = (ROOT / "index.html").read_text() + "\n" + cls.application
         start = cls.html.index("function normalizeInstrumentType(")
         end = cls.html.index("// ---------- sparkline", start)
         cls.logic = cls.html[start:end]
@@ -21,7 +22,7 @@ class FrontendSemanticsTests(unittest.TestCase):
     def run_javascript(self, body: str, *, application: bool = False) -> object:
         logic = self.logic
         if application:
-            logic = self.html.split("<script>", 1)[1].split("</script>", 1)[0]
+            logic = self.application
             init_start = logic.index("// ---------- init ----------")
             init_end = logic.index("// ---------- URL routing ----------")
             logic = logic[:init_start] + logic[init_end:]
@@ -154,11 +155,11 @@ class FrontendSemanticsTests(unittest.TestCase):
             }));
         """, application=True)
         self.assertEqual(result["exited"], result["current"].replace("background:var(--sf);", ""))
-        self.assertIn("loadStock('000000001|NOTE')", result["exited"])
+        self.assertIn('href="#stock/000000001%7CNOTE"', result["exited"])
         self.assertIn("&lt;", result["exited"])
         self.assertNotIn("<script>", result["exited"])
         self.assertNotIn("onclick", result["missing"])
-        self.assertIn("loadFund(7)", result["holder"])
+        self.assertIn('href="#fund/7"', result["holder"])
         self.assertNotIn("<img>", result["holder"])
 
     def test_badges_preserve_nonfinite_changes_and_sort_column_defaults(self) -> None:
@@ -783,11 +784,11 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertIn("holdingDisplayCompany(securityHolding)", self.html)
         self.assertNotIn("const displayTicker = h.ticker ?", self.html)
         self.assertIn(
-            """onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}""",
+            """href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}""",
             self.html,
         )
         self.assertIn(
-            """>Security<span class="arr"></span></th>""",
+            """>Security<span class="arr" aria-hidden="true"></span></button></th>""",
             self.html,
         )
         self.assertIn(
