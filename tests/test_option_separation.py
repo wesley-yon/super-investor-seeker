@@ -110,10 +110,8 @@ class ExactPositionIdentityTests(unittest.TestCase):
             "cusip": "037833100", "holding_type": "NOTE",
             "class": "COM", "ticker": "OLD",
         }]
-        cusip_map = {"037833100": "OLD"}
         with mock.patch.object(pipeline, "load_security_master", return_value=master):
-            pipeline.update_cusip_map(cusip_map, holdings)
-        self.assertEqual({}, cusip_map)
+            pipeline.update_holding_tickers(holdings)
         self.assertIsNone(holdings[0]["ticker"])
         self.assertEqual("NOTE", holdings[0]["holding_type"])
 
@@ -424,7 +422,7 @@ class ExactPositionIdentityTests(unittest.TestCase):
             pipeline._registry_position_ticker({"ticker": "ABC"}, "EQUITY")
         )
 
-    def test_update_cusip_map_resolves_each_non_option_type_exactly(self) -> None:
+    def test_update_holding_tickers_resolves_each_non_option_type_exactly(self) -> None:
         master = {
             "records": {
                 "037833100|EQUITY": {
@@ -467,20 +465,18 @@ class ExactPositionIdentityTests(unittest.TestCase):
                 "ticker": "OLD",
             },
         ]
-        cusip_map = {"037833100": "OLD"}
         with mock.patch.object(
             pipeline,
             "load_security_master",
             return_value=master,
         ):
-            pipeline.update_cusip_map(cusip_map, holdings)
+            pipeline.update_holding_tickers(holdings)
 
-        self.assertNotIn("037833100", cusip_map)
         self.assertEqual("AAPL", holdings[0]["ticker"])
         self.assertIsNone(holdings[1]["ticker"])
         self.assertEqual("AAPL/WS", holdings[2]["ticker"])
 
-    def test_compatibility_map_checks_siblings_absent_from_current_quarter(
+    def test_separate_quarters_do_not_share_a_cusip_level_ticker(
         self,
     ) -> None:
         master = {
@@ -505,13 +501,19 @@ class ExactPositionIdentityTests(unittest.TestCase):
             "holding_type": "EQUITY",
         }]
 
-        resolved = pipeline.resolve_cusips_via_sec_security_master(
-            ["037833100"],
-            holdings=current_quarter,
-            master=master,
-        )
+        other_quarter = [{
+            "cusip": "037833100",
+            "class": "PFD",
+            "holding_type": "PREF",
+            "ticker": "OLD",
+        }]
+        with mock.patch.object(pipeline, "load_security_master", return_value=master):
+            pipeline.update_holding_tickers(current_quarter)
+            pipeline.update_holding_tickers(other_quarter)
 
-        self.assertEqual({}, resolved)
+        self.assertEqual("AAPL", current_quarter[0]["ticker"])
+        self.assertIsNone(other_quarter[0]["ticker"])
+        self.assertIsNone(master["records"]["037833100|PREF"]["ticker"])
 
 
 class SecOnlyRegistryBuildTests(unittest.TestCase):
@@ -590,7 +592,7 @@ class SecOnlyRegistryBuildTests(unittest.TestCase):
             mock.patch.object(pipeline, "resolve_security", side_effect=resolve),
             mock.patch.object(pipeline, "save_cusip_registry") as save,
         ):
-            registry = pipeline.build_cusip_registry(company_ticker_data={})
+            registry = pipeline.build_cusip_registry()
 
         entry = registry["76954AAD5"]
         self.assertEqual("NOTE", entry["type"])
@@ -673,7 +675,7 @@ class SecOnlyRegistryBuildTests(unittest.TestCase):
                 ),
                 mock.patch.object(pipeline, "save_cusip_registry"),
             ):
-                registry = pipeline.build_cusip_registry(company_ticker_data={})
+                registry = pipeline.build_cusip_registry()
 
             expected_labels = {
                 "000000000": "UNIDENTIFIED EQUITY SECURITY — 000000000",
@@ -776,7 +778,7 @@ class SecOnlyRegistryBuildTests(unittest.TestCase):
             ),
             mock.patch.object(pipeline, "save_cusip_registry"),
         ):
-            registry = pipeline.build_cusip_registry(company_ticker_data={})
+            registry = pipeline.build_cusip_registry()
 
         entry = registry["037833100"]
         self.assertEqual("PREF", entry["type"])
@@ -823,7 +825,7 @@ class SecOnlyRegistryBuildTests(unittest.TestCase):
             mock.patch.object(pipeline, "resolve_security", side_effect=resolve),
             mock.patch.object(pipeline, "save_cusip_registry"),
         ):
-            registry = pipeline.build_cusip_registry(company_ticker_data={})
+            registry = pipeline.build_cusip_registry()
 
         entry = registry["037833100"]
         self.assertEqual("CALL", entry["type"])
@@ -868,7 +870,7 @@ class SecOnlyRegistryBuildTests(unittest.TestCase):
             ),
             mock.patch.object(pipeline, "save_cusip_registry"),
         ):
-            registry = pipeline.build_cusip_registry(company_ticker_data={})
+            registry = pipeline.build_cusip_registry()
 
         entry = registry["037833100"]
         self.assertEqual("EQUITY", entry["type"])

@@ -56,6 +56,11 @@ live Pages deployment remain unchanged.
 
 ## Data Pipeline (`pipeline.py`)
 
+`sec_http.py` shares redirect handling and per-instance pacing while each SEC
+source retains its own admission and retry policy. `atomic_files.py` shares
+sibling-file replacement for durable JSON writers; serializers, directory
+durability, and interruption cleanup remain explicit at each call site.
+
 ### Discovery: Finding All 13F Filers
 
 SEC publishes quarterly index files that list every filing submitted that quarter:

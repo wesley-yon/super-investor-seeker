@@ -807,12 +807,13 @@ class ValueUnitPipelineTests(unittest.TestCase):
             (funds_dir / "999.json").write_text(json.dumps(fund))
 
             with mock.patch.object(pipeline, "FUNDS_DIR", funds_dir):
-                multiplier = pipeline.load_prior_value_unit_multiplier(
+                multiplier, holdings = pipeline.load_prior_value_unit_context(
                     999,
                     "2025-12-31",
                 )
 
         self.assertEqual(1, multiplier)
+        self.assertEqual([], holdings)
 
     def test_prior_loader_does_not_skip_an_untrusted_adjacent_quarter(
         self,

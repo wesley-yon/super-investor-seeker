@@ -906,7 +906,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
         with (
             mock.patch.object(pipeline, "WORKER_COUNT", 1),
             mock.patch.object(pipeline, "load_state", return_value=state),
-            mock.patch.object(pipeline, "load_cusip_map", return_value={}),
             mock.patch.object(
                 pipeline,
                 "get_recent_filing_quarters",
@@ -952,7 +951,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
             "security_identity_migration_pending": {},
             "quarter_health_pending": {},
         }
-        cusip_map: dict[str, str] = {}
         mutated = threading.Event()
         release_worker = threading.Event()
         worker_finished = threading.Event()
@@ -962,7 +960,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
             state["_quarantined"]["checkpointed"] = {
                 "reason": "FilingFetchError",
             }
-            cusip_map["037833100"] = "AAPL"
             mutated.set()
             release_worker.wait(2)
             worker_finished.set()
@@ -976,11 +973,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
             with (
                 mock.patch.object(pipeline, "WORKER_COUNT", 1),
                 mock.patch.object(pipeline, "load_state", return_value=state),
-                mock.patch.object(
-                    pipeline,
-                    "load_cusip_map",
-                    return_value=cusip_map,
-                ),
                 mock.patch.object(
                     pipeline,
                     "get_recent_filing_quarters",
@@ -1025,7 +1017,6 @@ class ReplayCheckpointHardeningTests(unittest.TestCase):
             "checkpointed" in snapshot["_quarantined"]
             for snapshot in saved_states
         ))
-        self.assertEqual("AAPL", cusip_map["037833100"])
 
 
 class RecentFeedCheckpointHardeningTests(unittest.TestCase):
@@ -1064,13 +1055,11 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                     "_processed_set": set(),
                     "_quarantined": {},
                 }
-                cusip_map: dict[str, str] = {}
                 saved_states: list[dict] = []
 
                 def replay(
                     _cik: int,
                     _triggers: list[dict],
-                    replay_map: dict[str, str],
                     _quarters_n: int,
                     replay_state: dict,
                     **_kwargs,
@@ -1078,7 +1067,6 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                     replay_state["_quarantined"]["checkpointed"] = {
                         "reason": "test",
                     }
-                    replay_map["037833100"] = "AAPL"
                     raise failure
 
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -1099,11 +1087,6 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                             pipeline,
                             "load_state",
                             return_value=state,
-                        ),
-                        mock.patch.object(
-                            pipeline,
-                            "load_cusip_map",
-                            return_value=cusip_map,
                         ),
                         mock.patch.object(
                             refresh_recent_13f_filings,
@@ -1132,7 +1115,6 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                     "checkpointed",
                     saved_states[-1]["_quarantined"],
                 )
-                self.assertEqual("AAPL", cusip_map["037833100"])
 
     def test_discovery_failure_does_not_write_an_unmutated_checkpoint(
         self,
@@ -1156,11 +1138,6 @@ class RecentFeedCheckpointHardeningTests(unittest.TestCase):
                     pipeline,
                     "load_state",
                     return_value=state,
-                ),
-                mock.patch.object(
-                    pipeline,
-                    "load_cusip_map",
-                    return_value={},
                 ),
                 mock.patch.object(
                     refresh_recent_13f_filings,

@@ -2,11 +2,34 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
+from scripts import frozen_sec_rebuild
 from scripts.frozen_sec_rebuild import FrozenInputError, FrozenResponses
 
 
 class FrozenResponseTests(unittest.TestCase):
+    def test_shared_builder_changes_invalidate_frozen_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in frozen_sec_rebuild.code_hashes():
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((frozen_sec_rebuild.ROOT / name).read_bytes())
+            with mock.patch.object(frozen_sec_rebuild, 'ROOT', root):
+                original = frozen_sec_rebuild.code_hashes()
+                for name in ('sec_http.py', 'atomic_files.py'):
+                    with self.subTest(module=name):
+                        target = root / name
+                        raw = target.read_bytes()
+                        target.write_bytes(raw + b'\n# changed builder dependency\n')
+                        changed = frozen_sec_rebuild.code_hashes()
+                        self.assertEqual(
+                            [key for key in original if original[key] != changed[key]],
+                            [name],
+                        )
+                        target.write_bytes(raw)
+
     def test_capture_once_then_replay_identical_bytes_without_fetcher(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -271,7 +271,6 @@ class IdentityMarkerTests(unittest.TestCase):
 class IdentityReplayTests(unittest.TestCase):
     def test_interrupt_checkpoints_identity_replay_state(self) -> None:
         state = {}
-        cusip_map = {}
 
         class InterruptibleThread:
             def __init__(self, *args, **kwargs) -> None:
@@ -300,7 +299,6 @@ class IdentityReplayTests(unittest.TestCase):
             succeeded, resolved = pipeline._run_security_identity_replays(
                 [{"cik": CIK, "report_date": REPORT_DATE}],
                 state,
-                cusip_map,
             )
 
         self.assertFalse(succeeded)
@@ -309,7 +307,6 @@ class IdentityReplayTests(unittest.TestCase):
 
     def test_alive_identity_worker_gets_final_checkpoint(self) -> None:
         state = {}
-        cusip_map = {}
 
         class LateAliveThread:
             def __init__(self, *args, **kwargs) -> None:
@@ -333,7 +330,6 @@ class IdentityReplayTests(unittest.TestCase):
             succeeded, resolved = pipeline._run_security_identity_replays(
                 [{"cik": CIK, "report_date": REPORT_DATE}],
                 state,
-                cusip_map,
             )
 
         self.assertFalse(succeeded)
@@ -389,7 +385,6 @@ class IdentityReplayTests(unittest.TestCase):
                         CIK,
                         [target],
                         state,
-                        {"123456789": "XYZ"},
                         threading.Lock(),
                     )
                 )
@@ -451,7 +446,6 @@ class IdentityReplayTests(unittest.TestCase):
                 processed = pipeline.replay_quarters_for_cik(
                     CIK,
                     [filing_row()],
-                    {"123456789": "XYZ"},
                     4,
                     state,
                     preserve_history=True,
@@ -509,7 +503,6 @@ class IdentityReplayTests(unittest.TestCase):
                         CIK,
                         [target],
                         state,
-                        {"123456789": "XYZ"},
                         threading.Lock(),
                     ),
                 )
@@ -547,7 +540,6 @@ class IdentityReplayTests(unittest.TestCase):
                         CIK,
                         [target],
                         state,
-                        {"123456789": "XYZ"},
                         threading.Lock(),
                     ),
                 )
@@ -606,7 +598,6 @@ class IdentityReplayTests(unittest.TestCase):
                         CIK,
                         [target],
                         state,
-                        {"123456789": "XYZ"},
                         threading.Lock(),
                     ),
                 )
@@ -746,7 +737,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
             def record_systemic_failure(
                 targets: list[dict],
                 state: dict,
-                _cusip_map: dict[str, str],
             ) -> tuple[bool, int]:
                 pipeline._set_security_identity_pending(
                     state,
@@ -762,7 +752,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
                 mock.patch.object(
                     pipeline, "LEGACY_STATE_PATH", root / "missing-state.json"
                 ),
-                mock.patch.object(pipeline, "load_cusip_map", return_value={}),
                 mock.patch.object(
                     pipeline,
                     "retained_security_identity_migration_targets",
@@ -826,7 +815,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
             def record_isolated_failure(
                 targets: list[dict],
                 state: dict,
-                _cusip_map: dict[str, str],
             ) -> tuple[bool, int]:
                 pipeline._set_security_identity_pending(
                     state,
@@ -847,7 +835,6 @@ class IdentityMigrationOrchestrationTests(unittest.TestCase):
                 mock.patch.object(
                     pipeline, "LEGACY_STATE_PATH", root / "missing-state.json"
                 ),
-                mock.patch.object(pipeline, "load_cusip_map", return_value={}),
                 mock.patch.object(
                     pipeline,
                     "retained_security_identity_migration_targets",

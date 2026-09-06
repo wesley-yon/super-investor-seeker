@@ -59,14 +59,14 @@ a:hover{text-decoration:underline}
 .fund-sidebar{align-items:start}
 .fund-title h1{overflow-wrap:anywhere}
 .fund-meta{display:flex;align-items:center;flex-wrap:wrap}
-.fund-meta span+span:before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--mt);margin-right:12px;vertical-align:middle;opacity:.75}
+.fund-meta span+span:before{content:"";display:inline-block;border-radius:50%;vertical-align:middle}
 .fund-stat-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.9fr) minmax(0,1fr) minmax(0,1fr)}
 .fund-stat{display:flex;align-items:center;justify-content:space-between;overflow:hidden}
 .fund-stat-label{text-transform:uppercase}
 .fund-stat-value{line-height:1}
 .fund-stat .mini{flex:0 0 auto}
 .mini-donut{border-radius:50%;position:relative}
-.mini-donut:after{content:"";position:absolute;inset:6px;background:var(--cd);border-radius:50%}
+.mini-donut:after{content:"";position:absolute;border-radius:50%}
 .fund-panel,.side-panel{overflow:hidden}
 .fund-panel-head{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bd);gap:16px}
 .exit-panel{margin-top:18px}
@@ -91,7 +91,7 @@ a:hover{text-decoration:underline}
 .ticker-mark{line-height:1}
 .stock-title h1{margin-bottom:6px;overflow-wrap:anywhere}
 .stock-meta{display:flex;align-items:center;flex-wrap:wrap}
-.stock-meta span+span:before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--mt);margin-right:12px;vertical-align:middle;opacity:.75}
+.stock-meta span+span:before{content:"";display:inline-block;border-radius:50%;vertical-align:middle}
 .stock-stat-grid{display:grid;grid-template-columns:.95fr 1.05fr .95fr 1.2fr}
 .stock-stat{display:flex;align-items:center;justify-content:space-between;overflow:hidden}
 .stock-stat-label{text-transform:uppercase}
@@ -116,11 +116,8 @@ a:hover{text-decoration:underline}
 .stock-summary-rank{font-size:12px;color:var(--mt)}
 .stock-summary-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 .fund-data-footer,.stock-data-footer{grid-column:1/-1;border-top:1px solid rgba(148,163,184,.12)}
-@media(max-width:1350px){.stock-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:1200px){.stock-sidebar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
-@media(max-width:768px){.stock-title{grid-template-columns:auto minmax(0,1fr)}.stock-title h1{margin-bottom:4px}.stock-meta span+span:before{display:none}.stock-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stock-sidebar{grid-template-columns:1fr}.stock-stat .mini,.stock-icon{width:28px;height:28px;max-width:72px}.stock-stat:last-child{grid-column:1/-1}.stock-largest{gap:10px}.stock-panel .fund-panel-head{height:auto;min-height:0;padding:10px 12px;gap:10px;flex-direction:row;align-items:center}.stock-panel .fund-panel-title{font-size:15px}.stock-panel .holdings-tools{gap:8px;width:auto;flex:1}.stock-panel .holdings-search{width:100%;min-width:0;padding:8px 32px 8px 12px}.stock-table-footer{grid-template-columns:1fr;justify-items:start}.stock-pagination{justify-content:flex-start;flex-wrap:wrap}.rows-control{justify-self:start}.fund-data-footer,.stock-data-footer{padding:10px 0 0}#stockTable{min-width:700px;font-size:13px;table-layout:fixed}#stockTable th,#stockTable td{padding:9px 10px}#stockTable th:nth-child(2),#stockTable td:nth-child(2){width:160px;max-width:160px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#stockTable th:nth-child(3),#stockTable td:nth-child(3){width:92px}#stockTable th:nth-child(4),#stockTable td:nth-child(4){width:92px}#stockTable th:nth-child(5),#stockTable td:nth-child(5){width:82px}#stockTable th:nth-child(6),#stockTable td:nth-child(6){width:94px}#stockTable th:nth-child(7),#stockTable td:nth-child(7){width:72px}#stockTable th:nth-child(8),#stockTable td:nth-child(8){width:94px}}
-@media(max-width:1100px){.fund-sidebar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.fund-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:768px){.logo span:last-child{font-size:14px!important}.gsearch-wrap{order:3;flex-basis:100%}.back{margin-left:auto}.fund-meta span+span:before{display:none}.fund-stat-grid,.fund-sidebar{grid-template-columns:1fr}.fund-stat .mini{max-width:104px}.fund-panel-head{align-items:stretch;flex-direction:column}.holdings-tools{width:100%}.holdings-search{min-width:0}.summary-row{grid-template-columns:minmax(52px,auto) minmax(0,1fr) auto}#fundTable{min-width:738px;font-size:13px;table-layout:fixed}#fundTable th,#fundTable td{padding:9px 10px}#fundTable th:nth-child(2),#fundTable td:nth-child(2){width:124px;max-width:124px!important}#fundTable th:nth-child(3),#fundTable td:nth-child(3){width:150px;max-width:150px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#fundTable th:nth-child(4),#fundTable td:nth-child(4){width:90px}#fundTable th:nth-child(5),#fundTable td:nth-child(5){width:92px}#fundTable th:nth-child(6),#fundTable td:nth-child(6){width:92px}#fundTable th:nth-child(7),#fundTable td:nth-child(7){width:94px}#fundTable th:nth-child(8),#fundTable td:nth-child(8){width:78px}#fundTable th:nth-child(9),#fundTable td:nth-child(9){width:72px}#fundTable th:nth-child(10),#fundTable td:nth-child(10){width:86px}}
+@media(max-width:768px){.stock-title h1{margin-bottom:4px}.stock-stat .mini,.stock-icon{width:28px;height:28px;max-width:72px}.stock-largest{gap:10px}.stock-panel .fund-panel-head{height:auto;min-height:0}.stock-panel .fund-panel-title{font-size:15px}.stock-panel .holdings-tools{gap:8px;flex:1}.stock-panel .holdings-search{min-width:0;padding:8px 32px 8px 12px}.stock-pagination{justify-content:flex-start;flex-wrap:wrap}.fund-data-footer,.stock-data-footer{padding:10px 0 0}#stockTable{min-width:700px;font-size:13px;table-layout:fixed}#stockTable th,#stockTable td{padding:9px 10px}#stockTable th:nth-child(2),#stockTable td:nth-child(2){width:160px;max-width:160px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#stockTable th:nth-child(3),#stockTable td:nth-child(3){width:92px}#stockTable th:nth-child(4),#stockTable td:nth-child(4){width:92px}#stockTable th:nth-child(5),#stockTable td:nth-child(5){width:82px}#stockTable th:nth-child(6),#stockTable td:nth-child(6){width:94px}#stockTable th:nth-child(7),#stockTable td:nth-child(7){width:72px}#stockTable th:nth-child(8),#stockTable td:nth-child(8){width:94px}}
+@media(max-width:768px){.logo span:last-child{font-size:14px!important}.holdings-search{min-width:0}.summary-row{grid-template-columns:minmax(52px,auto) minmax(0,1fr) auto}#fundTable{min-width:738px;font-size:13px;table-layout:fixed}#fundTable th,#fundTable td{padding:9px 10px}#fundTable th:nth-child(2),#fundTable td:nth-child(2){width:124px;max-width:124px!important}#fundTable th:nth-child(3),#fundTable td:nth-child(3){width:150px;max-width:150px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#fundTable th:nth-child(4),#fundTable td:nth-child(4){width:90px}#fundTable th:nth-child(5),#fundTable td:nth-child(5){width:92px}#fundTable th:nth-child(6),#fundTable td:nth-child(6){width:92px}#fundTable th:nth-child(7),#fundTable td:nth-child(7){width:94px}#fundTable th:nth-child(8),#fundTable td:nth-child(8){width:78px}#fundTable th:nth-child(9),#fundTable td:nth-child(9){width:72px}#fundTable th:nth-child(10),#fundTable td:nth-child(10){width:86px}}
 </style>
 <style id="analysts-notebook-theme">
 /* Analyst's Notebook visual system. App behavior and DOM contracts remain unchanged. */
@@ -686,8 +683,7 @@ const FUND_PRODUCT_NAME_KINDS = new Set([
   "CLOSED-END FUND",
 ]);
 
-function normalizeSecurityLabelPayload(data) {
-  const source = data?.labels;
+function normalizeSecurityTextMap(source) {
   if (!source || typeof source !== "object" || Array.isArray(source)) {
     return Object.create(null);
   }
@@ -716,21 +712,6 @@ function normalizeSecurityKindPayload(data) {
   return normalized;
 }
 
-function normalizeSecurityProductNamePayload(data) {
-  const source = data?.product_names;
-  if (!source || typeof source !== "object" || Array.isArray(source)) {
-    return Object.create(null);
-  }
-  const normalized = Object.create(null);
-  for (const [rawCusip, rawName] of Object.entries(source)) {
-    const cusip = String(rawCusip || "").trim().toUpperCase();
-    const name = String(rawName || "").trim().replace(/\s+/g, " ");
-    if (!cusip || !name || name.toUpperCase() === cusip) continue;
-    normalized[cusip] = name;
-  }
-  return normalized;
-}
-
 function normalizeSecurityFundIdentityPayload(data) {
   const source = data?.fund_identities;
   if (!Array.isArray(source)) return new Set();
@@ -741,19 +722,21 @@ function normalizeSecurityFundIdentityPayload(data) {
   );
 }
 
+async function fetchJson(url) {
+  const response = await fetch(url, { cache: "no-cache" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 async function ensureSecurityLabels() {
   if (!securityLabelsPromise) {
-    securityLabelsPromise = fetch("data/security_labels.json", { cache: "no-cache" })
-      .then(response => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();
-      })
+    securityLabelsPromise = fetchJson("data/security_labels.json")
       .then(data => {
         assertCompatibleDataContract(data, "data/security_labels.json");
         assertRequiredSecurityMetadata(data, "data/security_labels.json");
-        securityLabels = normalizeSecurityLabelPayload(data);
+        securityLabels = normalizeSecurityTextMap(data.labels);
         securityKinds = normalizeSecurityKindPayload(data);
-        securityProductNames = normalizeSecurityProductNamePayload(data);
+        securityProductNames = normalizeSecurityTextMap(data.product_names);
         securityFundIdentities = normalizeSecurityFundIdentityPayload(data);
         return securityLabels;
       })
@@ -1722,15 +1705,11 @@ function spark(arr) {
 
 function badge(ch) {
   if (!ch) return `<span class="badge mono" style="color:var(--mt)">—</span>`;
-  const m = {
-    NEW:  ["var(--gn-soft)", "var(--gn)", "NEW"],
-    UP:   ["var(--gn-soft)", "var(--gn)", Number.isFinite(ch.p) ? `+${Math.abs(ch.p).toFixed(1)}%` : "INCREASED"],
-    DOWN: ["var(--rd-soft)", "var(--rd)", Number.isFinite(ch.p) ? `-${Math.abs(ch.p).toFixed(1)}%` : "REDUCED"],
-    EXIT: ["var(--rd-soft)", "var(--rd)", "EXIT"],
-    SAME: ["transparent",    "var(--mt)", "—"]
-  };
-  const [bg, co, tx] = m[ch.t] || m.SAME;
-  return `<span class="badge mono" style="background:${bg};color:${co}">${tx}</span>`;
+  const positive = ch.t === "NEW" || ch.t === "UP";
+  const negative = ch.t === "EXIT" || ch.t === "DOWN";
+  const bg = positive ? "var(--gn-soft)" : negative ? "var(--rd-soft)" : "transparent";
+  const color = positive ? "var(--gn)" : negative ? "var(--rd)" : "var(--mt)";
+  return `<span class="badge mono" style="background:${bg};color:${color}">${changeText(ch)}</span>`;
 }
 
 function displayDate(dateStr) {
@@ -1947,6 +1926,33 @@ function summaryEvent(label, row, emptyText) {
     </div>`;
 }
 
+function statCard(kind, label, value, visual) {
+  return `<div class="${kind}-stat">
+            <div>
+              <div class="${kind}-stat-label">${label}</div>
+              <div class="${kind}-stat-value mono">${value}</div>
+            </div>
+            ${visual}
+          </div>`;
+}
+
+function holdingIdentityCells(h, rowBg = "") {
+  const lookupId = stockLookupId(h.cusip || h.ticker, holdingPublishedInstrumentType(h));
+  const displayLabel = fundTicker(h);
+  const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
+  const background = rowBg ? `background:${rowBg};` : "";
+  const securityCell = lookupId
+    ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}</td>`
+    : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;${background}white-space:nowrap">${esc(displayLabel)}</td>`;
+  return `${securityCell}
+      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>`;
+}
+
+function holderFundCell(holder, rowBg = "") {
+  const background = rowBg ? `;background:${rowBg}` : "";
+  return `<td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap${background}" onclick="loadFund(${holder.cik})">${esc(displayHolderName(holder.name || ""))}</td>`;
+}
+
 
 // ---------- curated browse lists ----------
 // Stable identities that should always lead the popular-filer list when they
@@ -2092,7 +2098,6 @@ async function loadCachedJson({
   url,
   loadingMessage,
   errorTitle,
-  errorPath,
   logLabel,
 }) {
   let data = cache.get(cacheKey);
@@ -2100,14 +2105,12 @@ async function loadCachedJson({
 
   showLoadingMessage(loadingMessage);
   try {
-    const r = await fetch(url, { cache: "no-cache" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    data = await r.json();
+    data = await fetchJson(url);
     cache.set(cacheKey, data);
     return data;
   } catch (e) {
     console.error(`${logLabel} fetch failed:`, e);
-    showLoadError(errorTitle, errorPath);
+    showLoadError(errorTitle, url);
     return null;
   }
 }
@@ -2186,25 +2189,22 @@ const DEFAULT_DIR = {
   value: "desc", shares: "desc", qoq: "desc",
 };
 
+function toggleSort(sort, col) {
+  sort.dir = sort.col === col
+    ? sort.dir === "asc" ? "desc" : "asc"
+    : DEFAULT_DIR[col] || "desc";
+  sort.col = col;
+}
+
 function onFundSort(col) {
-  if (fundSort.col === col) {
-    fundSort.dir = fundSort.dir === "asc" ? "desc" : "asc";
-  } else {
-    fundSort.col = col;
-    fundSort.dir = DEFAULT_DIR[col] || "desc";
-  }
+  toggleSort(fundSort, col);
   curFundRows = sortRows(curFundRows, fundSort.col, fundSort.dir, "fund");
   renderFundTbody();
   updateSortArrows("fundTable", fundSort);
 }
 
 function onStockSort(col) {
-  if (stockSort.col === col) {
-    stockSort.dir = stockSort.dir === "asc" ? "desc" : "asc";
-  } else {
-    stockSort.col = col;
-    stockSort.dir = DEFAULT_DIR[col] || "desc";
-  }
+  toggleSort(stockSort, col);
   curStockRows = sortRows(curStockRows, stockSort.col, stockSort.dir, "stock");
   stockPage = 1;
   renderStockTbody();
@@ -2251,9 +2251,7 @@ function normalizeSearchTickers(data) {
 
 async function fetchBootstrapIndex() {
   try {
-    const r = await fetch("data/funds-index.json", { cache: "no-cache" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
+    const data = await fetchJson("data/funds-index.json");
     assertCompatibleDataContract(data, "data/funds-index.json");
     if (!data || !Array.isArray(data.funds) || data.funds.length === 0) {
       throw new Error("funds-index.json has no funds");
@@ -2264,9 +2262,7 @@ async function fetchBootstrapIndex() {
     if (error instanceof DataContractMismatchError) throw error;
     // Safe rollout fallback for a stale Pages deployment or an older checkout.
     console.warn("funds-index.json load failed; falling back to index.json:", error);
-    const r = await fetch("data/index.json", { cache: "no-cache" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
+    const data = await fetchJson("data/index.json");
     assertCompatibleDataContract(data, "data/index.json");
     data.tickers = normalizeSearchTickers(data);
     return data;
@@ -2277,11 +2273,7 @@ async function ensureSearchIndex() {
   if (Array.isArray(idx?.tickers) && idx.tickers.length) return idx.tickers;
   if (!searchIndexPromise) {
     searchIndexError = null;
-    searchIndexPromise = fetch("data/index.json", { cache: "no-cache" })
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    searchIndexPromise = fetchJson("data/index.json")
       .then(data => {
         assertCompatibleDataContract(data, "data/index.json");
         const tickers = normalizeSearchTickers(data);
@@ -2659,7 +2651,6 @@ async function loadFund(cik, opts = {}) {
     url: `data/funds/${cik}.json`,
     loadingMessage: `Loading fund ${cik}...`,
     errorTitle: `Couldn't load fund ${cik}`,
-    errorPath: `data/funds/${cik}.json`,
     logLabel: "fund",
   });
   await securityLabelsReady;
@@ -2751,14 +2742,12 @@ function renderFund(f) {
   );
 
   // Build per-security history across filings for changes and sparklines.
-  const hh = {}; // position key -> dated quantity/value history
+  const holdingHistories = {}; // position key -> date -> quantity/value record
   quarters.forEach(q => {
     (q.holdings || []).forEach(h => {
       const key = holdingHistoryKey(h);
-      if (!hh[key]) {
-        hh[key] = { history: {} };
-      }
-      hh[key].history[q.report_date] = {
+      if (!holdingHistories[key]) holdingHistories[key] = {};
+      holdingHistories[key][q.report_date] = {
         date: q.report_date,
         shares: h.shares || 0,
         value: h.value || 0,
@@ -2771,8 +2760,8 @@ function renderFund(f) {
   // Enrich current quarter's holdings
   const enriched = (cur.holdings || []).map(h => {
     const key = holdingHistoryKey(h);
-    const hist = hh[key] || { history: {} };
-    const prevRec = prev ? hist.history[prev.report_date] : null;
+    const history = holdingHistories[key] || {};
+    const prevRec = prev ? history[prev.report_date] : null;
     const pct = cur.total_value > 0 ? (h.value / cur.total_value) * 100 : 0;
     const prevPct = (prevRec && prev && prev.total_value > 0)
       ? (prevRec.value / prev.total_value) * 100
@@ -2791,7 +2780,7 @@ function renderFund(f) {
       : null;
 
     const shareHistory = quartersAsc.map(
-      q => hist.history[q.report_date] || null
+      q => history[q.report_date] || null
     );
     const sparkData = contiguousQuarterHistory &&
       shareTrendIsComparable(
@@ -2800,7 +2789,7 @@ function renderFund(f) {
       )
       ? shareHistory.map(record => record.shares)
       : [];
-    return { ...h, pct, prevPct, ch, sparkData, _key: key };
+    return { ...h, pct, prevPct, ch, sparkData };
   });
   enriched.sort((a, b) => (b.value || 0) - (a.value || 0));
 
@@ -2813,10 +2802,10 @@ function renderFund(f) {
         .filter(h => !currentKeys.has(holdingHistoryKey(h)))
         .map(h => {
           const key = holdingHistoryKey(h);
-          const hist = hh[key] || { history: {} };
+          const history = holdingHistories[key] || {};
           const prevPct = prev.total_value > 0 ? ((h.value || 0) / prev.total_value) * 100 : 0;
           const shareHistory = quartersAsc.map(
-            q => hist.history[q.report_date] || null
+            q => history[q.report_date] || null
           );
           return {
             ...h,
@@ -2830,8 +2819,6 @@ function renderFund(f) {
               )
               ? shareHistory.map(record => record.shares)
               : [],
-            exitReportDate: cur.report_date,
-            _key: key,
           };
         })
         .sort((a, b) => (b.value || 0) - (a.value || 0))
@@ -2863,17 +2850,9 @@ function renderFund(f) {
   curFundRows = sortRows(enriched, fundSort.col, fundSort.dir, "fund");
   const sec13fUrl = sec13fFilingsUrl(f);
   const fundExitRows = exited.map((h, i) => {
-    const ht = holdingPublishedInstrumentType(h);
-    const displayLabel = fundTicker(h);
-    const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
-    const lookupId = stockLookupId(h.cusip || h.ticker, ht);
-    const securityCell = lookupId
-      ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;white-space:nowrap" onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}</td>`
-      : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;white-space:nowrap">${esc(displayLabel)}</td>`;
     return `<tr>
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:11px">${i + 1}</td>
-      ${securityCell}
-      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>
+      ${holdingIdentityCells(h)}
       <td class="mono" style="text-align:right;color:var(--mt)">${fP(h.prevPct)}</td>
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
       <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed, h.quantity_unknown)}</td>
@@ -2917,33 +2896,15 @@ function renderFund(f) {
 
         ${fundStatusNotice}
         <div class="fund-stat-grid">
-          <div class="fund-stat">
-            <div>
-              <div class="fund-stat-label">13F Equity Value</div>
-              <div class="fund-stat-value mono">${fV(cur.total_value)}</div>
-            </div>
-            ${miniLine(valuesAsc)}
-          </div>
-          <div class="fund-stat">
-            <div>
-              <div class="fund-stat-label">Positions</div>
-              <div class="fund-stat-value mono">${enriched.length.toLocaleString()}</div>
-            </div>
-            ${miniBars(positionsAsc)}
-          </div>
+          ${statCard("fund", "13F Equity Value", fV(cur.total_value), miniLine(valuesAsc))}
+          ${statCard("fund", "Positions", enriched.length.toLocaleString(), miniBars(positionsAsc))}
           <div class="fund-stat">
             <div class="top-position-copy">
               <div class="fund-stat-label">Top Position</div>
               <div class="fund-stat-value mono top-position-value ${top && securityLabelNeedsWrap(fundTicker(top)) ? "security-label-position" : ""}"><span class="top-position-symbol">${esc(fundTicker(top))}</span><span class="top-position-percent">${top ? fP(top.pct) : "—"}</span></div>
             </div>
           </div>
-          <div class="fund-stat">
-            <div>
-              <div class="fund-stat-label">Top 5 Concentration</div>
-              <div class="fund-stat-value mono">${fP(top5Pct)}</div>
-            </div>
-            ${donut(top5Pct)}
-          </div>
+          ${statCard("fund", "Top 5 Concentration", fP(top5Pct), donut(top5Pct))}
         </div>
 
         <section class="fund-panel">
@@ -3022,18 +2983,10 @@ function renderFundTbody() {
     : curFundRows;
 
   const rows = visibleRows.map((h, i) => {
-    const ht = holdingPublishedInstrumentType(h);
     const rowBg = i%2 ? "var(--sf)" : "#06101a";
-    const displayLabel = fundTicker(h);
-    const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
-    const lookupId = stockLookupId(h.cusip || h.ticker, ht);
-    const securityCell = lookupId
-      ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;background:${rowBg};white-space:nowrap" onclick="loadStock('${esc(lookupId)}')">${esc(displayLabel)}</td>`
-      : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;background:${rowBg};white-space:nowrap">${esc(displayLabel)}</td>`;
     return `<tr style="background:${i%2 ? "var(--sf)" : "transparent"}">
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:11px">${i+1}</td>
-      ${securityCell}
-      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>
+      ${holdingIdentityCells(h, rowBg)}
       <td class="mono" style="text-align:right;color:${h.pct >= 5 ? "var(--ac)" : "var(--mt)"}">${fP(h.pct)}</td>
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
       <td class="mono" style="text-align:right">${formatShares(h.shares, h.shares_imputed, h.quantity_unknown)}</td>
@@ -3052,7 +3005,6 @@ function renderFundTbody() {
   }
 }
 
-// ---------- STOCK: home ----------
 // ---------- STOCK: detail ----------
 async function loadStock(stockId, opts = {}) {
   if (dataContractBlocked) {
@@ -3087,7 +3039,6 @@ async function loadStock(stockId, opts = {}) {
     url: stockPath,
     loadingMessage: `Loading ${loadingSecurityLabel}...`,
     errorTitle: `Couldn't load ${loadingSecurityLabel}`,
-    errorPath: stockPath,
     logLabel: "stock",
   });
   if (dataContractBlocked) {
@@ -3134,16 +3085,16 @@ function renderStock(sd, stockEntry = null) {
       withheld: aligned.withheld || null,
     };
 
-    if (aligned.state === "CURRENT") {
-      const current = aligned.current;
+    if (["CURRENT", "STALE", "WITHHELD"].includes(aligned.state)) {
+      const record = aligned.state === "CURRENT" ? aligned.current : aligned.reference;
       return {
         ...base,
-        shares: Number(current?.shares) || 0,
-        sharesImputed: current?.shares_imputed === true,
-        quantityUnknown: current?.quantity_unknown === true,
-        value: Number(current?.value) || 0,
-        pctOfFund: Number(current?.pct_of_fund) || 0,
-        asOfDate: current?.date || null,
+        shares: Number(record?.shares) || 0,
+        sharesImputed: record?.shares_imputed === true,
+        quantityUnknown: record?.quantity_unknown === true,
+        value: Number(record?.value) || 0,
+        pctOfFund: Number(record?.pct_of_fund) || 0,
+        asOfDate: record?.date || null,
       };
     }
     if (aligned.state === "EXIT") {
@@ -3158,19 +3109,6 @@ function renderStock(sd, stockEntry = null) {
         priorQuantityUnknown: previous?.quantity_unknown === true,
         priorValue: Number(previous?.value) || 0,
         priorPctOfFund: Number(previous?.pct_of_fund) || 0,
-        priorAsOfDate: previous?.date || null,
-      };
-    }
-    if (aligned.state === "STALE" || aligned.state === "WITHHELD") {
-      const reference = aligned.reference;
-      return {
-        ...base,
-        shares: Number(reference?.shares) || 0,
-        sharesImputed: reference?.shares_imputed === true,
-        quantityUnknown: reference?.quantity_unknown === true,
-        value: Number(reference?.value) || 0,
-        pctOfFund: Number(reference?.pct_of_fund) || 0,
-        asOfDate: reference?.date || null,
       };
     }
     return base;
@@ -3202,9 +3140,8 @@ function renderStock(sd, stockEntry = null) {
     currentReportingQuarter
   );
 
-  const topByValue = [...currentHolders].sort((a, b) => (b.value || 0) - (a.value || 0));
-  const topHolder = topByValue[0] || null;
-  const topConviction = [...currentHolders]
+  const topHolder = currentHolders[0] || null;
+  const topConviction = currentHolders
     .filter(h => (h.pctOfFund || 0) > 0)
     .sort((a, b) => (b.pctOfFund || 0) - (a.pctOfFund || 0))
     .slice(0, 5);
@@ -3272,7 +3209,7 @@ function renderStock(sd, stockEntry = null) {
   const stockExitRows = recentExits.map((h, i) => `
     <tr>
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${i + 1}</td>
-      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      ${holderFundCell(h)}
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.priorValue)}</td>
       <td class="mono" style="text-align:right">${formatShares(h.priorShares, h.priorSharesImputed, h.priorQuantityUnknown)}</td>
       <td class="mono" style="text-align:right;color:var(--mt)">${h.priorPctOfFund > 0 ? fP(h.priorPctOfFund) : "—"}</td>
@@ -3300,7 +3237,7 @@ function renderStock(sd, stockEntry = null) {
   const excludedRows = (rows, stateLabel) => rows.map((h, i) => `
     <tr>
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${i + 1}</td>
-      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      ${holderFundCell(h)}
       <td class="mono" style="text-align:right;font-weight:600">${h.asOfDate ? fV(h.value) : "—"}</td>
       <td class="mono" style="text-align:right">${h.asOfDate ? formatShares(h.shares, h.sharesImputed, h.quantityUnknown) : "—"}</td>
       <td class="mono" style="text-align:right;color:var(--mt);font-size:11px">${esc(h.asOfDate || "—")}</td>
@@ -3376,27 +3313,9 @@ function renderStock(sd, stockEntry = null) {
         ${classificationWarning}
         ${aggregateTrendNotice}
         <div class="stock-stat-grid">
-          <div class="stock-stat">
-            <div>
-              <div class="stock-stat-label">Current Institutional Holders</div>
-              <div class="stock-stat-value mono">${currentHolders.length.toLocaleString()}</div>
-            </div>
-            ${holdersIcon()}
-          </div>
-          <div class="stock-stat">
-            <div>
-              <div class="stock-stat-label">Total Held Value</div>
-              <div class="stock-stat-value mono">${fV(totV)}</div>
-            </div>
-            ${miniLine(aggregateValues)}
-          </div>
-          <div class="stock-stat">
-            <div>
-              <div class="stock-stat-label">Total Exact Shares</div>
-              <div class="stock-stat-value mono">${fS(totS)}</div>
-            </div>
-            ${miniBars(aggregateShares)}
-          </div>
+          ${statCard("stock", "Current Institutional Holders", currentHolders.length.toLocaleString(), holdersIcon())}
+          ${statCard("stock", "Total Held Value", fV(totV), miniLine(aggregateValues))}
+          ${statCard("stock", "Total Exact Shares", fS(totS), miniBars(aggregateShares))}
           <div class="stock-stat">
             <div class="stock-largest">
               ${bankIcon()}
@@ -3443,7 +3362,7 @@ function renderStock(sd, stockEntry = null) {
       <aside class="stock-sidebar">
         <section class="side-panel">
           <div class="side-title">Ownership Summary</div>
-          ${summarySection("Top Holders by Value", topByValue.slice(0, 5), h => fV(h.value), "value")}
+          ${summarySection("Top Holders by Value", currentHolders.slice(0, 5), h => fV(h.value), "value")}
           <div class="summary-line"></div>
           ${summarySection("Highest Conviction (% of Fund)", topConviction, h => fP(h.pctOfFund), "pct")}
           <div class="summary-line"></div>
@@ -3484,7 +3403,7 @@ function renderStockTbody() {
     const rowBg = i%2 ? "var(--sf)" : "var(--bg)";
     return `<tr style="background:${i%2 ? "var(--sf)" : "transparent"}">
       <td class="mono col-rank" style="text-align:center;color:var(--mt);font-size:12px">${rowNumber}</td>
-      <td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:${rowBg}" onclick="loadFund(${h.cik})">${esc(displayHolderName(h.name || ""))}</td>
+      ${holderFundCell(h, rowBg)}
       <td class="mono" style="text-align:right;font-weight:600">${fV(h.value)}</td>
       <td class="mono" style="text-align:right">${formatShares(h.shares, h.sharesImputed, h.quantityUnknown)}</td>
       <td class="mono" style="text-align:right;color:${pctColor}">${pctText}</td>

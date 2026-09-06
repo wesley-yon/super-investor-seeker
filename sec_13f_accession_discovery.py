@@ -28,6 +28,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
+from sec_http import make_rate_pacer
 
 SUBMISSIONS_ROOT = "https://data.sec.gov/submissions"
 FORM_13F_TYPES = frozenset({"13F-HR", "13F-HR/A"})
@@ -569,19 +570,9 @@ def make_sec_submissions_fetcher(
             "SEC request rate must be greater than zero and at most eight per second"
         )
     http = session or requests.Session()
-    rate_lock = threading.Lock()
-    next_request_at = 0.0
-    interval = 1.0 / float(requests_per_second)
-
-    def pace() -> None:
-        nonlocal next_request_at
-        with rate_lock:
-            now = time.monotonic()
-            scheduled = max(now, next_request_at)
-            delay = scheduled - now
-            next_request_at = scheduled + interval
-        if delay > 0:
-            time.sleep(delay)
+    pace = make_rate_pacer(
+        requests_per_second, clock=time, lock=threading.Lock(),
+    )
 
     def fetch(url: str) -> bytes:
         canonical_url = normalize_sec_submissions_url(url)

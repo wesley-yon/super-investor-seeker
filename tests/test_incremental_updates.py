@@ -235,13 +235,12 @@ class DurableRecentFeedTests(unittest.TestCase):
             newer = {'cik': 1, 'accession': '0000000001-26-000001', 'accepted_at': '2026-09-06T12:00:00Z'}
             state = {'_processed_set': set(), '_quarantined': {}, 'recent_feed_pending': {older['accession']: older}}
             calls = []
-            def replay(cik, triggers, _mapping, _quarters, state, **kwargs):
+            def replay(cik, triggers, _quarters, state, **kwargs):
                 calls.append(cik)
                 state['_processed_set'].update(f['accession'] for f in triggers)
                 return len(triggers)
             with mock.patch.multiple(p, DATA_DIR=data, FUNDS_DIR=data / 'funds', STOCKS_DIR=data / 'stocks',
-                                     load_state=mock.Mock(return_value=state), load_cusip_map=mock.Mock(return_value={}),
-                                     save_state=mock.Mock(), replay_quarters_for_cik=mock.Mock(side_effect=replay)), \
+                                     load_state=mock.Mock(return_value=state), save_state=mock.Mock(), replay_quarters_for_cik=mock.Mock(side_effect=replay)), \
                  mock.patch.object(feed, 'fetch_recent_feed_filings', return_value=[newer]), \
                  mock.patch.dict('os.environ', {'RECENT_13F_MAX_CIKS': '1', 'GITHUB_OUTPUT': str(data / 'outputs')}):
                 self.assertEqual(0, feed.main())

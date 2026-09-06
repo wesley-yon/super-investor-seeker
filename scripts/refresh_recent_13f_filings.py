@@ -198,7 +198,6 @@ def main() -> int:
 
     state = pipeline.load_state()
     initially_processed = set(state["_processed_set"])
-    cusip_map = pipeline.load_cusip_map()
     state_lock = threading.Lock()
 
     pipeline.log.info(
@@ -251,7 +250,6 @@ def main() -> int:
                 processed += pipeline.replay_quarters_for_cik(
                     cik,
                     triggers,
-                    cusip_map,
                     quarters_n,
                     state,
                     state_lock=state_lock,

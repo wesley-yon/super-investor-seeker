@@ -41,6 +41,8 @@ from typing import Any
 from urllib.parse import urldefrag, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
+from atomic_files import atomic_text_output
+from atomic_files import fsync_directory as _fsync_directory
 from composition_integrity import calculate_quarter_composition_hash
 from sec_13f_accession_discovery import (
     Sec13FAccessionDiscoveryError,
@@ -469,61 +471,17 @@ def _dataset_url_sort_key(url: str) -> tuple[int, int, str]:
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as out:
-            json.dump(payload, out, sort_keys=True, indent=2, ensure_ascii=False)
-            out.write("\n")
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
-    except BaseException:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+    with atomic_text_output(path, sync_parent=_fsync_directory) as output:
+        json.dump(payload, output, sort_keys=True, indent=2, ensure_ascii=False)
+        output.write("\n")
 
 
 def _atomic_write_fund_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as out:
-            json.dump(payload, out, separators=(",", ":"), ensure_ascii=False)
-            out.write("\n")
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
-    except BaseException:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    with atomic_text_output(
+        path, sync_parent=_fsync_directory, newline=None,
+    ) as output:
+        json.dump(payload, output, separators=(",", ":"), ensure_ascii=False)
+        output.write("\n")
 
 
 def _existing_filesystem_ancestor(path: Path) -> Path:
