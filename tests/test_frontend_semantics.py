@@ -248,6 +248,41 @@ class FrontendSemanticsTests(unittest.TestCase):
             self.html,
         )
 
+    def test_sec_descriptions_preserve_mapped_stock_tickers(self) -> None:
+        result = self.run_javascript("""
+            securityLabels = {
+              "037833100": "APPLE INC — COM",
+              "00370M103": "ABIVAX SA — SPONSORED ADS",
+              "78462F103": "SPDR S&P 500 ETF TR — TR UNIT",
+              "111111111": "UNMAPPED ISSUER — COM",
+              "76954AAB9": "RIVIAN AUTOMOTIVE INC — NOTE 4.625% 3/1",
+              "65339F655": "NEE.PRS 7.299% CORPORATE UNITS 02/15/29",
+              "222222222": "AAPL",
+            };
+            securityKinds = {
+              "037833100": "COMMON", "00370M103": "COMMON",
+              "78462F103": "ETF", "111111111": "COMMON",
+              "76954AAB9": "BOND", "65339F655": "PREFERRED",
+              "222222222": "COMMON",
+            };
+            const rows = [
+              {cusip: "037833100", ticker: "AAPL", holding_type: "EQUITY"},
+              {cusip: "00370M103", ticker: "ABVX", holding_type: "EQUITY"},
+              {cusip: "037833100", ticker: "AAPL", holding_type: "CALL"},
+              {cusip: "78462F103", ticker: "SPY", holding_type: "EQUITY"},
+              {cusip: "111111111", ticker: "111111111", holding_type: "EQUITY"},
+              {cusip: "76954AAB9", ticker: "RIVN", holding_type: "NOTE"},
+              {cusip: "65339F655", ticker: "NEE", holding_type: "EQUITY"},
+              {cusip: "222222222", ticker: "OLDALIAS", holding_type: "EQUITY"},
+            ];
+            console.log(JSON.stringify(rows.map(holdingDisplayLabel)));
+        """)
+        self.assertEqual([
+            "AAPL", "ABVX", "AAPL", "SPY", "UNMAPPED ISSUER — COM",
+            "RIVIAN AUTOMOTIVE INC — NOTE 4.625% 3/1",
+            "NEE.PRS 7.299% CORPORATE UNITS 02/15/29", "AAPL",
+        ], result)
+
     def test_security_label_map_is_display_only_and_raw_cusips_are_not_labels(
         self,
     ) -> None:

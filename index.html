@@ -983,9 +983,19 @@ function holdingDisplayLabel(holding) {
   if (!holding) return "—";
   const cusip = String(holding.cusip || "").trim().toUpperCase();
   const mappedLabel = securityLabelForCusip(cusip);
-  if (mappedLabel) return mappedLabel;
-
   const trustedTicker = holdingTrustedTicker(holding);
+  const mappedSymbol = /^[A-Z][A-Z0-9.-]{0,15}(?:\/(?:W|WS|RT))?$/i.test(
+    mappedLabel
+  );
+  // SEC labels describe even mapped stocks. Keep their verified symbol in
+  // the primary label, while preserving structured note/preferred labels and
+  // legacy symbol labels that correct an obsolete raw alias.
+  const tickerFirst = [
+    "COMMON", "EQUITY", "ETF", "MUTUAL FUND", "CLOSED-END FUND",
+    "CALL", "PUT", "OPTION",
+  ].includes(holdingDisplayKind(holding));
+  if (trustedTicker && tickerFirst && !mappedSymbol) return trustedTicker;
+  if (mappedLabel) return mappedLabel;
   if (trustedTicker) return trustedTicker;
 
   const informative = value => {
@@ -3122,13 +3132,11 @@ async function loadStock(stockId, opts = {}) {
   const resolvedId = stockEntry ? stockEntry.stock_id : canonicalId;
   if (!enterDetailView("stock", resolvedId, opts)) return;
   const stockPath = stockFilePath(resolvedId);
-  const loadingSecurityLabel = securityLabelForCusip(parsed.id_base)
-    || holdingTrustedTicker({
+  const loadingSecurityLabel = holdingDisplayLabel({
       ...stockEntry,
       cusip: parsed.id_base,
       instrument_type: parsed.instrument_type,
-    })
-    || securityTypeFallbackLabel(parsed.instrument_type);
+    });
   const stock = await loadCachedJson({
     cache: stockCache,
     cacheKey: resolvedId,
@@ -3295,13 +3303,11 @@ function renderStock(sd, stockEntry = null) {
   const mappedSecurityLabel = securityLabelForCusip(cusipText);
   const trustedTicker = holdingTrustedTicker(securityHolding);
   const tickerMark = securityTickerMark(
-    mappedSecurityLabel || trustedTicker || instrumentType
+    securityText || instrumentType
   );
-  const securityMetadataLabel = (
-    mappedSecurityLabel
-    || instrumentType !== "EQUITY"
-    || !trustedTicker
-  ) ? securityText : "";
+  const securityMetadataLabel = mappedSecurityLabel || (
+    instrumentType !== "EQUITY" || !trustedTicker ? securityText : ""
+  );
   const latestDateText = modeDate ? displayDate(modeDate) : "Most recent filings";
 
   const summaryRows = (rows, valueFn, classFn = () => "") => {
