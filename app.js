@@ -1280,7 +1280,7 @@ function fundSearchIdentity(fund) {
 }
 
 function displayIssuer(name) {
-  return displayEntityName(name)
+  return titleCase(String(name || "").replace(/\s+/g, " ").trim())
     .replace(/\bIshares\b/g, "iShares")
     .replace(/\bIBONDS\b/g, "iBonds")
     .replace(/\bIpath\b/g, "iPath")
@@ -1389,7 +1389,7 @@ function holdingIdentityCells(h, rowBg = "") {
     ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" ><a class="security-link" href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}</a></td>`
     : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;${background}white-space:nowrap">${esc(displayLabel)}</td>`;
   return `${securityCell}
-      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>`;
+      <td title="${esc(companyName)}" class="company-name">${esc(companyName)}</td>`;
 }
 
 function holderFundCell(holder, rowBg = "") {
@@ -2088,7 +2088,7 @@ function globalSearch(q) {
         <span class="gsearch-tag ${esc(searchEntryTagClass(t))}">${esc(searchEntryTagLabel(t))}</span>
         <div style="min-width:0;display:flex;flex-direction:column">
           <span class="mono" style="font-weight:700;color:var(--ac)">${esc(tickerSearchSymbol(t))}</span>
-          <span title="${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}" style="font-size:12px;color:var(--mt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}</span>
+          <span title="${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}" style="font-size:12px;color:var(--mt);white-space:normal;overflow-wrap:anywhere">${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}</span>
         </div>
       </a>
     `).join("")}` : "";
