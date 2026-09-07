@@ -4,6 +4,7 @@ This is an offline format migration, with no acquisition or lookup capability.
 Original receipts stay private and hashed; numerical data is never recomputed.
 """
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 
@@ -72,6 +73,19 @@ def migrate_saved_prices(root: Path) -> dict:
     if not replacements:
         return {'references': 0, 'annotations': 0, 'files': 0}
 
+    indexes = []
+    for name in ('funds-index.json', 'index.json'):
+        path = root / 'data' / name
+        if not path.exists():
+            continue
+        if path.is_symlink():
+            raise q.QuantityEstimationError('data index must not be a symlink')
+        before = path.read_bytes()
+        data = json.loads(before)
+        if not isinstance(data, dict):
+            raise q.QuantityEstimationError('data index must be an object')
+        indexes.append((path, before, data))
+
     changes, annotations = [], 0
     def rewrite(node):
         nonlocal annotations
@@ -108,7 +122,7 @@ def migrate_saved_prices(root: Path) -> dict:
             rewrite(data)
             if annotations != count:
                 changes.append((path, before, data))
-    for path, before, _ in changes:
+    for path, before, _ in (*changes, *indexes):
         if path.read_bytes() != before:
             raise q.QuantityEstimationError('data changed during receipt migration preflight')
     for path, before in input_bytes.items():
@@ -122,6 +136,20 @@ def migrate_saved_prices(root: Path) -> dict:
         q.atomic_json(path, staged)
     for path, _, data in changes:
         q.atomic_json(path, data)
+    # Receipt annotations are part of the exact fund payload hash. Refresh
+    # both bootstrap indexes before pruning old receipts, so an interrupted
+    # index write is retried even when every fund was already migrated.
+    if indexes:
+        revision = hashlib.sha256()
+        for path in sorted((root / 'data/funds').glob('*.json')):
+            revision.update(path.name.encode('utf-8'))
+            revision.update(b'\0')
+            revision.update(path.read_bytes())
+            revision.update(b'\0')
+        for path, _, data in indexes:
+            if 'fund_data_revision' in data:
+                data['fund_data_revision'] = revision.hexdigest()
+                q.atomic_json(path, data)
     for path, book in books.items():
         book['references'] = {
             q.canonical_json_hash(replacements[key]) if key in replacements else key:

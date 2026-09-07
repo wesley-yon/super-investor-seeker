@@ -1,4 +1,5 @@
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -163,12 +164,22 @@ class QuantityPolicyTests(unittest.TestCase):
                                           'method': old['method'], 'unit': 'SH'})
             q.atomic_json(path, fund)
             expected = deepcopy(row); expected.pop('quantity_estimate')
+            index = {'fund_data_revision': '0' * 64, 'last_updated': '2026-09-06T00:00:00Z',
+                     'funds': [{'cik': 4}], 'total_filers': 4}
+            for name in ('funds-index.json', 'index.json'):
+                q.atomic_json(root / 'data' / name, index)
             result = migrate_saved_prices(root)
             self.assertEqual(1, result['annotations'])
             revised = json.loads(path.read_text())['quarters'][0]['holdings'][0]
             evidence = q.load_book(root / '.cache/quantity_estimation_evidence.json')
             self.assertEqual([], q.validate_quantity_annotation(revised, DAY, evidence, cik='4'))
             revised.pop('quantity_estimate'); self.assertEqual(expected, revised)
+            revision = hashlib.sha256()
+            for fund_path in sorted(funds.glob('*.json')):
+                revision.update(fund_path.name.encode() + b'\0' + fund_path.read_bytes() + b'\0')
+            for name in ('funds-index.json', 'index.json'):
+                self.assertEqual({**index, 'fund_data_revision': revision.hexdigest()},
+                                 json.loads((root / 'data' / name).read_bytes()))
             before = path.read_bytes()
             self.assertEqual(0, migrate_saved_prices(root)['references'])
             self.assertEqual(before, path.read_bytes())
@@ -194,6 +205,37 @@ class QuantityPolicyTests(unittest.TestCase):
             self.assertEqual(1, migrate_saved_prices(root)['annotations'])
             row = json.loads(path.read_text())['quarters'][0]['holdings'][0]
             self.assertEqual([], q.validate_quantity_annotation(row, DAY, q.load_book(root / '.cache/quantity_estimation_evidence.json'), cik='4'))
+
+    def test_migration_retries_interrupted_index_revision_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); funds = self.write_funds(root)
+            old = market_fixture(); old_id = q.canonical_json_hash(old)
+            book = {'schema_version': 1, 'references': {old_id: old}}
+            for name in ('quarter_close_prices.json', 'quantity_estimation_evidence.json'):
+                q.atomic_json(root / '.cache' / name, book)
+            path = funds / '4.json'; fund = json.loads(path.read_bytes())
+            fund['quarters'][0]['holdings'][0].update(shares=2.5, shares_imputed=True, reported_shares=0,
+                quantity_estimate={'policy_version': 1, 'reference_id': old_id, 'method': old['method'], 'unit': 'SH'})
+            q.atomic_json(path, fund)
+            for name in ('funds-index.json', 'index.json'):
+                q.atomic_json(root / 'data' / name, {'fund_data_revision': '0' * 64})
+            original_write = q.atomic_json
+            def fail_index(target, payload):
+                if target == root / 'data/index.json':
+                    raise OSError('simulated index interruption')
+                original_write(target, payload)
+            with mock.patch.object(q, 'atomic_json', side_effect=fail_index), self.assertRaises(OSError):
+                migrate_saved_prices(root)
+            self.assertIn(old_id, q.load_book(root / '.cache/quantity_estimation_evidence.json')['references'])
+            self.assertEqual(0, migrate_saved_prices(root)['annotations'])
+            revision = hashlib.sha256()
+            for fund_path in sorted(funds.glob('*.json')):
+                revision.update(fund_path.name.encode() + b'\0' + fund_path.read_bytes() + b'\0')
+            for name in ('funds-index.json', 'index.json'):
+                self.assertEqual(revision.hexdigest(),
+                    json.loads((root / 'data' / name).read_bytes())['fund_data_revision'])
+            self.assertNotIn(old_id, q.load_book(root / '.cache/quantity_estimation_evidence.json')['references'])
+            self.assertEqual({'references': 0, 'annotations': 0, 'files': 0}, migrate_saved_prices(root))
 
 
 if __name__ == '__main__':
