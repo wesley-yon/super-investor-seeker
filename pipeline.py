@@ -103,6 +103,7 @@ from sec_edgar_evidence import (
     merge_sec_edgar_evidence_caches,
     refresh_sec_edgar_evidence,
 )
+from reviewed_ticker_map import apply_review, public_instrument_mappings, REVIEW_SOURCE
 from sec_security_master import (
     DEFAULT_MASTER_PATH as SEC_SECURITY_MASTER_PATH,
     DEFAULT_SOURCE_STATE_PATH as SEC_SOURCE_STATE_PATH,
@@ -2774,6 +2775,7 @@ _SEC_REGISTRY_MAPPING_STATUSES = frozenset({
     "malformed_as_filed",
 })
 _SEC_REGISTRY_TICKER_SOURCES = frozenset({
+    REVIEW_SOURCE,
     "sec_ftd",
     "sec_ixbrl",
 })
@@ -2959,6 +2961,8 @@ def _registry_position_ticker(entry: dict | None, instrument_type: str) -> str |
     normalized_type = normalize_instrument_type(instrument_type)
     if normalized_type in {"CALL", "PUT", "OPT"}:
         ticker = entry.get("underlying_ticker")
+    elif normalized_type in (entry.get("instrument_mappings") or {}):
+        ticker = entry["instrument_mappings"][normalized_type].get("ticker")
     else:
         raw_entry_type = entry.get("type")
         if (
@@ -3010,15 +3014,16 @@ def _resolve_loaded_security(
 
 
 def build_cusip_registry() -> CusipRegistry:
-    """Build the public registry exclusively from exact SEC-master evidence."""
+    """Build the public registry from exact SEC and pinned reviewed identities."""
 
-    log.info("Building SEC-only CUSIP registry...")
+    log.info("Building SEC and reviewed CUSIP registry...")
     if not FUNDS_DIR.exists():
         log.info("  no funds directory; skipping registry build")
         return CusipRegistry()
 
     evidence = _aggregate_cusip_evidence()
-    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
+                          SEC_SECURITY_MASTER_PATH.parent.parent)
     registry: dict[str, dict] = {}
 
     for cusip, rec in sorted(evidence.items()):
@@ -3140,6 +3145,10 @@ def build_cusip_registry() -> CusipRegistry:
             "sources": sorted(set(sources)),
         }
 
+        if resolution.get("price_lookup_allowed") is False:
+            entry["price_lookup_allowed"] = False
+            entry["trading_status"] = "historical_retired_identity"
+
         official_class = _official_master_class(resolution)
         kind = {
             "NOTE": "BOND",
@@ -3205,12 +3214,15 @@ def build_cusip_registry() -> CusipRegistry:
                 *(entry.get("sources") or []),
                 "sec_fund_series",
             })
+        typed = public_instrument_mappings(cusip, instrument_type, master.get("records", {}))
+        if typed:
+            entry["instrument_mappings"] = typed
         registry[cusip] = entry
 
     save_cusip_registry(registry)
     resolved = sum(entry["mapping_status"] == "resolved" for entry in registry.values())
     log.info(
-        "  wrote %s SEC-only entries (%s resolved, %s tickerless)",
+        "  wrote %s evidence-backed entries (%s resolved, %s tickerless)",
         len(registry),
         resolved,
         len(registry) - resolved,
@@ -3228,7 +3240,8 @@ def validate_cusip_registry(
     registry = load_cusip_registry()
     if not registry:
         issues.append("registry is empty")
-    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
+                          SEC_SECURITY_MASTER_PATH.parent.parent)
     master_records = master.get("records") or {}
 
     if not LEGACY_CUSIP_REGISTRY_PATH.exists():
@@ -3269,6 +3282,17 @@ def validate_cusip_registry(
             entry.get("product_name") != master_entry.get("fund_series_name")
         ):
             mismatched_master.append(key)
+
+        if isinstance(master_entry, dict) and any(
+            entry.get(field) != master_entry.get(field)
+            for field in ("price_lookup_allowed", "trading_status")
+        ):
+            unsafe_entries.append(cusip)
+
+        if entry.get("instrument_mappings", {}) != public_instrument_mappings(
+            cusip, entry.get("type"), master_records
+        ):
+            unsafe_entries.append(cusip)
 
         status = entry.get("mapping_status")
         ticker = entry.get("ticker")
@@ -6676,7 +6700,8 @@ def update_holding_tickers(
 ) -> None:
     """Apply exact SEC-master mappings; unsupported identities fail closed."""
 
-    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
+                          SEC_SECURITY_MASTER_PATH.parent.parent)
 
     for holding in holdings:
         cusip = normalize_security_identifier(
@@ -6998,6 +7023,8 @@ def rebuild_tickers_in_place(
         else load_security_master(SEC_SECURITY_MASTER_PATH)
     )
 
+    master = apply_review(master, SEC_SECURITY_MASTER_PATH.parent.parent)
+
     fund_paths = sorted(FUNDS_DIR.glob("*.json"))
     updated = 0
     reassigned = 0
@@ -7052,7 +7079,7 @@ def rebuild_tickers_in_place(
 
     log.info(
         "  updated %s/%s fund files (%s holding ticker changes) from "
-        "SEC-only evidence",
+        "SEC and reviewed evidence",
         updated,
         len(fund_paths),
         reassigned,
@@ -7964,6 +7991,9 @@ def regenerate_stock_files_and_index(
                 "instrument_type": s.get("instrument_type", "EQUITY"),
                 "holders": holders_list,
             }
+            if registry.get(s["cusip"], {}).get("price_lookup_allowed") is False:
+                out["price_lookup_allowed"] = False
+                out["trading_status"] = "historical_retired_identity"
             if s.get("instrument_type", "EQUITY") == "EQUITY":
                 split_adjustments = infer_proven_split_adjustments(holders_list)
                 if split_adjustments:
