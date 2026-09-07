@@ -22,6 +22,12 @@ def worker_limit(requested: int | None = None) -> int:
     cores = os.cpu_count() or 1
     if hasattr(os, 'sched_getaffinity'):
         cores = min(cores, len(os.sched_getaffinity(0)))
+    try:
+        quota, period = Path('/sys/fs/cgroup/cpu.max').read_text().split()
+        if quota != 'max':
+            cores = min(cores, max(1, int(quota) // int(period)))
+    except (OSError, ValueError, ZeroDivisionError):
+        pass
     # Reserve at least 1 GiB of available memory per additional interpreter.
     # Account for hosted-runner/container limits, rather than host RAM alone.
     available = None
@@ -32,6 +38,13 @@ def worker_limit(requested: int | None = None) -> int:
             available = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') // 4
         except (ValueError, OSError):
             pass
+    try:
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            if line.startswith('MemAvailable:'):
+                available = int(line.split()[1]) * 1024
+                break
+    except (OSError, ValueError, IndexError):
+        pass
     try:
         limit = Path('/sys/fs/cgroup/memory.max').read_text().strip()
         if limit != 'max':
