@@ -17,6 +17,8 @@ import zlib
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from parallel_validation import CheckPool, audit_phase, batches, worker_limit
+
 CACHE_RELATIVE_PATH = Path('.cache/validation_cache.sqlite3')
 _SCHEMA = 1
 _NON_IDENTITY_REGISTRY_FIELDS = {'total_value', 'holder_count', 'first_seen', 'last_seen'}
@@ -81,9 +83,11 @@ def checker_fingerprint(root: Path) -> str:
 
 
 class ValidationCache:
-    def __init__(self, validator, path: Path | None = None, *, reuse: bool = True):
+    def __init__(self, validator, path: Path | None = None, *, reuse: bool = True, workers: int | None = None):
         self.v = validator
         self.reuse = reuse
+        self.workers = worker_limit(workers)
+        self.parallel_minimum = 32 if workers is None else 2
         self.path = Path(path or validator.ROOT / CACHE_RELATIVE_PATH)
         if self.path.is_symlink():
             raise ValueError('validation cache must not be a symlink')
@@ -170,42 +174,43 @@ class ValidationCache:
         initial_quality = dict(quality_summary)
         files, groups, cusips, calendars, stats = {}, defaultdict(lambda: {'cusips': set(), 'issuers': set()}), set(), {}, defaultdict(v._empty_current_stats)
         peers = defaultdict(lambda: defaultdict(list))
-        for fp in paths:
-            file_hash = self.fund_hashes[fp.name]
-            old = self.metadata('fund', fp.name)
-            key = _digest([self.code, file_hash, self.registry_key(old.get('cusips', [])), quantity_key])
-            result = self.read('fund', fp.name, key)
-            if result is None:
-                local_errors, quality, observations = [], {}, defaultdict(lambda: defaultdict(list))
-                output = v.validate_funds(local_errors, registry, quality, paths=[fp], check_peers=False,
-                                          peer_observations=observations, quantity_evidence=quantity)
-                errors.extend(local_errors)
-                result = {'groups': dict(output[1]), 'cusips': output[2], 'calendars': output[3],
-                          'stats': output[4], 'quality': quality, 'peers': dict(observations)}
-                key = _digest([self.code, file_hash, self.registry_key(result['cusips']), quantity_key])
-                if not local_errors:
-                    self.write('fund', fp.name, key, {'cusips': sorted(result['cusips'])}, result)
-            files[fp.stem] = fp
-            cusips.update(result['cusips'])
-            calendars.update(result['calendars'])
-            for stock_id, values in result['groups'].items():
-                for field, value in values.items():
-                    groups[stock_id][field].update(value)
-            for stock_id, values in result['stats'].items():
-                target = stats[stock_id]
-                for field, value in values.items():
-                    if field == 'largest_value':
-                        if value is not None and (target[field] is None or value > target[field]):
-                            target[field] = value
-                    else:
-                        target[field] += value
-                        if field.endswith('_digest'):
-                            target[field] %= v._POSITION_DIGEST_MODULUS
-            for field, value in result['quality'].items():
-                quality_summary[field] = quality_summary.get(field, 0) + value
-            for peer_key, by_filer in result['peers'].items():
-                for filer, observations in by_filer.items():
-                    peers[peer_key][filer].extend(observations)
+        workers = self.workers if len(paths) >= self.parallel_minimum else 1
+        with audit_phase('fund checks'), CheckPool(v, workers, 'fund', {'registry': registry, 'quantity': quantity}) as pool:
+            for batch in batches(paths, max(8, workers * 2)):
+                entries = []
+                for fp in batch:
+                    old = self.metadata('fund', fp.name)
+                    key = _digest([self.code, self.fund_hashes[fp.name], self.registry_key(old.get('cusips', [])), quantity_key])
+                    entries.append((fp, self.read('fund', fp.name, key)))
+                checked = iter(pool.map([fp for fp, result in entries if result is None]))
+                for fp, result in entries:
+                    if result is None:
+                        local_errors, result = next(checked)
+                        errors.extend(local_errors)
+                        key = _digest([self.code, self.fund_hashes[fp.name], self.registry_key(result['cusips']), quantity_key])
+                        if not local_errors:
+                            self.write('fund', fp.name, key, {'cusips': sorted(result['cusips'])}, result)
+                    files[fp.stem] = fp
+                    cusips.update(result['cusips'])
+                    calendars.update(result['calendars'])
+                    for stock_id, values in result['groups'].items():
+                        for field, value in values.items():
+                            groups[stock_id][field].update(value)
+                    for stock_id, values in result['stats'].items():
+                        target = stats[stock_id]
+                        for field, value in values.items():
+                            if field == 'largest_value':
+                                if value is not None and (target[field] is None or value > target[field]):
+                                    target[field] = value
+                            else:
+                                target[field] += value
+                                if field.endswith('_digest'):
+                                    target[field] %= v._POSITION_DIGEST_MODULUS
+                    for field, value in result['quality'].items():
+                        quality_summary[field] = quality_summary.get(field, 0) + value
+                    for peer_key, by_filer in result['peers'].items():
+                        for filer, observations in by_filer.items():
+                            peers[peer_key][filer].extend(observations)
         compiled = v.compile_peer_price_index(peers, consume=True)
         refs = {(report_date, cusip): (statistics.median(price for price, _ in observations), len(observations))
                 for (report_date, cusip, kind), observations in compiled.items()
@@ -214,15 +219,17 @@ class ValidationCache:
         # Cross-fund references are still checked over the complete corpus.
         # Any changed peer evidence invalidates these checks, including checks
         # of unchanged funds that depend on a changed fund's observations.
-        for fp in files.values():
-            key = _digest([peer_key, self.fund_hashes[fp.name]])
-            if self.read('peer', fp.name, key) is not None:
-                continue
-            local_errors = []
-            v.validate_value_unit_peer_consistency(refs, local_errors, compiled, paths=[fp])
-            errors.extend(local_errors)
-            if not local_errors:
-                self.write('peer', fp.name, key, {}, True)
+        with audit_phase('cross-fund peer checks'), CheckPool(v, workers, 'peer', {'refs': refs, 'compiled': compiled}) as pool:
+            for batch in batches(list(files.values()), max(8, workers * 2)):
+                pending = []
+                for fp in batch:
+                    key = _digest([peer_key, self.fund_hashes[fp.name]])
+                    if self.read('peer', fp.name, key) is None:
+                        pending.append((fp, key))
+                for (fp, key), local_errors in zip(pending, pool.map([fp for fp, _ in pending])):
+                    errors.extend(local_errors)
+                    if not local_errors:
+                        self.write('peer', fp.name, key, {}, True)
         if len(errors) == initial_error_count:
             self.write('fund_corpus', 'all', corpus_key, {}, {
                 'groups': dict(groups), 'cusips': cusips, 'calendars': calendars,
@@ -235,37 +242,34 @@ class ValidationCache:
         v = self.v
         files, seen = {}, set()
         expected_split_adjustments.clear()
-        for fp in sorted(v.STOCKS_DIR.glob('*.json')):
-            raw = fp.read_bytes()
-            file_hash = hashlib.sha256(raw).hexdigest()
-            metadata = self.metadata('stock', fp.name)
-            def context(meta):
-                return _digest([self.code, file_hash, self.registry_key([meta.get('cusip', '')]),
-                                expected_current_stats.get(meta.get('stock_id')),
-                                [(cik, fund_calendars.get(cik)) for cik in meta.get('ciks', [])]])
-            key = context(metadata)
-            result = self.read('stock', fp.name, key)
-            if result is None:
-                local_errors, splits = [], {}
-                try:
-                    stock = json.loads(raw)
-                    metadata = {'stock_id': stock.get('stock_id'), 'cusip': stock.get('cusip'),
-                                'ciks': sorted({str(h.get('cik')) for h in stock.get('holders', []) if isinstance(h, dict)})}
-                except (ValueError, TypeError, AttributeError):
-                    metadata = {}
-                stock_id = metadata.get('stock_id')
-                selected_stats = ({stock_id: expected_current_stats[stock_id]} if stock_id in expected_current_stats else {})
-                v.validate_stocks(local_errors, fund_calendars, selected_stats, splits, registry=registry, paths=[fp])
-                errors.extend(local_errors)
-                result = {'stock_id': stock_id, 'splits': splits}
-                if not local_errors:
-                    self.write('stock', fp.name, context(metadata), metadata, result)
-            stock_id = result['stock_id']
-            if stock_id in seen:
-                errors.append(f'multiple stock files publish duplicate stock_id {stock_id}')
-            seen.add(stock_id)
-            files[fp.stem] = fp
-            expected_split_adjustments.update(result['splits'])
+        paths = sorted(v.STOCKS_DIR.glob('*.json'))
+        workers = self.workers if len(paths) >= self.parallel_minimum else 1
+        def context(file_hash, meta):
+            return _digest([self.code, file_hash, self.registry_key([meta.get('cusip', '')]),
+                            expected_current_stats.get(meta.get('stock_id')),
+                            [(cik, fund_calendars.get(cik)) for cik in meta.get('ciks', [])]])
+        inputs = {'registry': registry, 'calendars': fund_calendars, 'stats': expected_current_stats}
+        with audit_phase('stock checks'), CheckPool(v, workers, 'stock', inputs) as pool:
+            for batch in batches(paths, max(8, workers * 2)):
+                entries = []
+                for fp in batch:
+                    file_hash = hashlib.sha256(fp.read_bytes()).hexdigest()
+                    metadata = self.metadata('stock', fp.name)
+                    result = self.read('stock', fp.name, context(file_hash, metadata))
+                    entries.append((fp, file_hash, result))
+                checked = iter(pool.map([fp for fp, _, result in entries if result is None]))
+                for fp, file_hash, result in entries:
+                    if result is None:
+                        local_errors, result, metadata = next(checked)
+                        errors.extend(local_errors)
+                        if not local_errors:
+                            self.write('stock', fp.name, context(file_hash, metadata), metadata, result)
+                    stock_id = result['stock_id']
+                    if stock_id in seen:
+                        errors.append(f'multiple stock files publish duplicate stock_id {stock_id}')
+                    seen.add(stock_id)
+                    files[fp.stem] = fp
+                    expected_split_adjustments.update(result['splits'])
         missing = sorted(key for key, value in expected_current_stats.items()
                          if (value.get('holder_count') or value.get('transition_count') or value.get('history_count')) and key not in seen)
         if missing:
