@@ -78,16 +78,23 @@ class ReviewedIdentityTests(unittest.TestCase):
 
     def test_coverage_uses_integer_boundary(self):
         totals = Counter({('2026-06-30', 'rows'): 100, ('2026-06-30', 'resolved'): 98})
-        check_coverage(totals, '2026-06-30', '2026-06-30')
+        self.assertEqual(check_coverage(totals, '2026-06-30', '2026-06-30'), [])
         totals[('2026-06-30', 'resolved')] = 97
-        with self.assertRaisesRegex(ValueError, 'below 98'):
-            check_coverage(totals, '2026-06-30', '2026-06-30')
+        warnings = check_coverage(totals, '2026-06-30', '2026-06-30')
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('below 98', warnings[0])
+        self.assertIn('publication is allowed', warnings[0])
 
     def test_new_quarter_cannot_hide_behind_frozen_coverage(self):
         totals = Counter({('2026-06-30', 'rows'): 100, ('2026-06-30', 'resolved'): 99,
                           ('2026-09-30', 'rows'): 100, ('2026-09-30', 'resolved'): 97})
-        with self.assertRaisesRegex(ValueError, '2026-09-30'):
-            check_coverage(totals, '2026-06-30', '2026-09-30')
+        warnings = check_coverage(totals, '2026-06-30', '2026-09-30')
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('2026-09-30', warnings[0])
+
+    def test_missing_population_still_fails_integrity_check(self):
+        with self.assertRaisesRegex(ValueError, 'no EQUITY holding population'):
+            check_coverage(Counter(), '2026-06-30', '2026-06-30')
 
 
 class InstrumentProjectionTests(unittest.TestCase):

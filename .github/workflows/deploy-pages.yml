@@ -316,7 +316,7 @@ jobs:
         # before building so an incompatible combination cannot go live.
         run: python validate_data.py
 
-      - name: Enforce reviewed identities and 98 percent row coverage
+      - name: Validate reviewed identities and report coverage warnings
         run: python scripts/validate_reviewed_coverage.py
 
       - name: Run full Python regression suite

@@ -243,7 +243,7 @@ jobs:
       - name: Validate generated data
         run: python validate_data.py --incremental --refresh-cache
 
-      - name: Enforce reviewed identities and 98 percent row coverage
+      - name: Validate reviewed identities and report coverage warnings
         run: python scripts/validate_reviewed_coverage.py
 
       - name: Run generated-data contract regression tests

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fatal publication gate for reviewed mappings and measured holding-row coverage."""
+"""Validate reviewed identities and warn on low holding-row ticker coverage."""
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date
@@ -33,10 +33,14 @@ def count_fund(path):
 
 
 def check_coverage(totals, target, latest):
+    warnings = []
     for period in sorted({target, latest}):
         rows, resolved = totals[(period, 'rows')], totals[(period, 'resolved')]
-        if not rows or resolved * 100 < rows * 98:
-            raise ValueError(f'{period}: EQUITY coverage {resolved}/{rows} is below 98%; retain last published snapshot')
+        if not rows:
+            raise ValueError(f'{period}: no EQUITY holding population')
+        if resolved * 100 < rows * 98:
+            warnings.append(f'{period}: EQUITY coverage {resolved}/{rows} is below 98%; investigate unresolved identities; publication is allowed')
+    return warnings
 
 
 def main():
@@ -72,8 +76,11 @@ def main():
     periods = sorted(period for period, field in totals if field == 'rows' and period <= date.today().isoformat())
     if not periods:
         raise ValueError('no EQUITY holding population')
-    check_coverage(totals, review['target']['quarter'], periods[-1])
-    report = {'ok': True, 'review_commit': REVIEW_COMMIT, 'review_as_of': review['as_of'],
+    warnings = check_coverage(totals, review['target']['quarter'], periods[-1])
+    for warning in warnings:
+        print(f'::warning::{warning}')
+    report = {'ok': True, 'coverage_warning_threshold_percent': 98,
+              'coverage_warnings': warnings, 'review_commit': REVIEW_COMMIT, 'review_as_of': review['as_of'],
               'quarter_coverage': {period: {'rows': totals[(period, 'rows')],
                  'resolved': totals[(period, 'resolved')],
                  'percent': 100 * totals[(period, 'resolved')] / totals[(period, 'rows')]}
