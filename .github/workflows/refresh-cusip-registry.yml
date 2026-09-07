@@ -111,6 +111,11 @@ jobs:
           echo "legacy_snapshot=$legacy_snapshot" >> "$GITHUB_OUTPUT"
           echo "Restored private snapshot $release_tag ($dataset_id)"
 
+      - name: Restore pinned reviewed primary-source identities
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+        run: python scripts/prepare_reviewed_ticker_map.py --repository "$DATA_REPOSITORY"
+
       - name: Verify SEC_USER_AGENT secret is configured
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
@@ -237,6 +242,9 @@ jobs:
 
       - name: Validate generated data
         run: python validate_data.py --incremental --refresh-cache
+
+      - name: Validate reviewed identities and report coverage warnings
+        run: python scripts/validate_reviewed_coverage.py
 
       - name: Run generated-data contract regression tests
         # Keep known identity and descriptive-name corrections in the publish

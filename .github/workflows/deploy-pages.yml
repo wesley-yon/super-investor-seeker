@@ -305,11 +305,20 @@ jobs:
             exit 1
           fi
 
+      - name: Verify reviewed-map compatibility before the corpus audit
+        run: >-
+          python -c "from pathlib import Path; from reviewed_ticker_map import load_review;
+          load_review(Path.cwd(), required=True)"
+
       - name: Validate restored snapshot against current code
         # A code-only change or manual rollback can pair today's validator and
-        # frontend with an older retained dataset. Re-run the full corpus gate
-        # before building so an incompatible combination cannot go live.
-        run: python validate_data.py
+        # frontend with an older retained dataset. Bind every reused file check
+        # to actual bytes, checker code, and dependencies; changed inputs rerun
+        # those checks. Every global/source gate still runs before building.
+        run: python validate_data.py --incremental
+
+      - name: Validate reviewed identities and report coverage warnings
+        run: python scripts/validate_reviewed_coverage.py
 
       - name: Run full Python regression suite
         run: python -m unittest discover -s tests -v

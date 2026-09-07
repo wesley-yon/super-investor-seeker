@@ -36,6 +36,7 @@ from composition_integrity import (
     calculate_quarter_composition_hash as _calculate_quarter_composition_hash,
 )
 from data_contract import DATA_CONTRACT_VERSION
+from parallel_validation import audit_phase
 from quantity_estimation import (
     cache_dir_for_funds,
     load_book as load_quantity_evidence,
@@ -52,6 +53,7 @@ from sec_13f_bulk_backfill import (
     Sec13FBulkError,
     normalize_sec_identity_source_url,
 )
+from reviewed_ticker_map import apply_review, public_instrument_mappings, REVIEW_SOURCE
 from sec_security_master import (
     MASTER_AUDIT_SCHEMA_VERSION,
     MASTER_SCHEMA_VERSION,
@@ -115,6 +117,7 @@ STATE_PATH = DATA_DIR / "pipeline_state.json"
 SEC_SECURITY_MASTER_PATH = ROOT / ".cache" / "sec_security_master.json"
 SEC_SOURCE_STATE_PATH = ROOT / ".cache" / "sec_source_state.json"
 SEC_TICKER_SOURCES = frozenset({
+    REVIEW_SOURCE,
     "sec_ftd",
     "sec_ixbrl",
 })
@@ -138,6 +141,7 @@ PUBLIC_REGISTRY_LABEL_SOURCES = frozenset({
     "synthetic_identifier",
 })
 PUBLIC_REGISTRY_EVIDENCE_SOURCES = frozenset({
+    REVIEW_SOURCE,
     "sec_13f_list",
     "sec_13f_filer_consensus",
     "sec_company_tickers",
@@ -380,6 +384,11 @@ def expected_registry_position_ticker(
         raw_ticker = entry.get("underlying_ticker")
         source = entry.get("underlying_ticker_source")
         as_of = entry.get("underlying_ticker_as_of")
+    elif normalized_type in (entry.get("instrument_mappings") or {}):
+        typed = entry["instrument_mappings"][normalized_type]
+        raw_ticker = typed.get("ticker")
+        source = typed.get("ticker_source")
+        as_of = typed.get("ticker_as_of")
     else:
         raw_entry_type = entry.get("type")
         if (
@@ -1308,6 +1317,13 @@ def validate_private_sec_security_state(
             + ", ".join(sorted(edgar_content_mismatches)[:10])
         )
 
+    try:
+        master = apply_review(master, resolved_master_path.parent.parent)
+    except SecurityMasterError as error:
+        errors.append(f"invalid reviewed identity layer: {error}")
+        return
+    records = master["records"]
+
     missing: list[str] = []
     mismatched: list[str] = []
     underlying_mismatched: list[str] = []
@@ -1323,7 +1339,12 @@ def validate_private_sec_security_state(
         if not isinstance(master_entry, dict):
             missing.append(key)
             continue
-        fields = ("mapping_status", "ticker", "ticker_source", "ticker_as_of")
+        if entry.get("instrument_mappings", {}) != public_instrument_mappings(
+            cusip, entry.get("type"), records
+        ):
+            mismatched.append(key)
+        fields = ("mapping_status", "ticker", "ticker_source", "ticker_as_of",
+                  "price_lookup_allowed", "trading_status")
         if any(entry.get(field) != master_entry.get(field) for field in fields):
             mismatched.append(key)
         elif entry.get("product_name_source") == "sec_fund_series" and (
@@ -4813,11 +4834,11 @@ def validate_funds_index(
         )
 
 
-def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_cache: bool = False) -> int:
+def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_cache: bool = False, workers: int | None = None) -> int:
     cache = None
     if incremental:
         from incremental_validation import ValidationCache
-        cache = ValidationCache(sys.modules[__name__], cache_path, reuse=not refresh_cache)
+        cache = ValidationCache(sys.modules[__name__], cache_path, reuse=not refresh_cache, workers=workers)
     errors: list[str] = []
     warnings: list[str] = []
     quality_summary: dict[str, object] = {
@@ -4892,7 +4913,8 @@ def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_c
     )
     if registry_is_valid:
         registry = validate_registry(fund_cusips, errors, registry)
-        validate_private_sec_security_state(registry, errors)
+        with audit_phase('private SEC provenance'):
+            validate_private_sec_security_state(registry, errors)
         validate_security_labels(registry, errors)
 
     index = load_json(INDEX_PATH, errors)
@@ -5006,7 +5028,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--incremental", action="store_true", help="Reuse content-bound successful checks; all global gates still run")
     parser.add_argument("--refresh-cache", action="store_true", help="Run every file check and replace cached results (requires --incremental)")
+    parser.add_argument("--workers", type=int, help="File-check processes for --incremental (default: up to 4, bounded by CPUs and memory; 1 forces serial)")
     args = parser.parse_args()
     if args.refresh_cache and not args.incremental:
         parser.error("--refresh-cache requires --incremental")
-    sys.exit(main(incremental=args.incremental, refresh_cache=args.refresh_cache))
+    if args.workers is not None and (args.workers < 1 or not args.incremental):
+        parser.error("--workers requires --incremental and a positive integer")
+    sys.exit(main(incremental=args.incremental, refresh_cache=args.refresh_cache, workers=args.workers))

@@ -60,11 +60,50 @@ Verified reference cases:
 | Lennar Class A / Class B | LEN / LEN.B | [Lennar May 2026 Form 10-Q](https://www.sec.gov/Archives/edgar/data/920760/000162828026046019/len-20260531.htm) |
 
 These sources were used for independent checks in the September 2026 audit.
-Automated publication in this change continues to use the existing SEC proof
-paths. A future external-source adapter must retain its exact CUSIP/class match,
-listing and receipt details, retrieval date, content checksum, conflict handling,
-and expiry policy in a replayable private evidence record. A live company name
-or an unverified search result must not silently become a durable ticker mapping.
+Production also consumes the approved September 7 review from the private data
+repository. `reviewed_ticker_map.py` pins its commit and file checksum. The full
+provenance and captured source package remain private. The reviewed layer is a
+display projection: it does not rewrite or relabel the original SEC evidence.
+Every exact `CUSIP|instrument_type` match may fill an unresolved record; a
+resolved SEC ticker that disagrees with the reviewed ticker stops publication.
+The original 10,532 reviewed identities survive source refresh omissions.
+Exact per-instrument display mappings preserve reviewed keys when historical
+row types differ from a CUSIP's single aggregate registry classification.
+This does not reclassify retained rows or assign an equity symbol to debt. No
+fuzzy name matching runs in this layer. Changing an accepted symbol or extending
+the review requires a new verified private package and a reviewed code pin.
+
+Eight explicitly retired identities carry `price_lookup_allowed: false` in the
+registry and stock files. Their historical symbols must not be used for current
+quotes or replaced with successor-share symbols. This site currently does not
+request live prices. Other inherited tickers are not certified as quoteable.
+
+## Refresh and publication policy
+
+- SEC source discovery and a comprehensive registry/provenance audit run daily
+  at 04:23 UTC. Immutable history is reused; changed source documents are fetched.
+- Ordinary filing updates run hourly during the weekday 07:00–18:00 New York
+  window and reuse accepted security evidence.
+- A clean download/rebuild is an explicit manual workflow option, not a random
+  periodic reset. It still loads the pinned reviewed layer.
+- Every data publication verifies the pinned review, checks observed reviewed
+  identities against generated holdings/registry, and measures EQUITY holding-row
+  coverage. Both the frozen June 2026 reference quarter and the newest observed
+  quarter produce an Actions warning below 98%, prompting investigation of
+  unresolved identities without blocking publication. The measured figures and
+  warnings are saved in the coverage report. Identity conflicts, missing data,
+  and other integrity failures still block publication; 98% is an investigation
+  threshold, not a publishing requirement.
+- Reviewed external sources are due for revalidation after 30 days (an Actions
+  warning). After 90 days, publication stops pending an updated reviewed package.
+  The daily job does not automatically repeat the manual issuer/exchange review.
+  Revalidate at least monthly and after each quarterly filing influx, sooner for
+  corporate actions or conflicts. Never renew the date without checking sources.
+
+The reviewed layer is included in private snapshots so deployment validation
+can replay the exact same decisions. Daily source checks and the existing SEC
+acceptance gates remain mandatory. The public repository contains code and the
+pin only; it must never contain the private mapping or captured evidence.
 
 ## Verification
 
@@ -75,3 +114,18 @@ snapshot with the baseline and changed code to measure additional resolutions
 and withdrawals independently of changes in source data. Report coverage for a
 named quarter as well as the full historical master; historical and malformed
 identities are not all currently listed securities awaiting a ticker.
+
+## Audit execution
+
+Independent fund, peer-consistency, and stock-file checks use up to four worker
+processes, bounded by CPU availability and memory. Results are combined in the
+same file order as the serial checker. The parent process alone writes the
+acceleration cache and performs the full cross-file reconciliation; workers
+cannot publish or certify a snapshot independently.
+
+Use `python validate_data.py --incremental --workers 1` for a serial comparison.
+`--incremental --refresh-cache` executes every file check without reusing cached
+successes. The Pages audit reuses a successful file check only when the actual
+file bytes, checker code, and relevant dependencies match; changed code or data
+invalidates reuse. All global reconciliation and source-provenance gates still
+run. Phase durations and the actual process count are printed to workflow logs.
