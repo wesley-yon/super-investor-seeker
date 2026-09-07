@@ -89,9 +89,11 @@ request live prices. Other inherited tickers are not certified as quoteable.
 - Every data publication verifies the pinned review, checks observed reviewed
   identities against generated holdings/registry, and measures EQUITY holding-row
   coverage. Both the frozen June 2026 reference quarter and the newest observed
-  quarter must reach 98%. Failure leaves the last deployed dataset intact. A new
-  quarter or a newly reported security can require additional source review
-  before publication resumes; 98% is a gate, not a promise of automatic discovery.
+  quarter produce an Actions warning below 98%, prompting investigation of
+  unresolved identities without blocking publication. The measured figures and
+  warnings are saved in the coverage report. Identity conflicts, missing data,
+  and other integrity failures still block publication; 98% is an investigation
+  threshold, not a publishing requirement.
 - Reviewed external sources are due for revalidation after 30 days (an Actions
   warning). After 90 days, publication stops pending an updated reviewed package.
   The daily job does not automatically repeat the manual issuer/exchange review.
