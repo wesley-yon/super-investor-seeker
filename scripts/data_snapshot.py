@@ -76,25 +76,26 @@ CACHE_FILES = (
 QUANTITY_CACHE_FILES = (
     Path(".cache/quantity_estimation_evidence.json"),
     Path(".cache/quarter_close_prices.json"),
-    Path(".cache/quarter_close_price_requests.json"),
 )
 OPTIONAL_CACHE_FILES = (*QUANTITY_CACHE_FILES, Path(".cache/validation_cache.sqlite3"))
+# Accept and hash older archives, but never extract or republish the retired queue.
+ARCHIVED_CACHE_FILES = (Path(".cache/quarter_close_price_requests.json"),)
 PAIR_TRANSACTION_ARTIFACT_PREFIX = ".sec-security-master-pair."
-# Contract v1 is accepted for one migration release. Provider-specific and
-# otherwise unprovenanced cache members are verified as part of the signed
-# archive digest but intentionally not extracted. These provider-neutral files
+# Contract v1 is accepted for one migration release. Unprovenanced cache
+# members are verified as part of the signed
+# archive digest but intentionally not extracted. These source-neutral files
 # are the only legacy cache state restored before the first v2 SEC rebuild.
 LEGACY_RESTORABLE_CACHE_FILES = (
     Path(".cache/company_tickers_mf.json"),
     Path(".cache/sec_fund_names.json"),
 )
-# These files belonged to the retired provider-era registry contract. They are
+# These files belonged to the retired registry contract. They are
 # never authoritative after a restore, including when they predate a v2
 # snapshot in the local working tree. Keep common historical spellings here so
 # none can survive and override the SEC-derived data copy.
-RETIRED_PROVIDER_CACHE_FILES = (
+RETIRED_CACHE_FILES = (
+    *ARCHIVED_CACHE_FILES,
     Path(".cache/cusip_map.json"),
-    Path(".cache/openfigi_details.json"),
     Path(".cache/cusip_registry.json"),
     Path(".cache/cusip-map.json"),
 )
@@ -518,7 +519,7 @@ def _validate_member_scope(
 ) -> None:
     name = member.name
     _validate_member_name(name)
-    cache_names = {path.as_posix() for path in (*CACHE_FILES, *OPTIONAL_CACHE_FILES)}
+    cache_names = {path.as_posix() for path in (*CACHE_FILES, *OPTIONAL_CACHE_FILES, *ARCHIVED_CACHE_FILES)}
     if name == "data":
         if not member.isdir():
             raise SnapshotError("archive data root must be a directory")
@@ -1218,12 +1219,12 @@ def _restore_cache_contract(
 
     if contract_version == CONTRACT_VERSION:
         cache_files = CACHE_FILES
-        removal_files = (*RETIRED_PROVIDER_CACHE_FILES, *OPTIONAL_CACHE_FILES)
+        removal_files = (*RETIRED_CACHE_FILES, *OPTIONAL_CACHE_FILES)
     elif contract_version == LEGACY_CONTRACT_VERSION:
         cache_files = LEGACY_RESTORABLE_CACHE_FILES
         # A legacy data tree cannot safely share newer SEC evidence. The next
         # migration rebuild must recreate both v2 files from that tree.
-        removal_files = (*RETIRED_PROVIDER_CACHE_FILES, *CACHE_FILES, *OPTIONAL_CACHE_FILES)
+        removal_files = (*RETIRED_CACHE_FILES, *CACHE_FILES, *OPTIONAL_CACHE_FILES)
     else:
         raise SnapshotError(
             f"unsupported snapshot contract version: {contract_version}"
@@ -1343,10 +1344,16 @@ def _replace_payload(
         cache_files = (*cache_files, *(relative for relative in OPTIONAL_CACHE_FILES if (payload / relative).exists()))
     cache_targets = tuple(dict.fromkeys((*cache_files, *removal_files)))
     _validate_restore_targets(root, cache_files=cache_targets)
+    from saved_price_migration import migrate_saved_prices
+
     _regular_directory(payload / "data", "extracted data directory")
     _regular_directory(payload / ".cache", "extracted cache directory")
     for relative in cache_files:
         _regular_file(payload / relative, "extracted cache file")
+    try:
+        migrate_saved_prices(payload)
+    except (ValueError, OSError) as error:
+        raise SnapshotError(f"saved price receipt migration failed: {error}") from error
 
     master_path, source_state_path = (root / relative for relative in CACHE_FILES)
     if contract_version == CONTRACT_VERSION:

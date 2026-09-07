@@ -3367,6 +3367,9 @@ def repair_zero_share_holdings_in_place() -> int:
 
     if not FUNDS_DIR.exists():
         return 0
+    from saved_price_migration import migrate_saved_prices
+
+    migrate_saved_prices(FUNDS_DIR.parent.parent)
     cache = cache_dir_for_funds(FUNDS_DIR)
     evidence_path = cache / "quantity_estimation_evidence.json"
     plan = build_plan(
@@ -3378,7 +3381,6 @@ def repair_zero_share_holdings_in_place() -> int:
         plan,
         FUNDS_DIR,
         evidence_path=evidence_path,
-        request_path=cache / "quarter_close_price_requests.json",
     )
     log.info("Quantity policy: %s", result)
     return result["estimated_rows"]
@@ -4105,7 +4107,7 @@ def _load_json_dict_with_fallback(
 
 
 def load_cusip_registry() -> dict:
-    """Load one registry copy without merging stale provider-era metadata."""
+    """Load one registry copy without merging stale legacy metadata."""
 
     return _load_json_dict_with_fallback(
         LEGACY_CUSIP_REGISTRY_PATH,
@@ -6972,8 +6974,8 @@ def rebuild_tickers_in_place(
     """Rewrite only ticker metadata from the exact SEC security master.
 
     A security-master refresh is not an identity migration.  In particular,
-    it must not opportunistically reclassify a retained row while replacing a
-    vendor ticker: the cutover invariant is keyed by ``CUSIP | instrument
+    it must not opportunistically reclassify a retained row while replacing an
+    unverified ticker: the cutover invariant is keyed by ``CUSIP | instrument
     type``.  Dedicated filing replay/canonicalization paths own any proven
     identity repair.
     """

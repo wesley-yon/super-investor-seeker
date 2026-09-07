@@ -6964,7 +6964,7 @@ def rebuild_reported_identity_from_sec(
     )
 
 
-# Stable provider-neutral aliases for callers that prefer shorter names.
+# Stable source-neutral aliases for callers that prefer shorter names.
 refresh_bulk_index = refresh_13f_bulk_index
 rebuild_reported_identity = rebuild_reported_identity_from_sec
 apply_reported_identity_backfill = backfill_fund_files

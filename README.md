@@ -147,7 +147,7 @@ every 30 days and cannot publish once their last successful check is more than
 45 days old. Stable terminal unresolved results reopen only when exact identity,
 exact official-list row, class, or FTD/conflict evidence changes; quarterly list
 URL, checksum, and period churn alone does not retry them. The cutover also emits
-a local, provider-neutral before/after mapping report that is excluded from private
+a local, source-neutral before/after mapping report that is excluded from private
 snapshots and workflow artifact uploads. Its frozen baseline is
 comparison-only and cannot seed a ticker. Retained as-filed holding identity is
 bound into
@@ -301,44 +301,34 @@ unknown. Values, actual reported quantities, CUSIPs, and security types are
 preserved. The UI marks estimates with `~`, displays unknown quantities as a
 dash, and excludes both from exact-share totals and share-based comparisons.
 
-Fiscal.ai prices are an optional separate input; they never resolve CUSIPs or
-populate the SEC security master. The connector's split-adjusted close is
-converted to the quarter's share basis using documented subsequent forward
-splits. Missing session quotes and ambiguous reverse-split or stock-dividend
-adjustments are rejected. Routine jobs consume saved validated prices and emit
-missing-price requests; unattended Fiscal.ai fetching is not configured.
+Previously saved quarter-end prices remain available as frozen observations.
+They never resolve CUSIPs or populate the SEC security master. Their original
+private receipts remain bound by checksum; retention does not classify those
+historical observations as SEC-reported data. New estimates use these saved
+observations when available, then qualifying same-quarter SEC filing evidence.
+There are no listing-catalog, quote-fetch, price-import, or quote-request paths.
 
-The local workflow uses the repository Python environment:
+Snapshot restore upgrades old receipt envelopes in its staging directory before
+installation. This changes only receipt identifiers and method labels; saved
+prices, estimated quantities, holdings, values, and SEC identities stay intact.
+The explicit local migration command performs the same upgrade for an existing
+working copy; planning alone does not modify holding files.
 
 ```bash
-.venv/bin/python scripts/quantity_policy.py plan --output .cache/quantity-plan.json
-.venv/bin/python scripts/quantity_policy.py prepare-prices \
-  --catalog /path/to/fiscal-company-pages.json \
-  --output .cache/fiscal-price-requests.json
-# Fetch the requested listings through the Fiscal.ai connector, then import:
-.venv/bin/python scripts/quantity_policy.py import-prices \
-  --requests .cache/fiscal-price-requests.json \
-  --exports /path/to/fiscal-price-exports.json \
-  --report .cache/fiscal-price-import-report.json
+.venv/bin/python scripts/quantity_policy.py migrate-receipts
 .venv/bin/python scripts/quantity_policy.py plan --output .cache/quantity-plan.json
 .venv/bin/python scripts/quantity_policy.py apply --plan .cache/quantity-plan.json
 ```
 
-Company exports contain the connector's `companies` pages. Each price export
-contains `companyKey`, `fetchedAt`, `listing` (all stock-price response metadata),
-`seriesThrough` (the latest returned price date), `prices` (the requested exact
-session observations), and `splits` (the full stock-splits response). Keep USD
-listing identifiers and dates unchanged. The importer admits only listings
-bound to an unambiguous dated SEC symbol and matching SEC issuer evidence.
 After a standalone apply, regenerate stock/index outputs before validating or
 serving the dataset. Normal and incremental pipeline regeneration already do
 this. Automated clean rebuilds explicitly pass `--apply-quantity-policy`; a
 manual identity-only clean rebuild leaves quantity maintenance out by default.
 
-The private snapshot preserves `.cache/quantity_estimation_evidence.json`,
-`.cache/quarter_close_prices.json`, and `.cache/quarter_close_price_requests.json`
-when present. Older snapshots remain readable and remove stale quantity evidence
-on restore; estimated holdings without their evidence fail data validation.
+The private snapshot preserves `.cache/quantity_estimation_evidence.json` and
+`.cache/quarter_close_prices.json` when present. Retired quote-request queues
+are verified in older archives but are not restored or republished. Older
+snapshots remain readable and remove stale quantity evidence on restore; estimated holdings without their evidence fail data validation.
 
 ## Incremental filing updates
 

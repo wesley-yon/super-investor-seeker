@@ -129,7 +129,7 @@ SEC_METADATA_SOURCES = frozenset({
 # Public registry provenance is intentionally narrower than the private
 # security-master evidence vocabulary.  These are the only values emitted by
 # the SEC-only registry builder.  Keeping the allowlists explicit makes a
-# restored vendor-era registry fail publication even when its ticker happens to
+# restored unverified-era registry fail publication even when its ticker happens to
 # match the SEC master.
 PUBLIC_REGISTRY_LABEL_SOURCES = frozenset({
     "sec_13f_list",

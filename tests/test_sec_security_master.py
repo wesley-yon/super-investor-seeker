@@ -1659,7 +1659,7 @@ class SourceStateCompactionTests(unittest.TestCase):
         wrong_period["sources"][LIST_URL]["list_period"] = "2026Q1"
         mutations.append(wrong_period)
         extra_field = copy.deepcopy(valid)
-        extra_field["sources"][LIST_URL]["records"][0]["vendor_id"] = "x"
+        extra_field["sources"][LIST_URL]["records"][0]["unverified_id"] = "x"
         mutations.append(extra_field)
         duplicate = copy.deepcopy(valid)
         duplicate["sources"][LIST_URL]["records"] *= 2

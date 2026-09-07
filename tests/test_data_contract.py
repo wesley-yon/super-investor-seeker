@@ -520,7 +520,7 @@ class GeneratedDataContractTests(unittest.TestCase):
                     "holdings": [{
                         "cusip": "037833100",
                         "ticker": "UNPROVEN",
-                        "issuer": "Unproven Vendor Label",
+                        "issuer": "Unproven Unverified Label",
                         "reported_issuer": "APPLE INC",
                         "class": "COM",
                         "value": 100,
@@ -1026,7 +1026,7 @@ class GeneratedDataContractTests(unittest.TestCase):
             (ROOT / "data/cusip_registry.json").read_text()
         )
         if any("mapping_status" in entry for entry in registry.values()):
-            # The legacy snapshot below used manual/vendor-era display
+            # The legacy snapshot below used manual/unverified-era display
             # overrides. An SEC cutover must instead reconcile every public
             # identity and mapping to its exact provenance-bearing master.
             master = pipeline.load_security_master(

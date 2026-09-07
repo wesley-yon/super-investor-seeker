@@ -8,8 +8,7 @@ unsupported securities fail closed with a null ticker.
 
 The source-state file stores normalized evidence for each SEC URL together with
 the response SHA-256.  That makes an incremental refresh cheap and permits a
-byte-for-byte deterministic rebuild without contacting a third party (or the
-SEC).  Fetch failures retain the last accepted source entry and master.
+byte-for-byte deterministic rebuild without network access.  Fetch failures retain the last accepted source entry and master.
 """
 
 from __future__ import annotations

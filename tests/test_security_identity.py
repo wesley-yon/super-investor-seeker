@@ -1,4 +1,4 @@
-"""Provider-neutral tests for immutable public security identity."""
+"""Source-neutral tests for immutable public security identity."""
 
 from __future__ import annotations
 
@@ -1205,7 +1205,7 @@ class CanonicalizationAndTypePreservationTests(unittest.TestCase):
                     "holdings": [{
                         "cusip": "037833100",
                         "ticker": "UNPROVEN",
-                        "issuer": "Unproven Vendor Label",
+                        "issuer": "Unproven Unverified Label",
                         "reported_issuer": "APPLE INC",
                         "holding_type": "EQUITY",
                         "shares": 1,

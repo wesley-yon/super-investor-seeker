@@ -47,8 +47,8 @@ of the resulting dataset, followed by inspection of the published output.
 
 Official ETF sponsors, ADR depositaries, and exchanges are appropriate secondary
 sources when SEC evidence is incomplete. A company-level lookup supplies a
-candidate, not proof of a particular security class. For example, a company API
-may return Lennar Class A when queried for Class B.
+candidate, not proof of a particular security class. For example, Lennar Class A
+and Class B require separate exact class evidence.
 
 Verified reference cases:
 
