@@ -7,7 +7,7 @@ from parallel_validation import worker_limit
 class WorkerLimitTests(unittest.TestCase):
     def test_limits_processes_to_cpu_and_memory_capacity(self):
         def sysconf(name):
-            return {'SC_AVPHYS_PAGES': 3 * 1024 * 1024 // 4, 'SC_PAGE_SIZE': 4096}[name]
+            return {'SC_AVPHYS_PAGES': 6 * 1024 * 1024 // 4, 'SC_PAGE_SIZE': 4096}[name]
         with patch('parallel_validation.os.cpu_count', return_value=12), \
              patch('parallel_validation.os.sched_getaffinity', return_value=set(range(12)), create=True), \
              patch('parallel_validation.os.sysconf', side_effect=sysconf), \

@@ -28,7 +28,8 @@ def worker_limit(requested: int | None = None) -> int:
             cores = min(cores, max(1, int(quota) // int(period)))
     except (OSError, ValueError, ZeroDivisionError):
         pass
-    # Reserve at least 1 GiB of available memory per additional interpreter.
+    # Full-corpus peer inputs measured close to 2 GiB per interpreter.
+    # Reserve that headroom for each worker and recheck at each phase.
     # Account for hosted-runner/container limits, rather than host RAM alone.
     available = None
     try:
@@ -52,7 +53,7 @@ def worker_limit(requested: int | None = None) -> int:
             available = remaining if available is None else min(available, remaining)
     except (OSError, ValueError):
         pass
-    memory_workers = max(1, available // (1024 ** 3)) if available is not None else 2
+    memory_workers = max(1, available // (2 * 1024 ** 3)) if available is not None else 1
     return max(1, min(requested or 4, 4, cores, memory_workers))
 
 
@@ -78,9 +79,13 @@ def _validate_one(kind, path, validator, inputs):
         output = validator.validate_funds(
             errors, inputs['registry'], quality, paths=[path], check_peers=False,
             peer_observations=observations, quantity_evidence=inputs['quantity'])
-        return errors, {'groups': dict(output[1]), 'cusips': output[2],
+        result = {'groups': dict(output[1]), 'cusips': output[2],
                         'calendars': output[3], 'stats': dict(output[4]),
                         'quality': quality, 'peers': {key: dict(value) for key, value in observations.items()}}
+        # Serialization/compression is CPU work too; workers prepare bytes,
+        # while the parent remains the only process that writes SQLite.
+        from incremental_validation import prepare_cache_payload
+        return errors, result, None if errors else prepare_cache_payload(result)
     if kind == 'peer':
         validator.validate_value_unit_peer_consistency(
             inputs['refs'], errors, inputs['compiled'], paths=[path])
@@ -116,7 +121,7 @@ def _check_worker(path):
 
 class CheckPool:
     def __init__(self, validator, workers, kind, inputs):
-        self.validator, self.workers, self.kind, self.inputs = validator, workers, kind, inputs
+        self.validator, self.workers, self.kind, self.inputs = validator, worker_limit(workers), kind, inputs
         self.executor = None
 
     def __enter__(self):

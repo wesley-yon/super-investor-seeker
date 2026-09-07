@@ -60,6 +60,11 @@ def _bytes(value):
     return json.dumps(_encode(value), sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
 
 
+def prepare_cache_payload(value):
+    raw = _bytes(value)
+    return zlib.compress(raw, 1), hashlib.sha256(raw).hexdigest()
+
+
 def _digest(value):
     return hashlib.sha256(_bytes(value)).hexdigest()
 
@@ -140,10 +145,10 @@ class ValidationCache:
         self.counts[f'{kind}_checked'] += 1
         return None
 
-    def write(self, kind, name, key, metadata, result):
-        raw = _bytes(result)
+    def write(self, kind, name, key, metadata, result, *, prepared=None):
+        payload, digest = prepared if prepared is not None else prepare_cache_payload(result)
         self.connection.execute('INSERT OR REPLACE INTO checks VALUES (?,?,?,?,?,?)',
-                                (kind, name, key, json.dumps(metadata, sort_keys=True), zlib.compress(raw, 1), hashlib.sha256(raw).hexdigest()))
+                                (kind, name, key, json.dumps(metadata, sort_keys=True), payload, digest))
 
     def registry_key(self, cusips):
         return [(cusip, self.registry_hashes.get(cusip)) for cusip in sorted(cusips)]
@@ -185,11 +190,11 @@ class ValidationCache:
                 checked = iter(pool.map([fp for fp, result in entries if result is None]))
                 for fp, result in entries:
                     if result is None:
-                        local_errors, result = next(checked)
+                        local_errors, result, prepared = next(checked)
                         errors.extend(local_errors)
                         key = _digest([self.code, self.fund_hashes[fp.name], self.registry_key(result['cusips']), quantity_key])
                         if not local_errors:
-                            self.write('fund', fp.name, key, {'cusips': sorted(result['cusips'])}, result)
+                            self.write('fund', fp.name, key, {'cusips': sorted(result['cusips'])}, result, prepared=prepared)
                     files[fp.stem] = fp
                     cusips.update(result['cusips'])
                     calendars.update(result['calendars'])
@@ -244,10 +249,12 @@ class ValidationCache:
         expected_split_adjustments.clear()
         paths = sorted(v.STOCKS_DIR.glob('*.json'))
         workers = self.workers if len(paths) >= self.parallel_minimum else 1
+        calendar_hashes = {cik: _digest(calendar) for cik, calendar in fund_calendars.items()}
+        stats_hashes = {stock_id: _digest(stats) for stock_id, stats in expected_current_stats.items()}
         def context(file_hash, meta):
             return _digest([self.code, file_hash, self.registry_key([meta.get('cusip', '')]),
-                            expected_current_stats.get(meta.get('stock_id')),
-                            [(cik, fund_calendars.get(cik)) for cik in meta.get('ciks', [])]])
+                            stats_hashes.get(meta.get('stock_id')),
+                            [(cik, calendar_hashes.get(cik)) for cik in meta.get('ciks', [])]])
         inputs = {'registry': registry, 'calendars': fund_calendars, 'stats': expected_current_stats}
         with audit_phase('stock checks'), CheckPool(v, workers, 'stock', inputs) as pool:
             for batch in batches(paths, max(8, workers * 2)):
