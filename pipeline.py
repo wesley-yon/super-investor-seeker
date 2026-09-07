@@ -3709,6 +3709,7 @@ def _parse_sec_fund_series_page(
     conflicts: set[str] = set()
     recognized_identifiers: set[str] = set()
     parsed_identifiers: set[str] = set()
+    missing_class_names: set[str] = set()
 
     def expanded_cells(row: etree._Element) -> list[etree._Element]:
         cells: list[etree._Element] = []
@@ -3765,10 +3766,23 @@ def _parse_sec_fund_series_page(
             cells = expanded_cells(rows[0])
             if name_column >= len(cells):
                 continue
-            name = normalize_security_label(
-                " ".join(cells[name_column].text_content().split())
-            )
+            raw_name = " ".join(cells[name_column].text_content().split())
+            # EDGAR lists classes with literal placeholder names in an intact
+            # Name column. Recognize these rows, but never use their ticker or
+            # borrow the parent series name as a class identity. Unknown empty
+            # layouts still fail the completeness gate below.
+            if identifier.startswith("C") and raw_name.casefold() in {"n/a", "none", "na"}:
+                parsed_identifiers.add(identifier)
+                missing_class_names.add(identifier)
+                if identifier in class_names:
+                    conflicts.add(identifier)
+                    class_names.pop(identifier)
+                continue
+            name = normalize_security_label(raw_name)
             if not name:
+                continue
+            if identifier in missing_class_names:
+                conflicts.add(identifier)
                 continue
             parsed_identifiers.add(identifier)
             target = (

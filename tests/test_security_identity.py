@@ -1888,6 +1888,33 @@ class SecFundSeriesMetadataTests(unittest.TestCase):
             class_names["C000068556"],
         )
 
+    def test_explicit_missing_class_names_are_not_a_schema_change(self) -> None:
+        # Observed on the SEC WisdomTree registrant page, CIK 0001350487:
+        # C000033621 = N/A, C000033634 = None, C000232650 = NA.
+        for placeholder in ("N/A", "None", "none", "NA"):
+            page = self.PAGE.replace("<td>Class F-2</td>", f"<td>{placeholder}</td>")
+            series, classes = pipeline._parse_sec_fund_series_page(page)
+            self.assertEqual(series["S000008999"], "AMERICAN MUTUAL FUND")
+            self.assertNotIn("C000068556", classes)
+            self.assertIn("C000173141", classes)
+            self.assertNotIn(placeholder, classes.values())
+
+    def test_missing_class_does_not_hide_conflicting_named_row(self) -> None:
+        for order in (False, True):
+            extra = '<tr><td></td><td></td><td><a href="?CIK=C000068556">C000068556</a></td><td>N/A</td></tr>'
+            page = self.PAGE.replace('</table>', extra + '</table>')
+            if order:
+                page = page.replace('<td>Class F-2</td>', '<td>N/A</td>', 1)
+                at = page.rfind('<td>N/A</td>')
+                page = page[:at] + page[at:].replace('<td>N/A</td>', '<td>Class F-2</td>', 1)
+            with self.assertRaises(pipeline.SourceSchemaError):
+                pipeline._parse_sec_fund_series_page(page)
+
+    def test_blank_class_cell_still_fails_completeness(self) -> None:
+        page = self.PAGE.replace('<td>Class F-2</td>', '<td></td>')
+        with self.assertRaises(pipeline.SourceSchemaError):
+            pipeline._parse_sec_fund_series_page(page)
+
     def test_series_parser_fails_closed_on_bad_headers_and_conflicts(self) -> None:
         missing_header = """
         <table><tr><td><a href="?CIK=S000055059">S000055059</a></td>
