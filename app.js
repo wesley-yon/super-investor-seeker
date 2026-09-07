@@ -1280,11 +1280,28 @@ function fundSearchIdentity(fund) {
 }
 
 function displayIssuer(name) {
-  return displayEntityName(name)
+  return titleCase(String(name || "").replace(/\s+/g, " ").trim())
     .replace(/\bIshares\b/g, "iShares")
     .replace(/\bIBONDS\b/g, "iBonds")
+    .replace(/\bIboxx\b/g, "iBoxx")
     .replace(/\bIpath\b/g, "iPath")
     .replace(/\/([a-z]{2,})\//g, (_, part) => `/${part.toUpperCase()}/`);
+}
+
+// Compact ordinary company names, but keep every identifying word in fund names.
+function compactHoldingName(holding) {
+  const name = holdingDisplayCompany(holding);
+  const cusip = String(holding?.cusip || "").trim().toUpperCase();
+  const isFund = FUND_PRODUCT_NAME_KINDS.has(securityKindForCusip(cusip))
+    || securityFundIdentities.has(cusip);
+  return (isFund ? displayIssuer(name) : displayIssuer(stripLegalEntitySuffixes(name))) || "—";
+}
+
+function companyNameButton(holding) {
+  const fullName = displayIssuer(holdingDisplayCompany(holding)) || "—";
+  return `<button type="button" class="company-name-button" data-action="show-company-name"
+    data-company-name="${esc(fullName)}" title="${esc(fullName)}"
+    aria-haspopup="dialog" aria-label="Show full name: ${esc(fullName)}">${esc(compactHoldingName(holding))}</button>`;
 }
 
 function displayHolderName(name) {
@@ -1365,7 +1382,7 @@ function summaryEvent(label, row, emptyText) {
   return `<div class="summary-label">${label}</div>
     <div class="summary-row">
       <span class="ticker">${esc(fundTicker(row))}</span>
-      <span class="summary-company">${esc(displayIssuer(holdingDisplayCompany(row)))}</span>
+      <div class="summary-company">${companyNameButton(row)}</div>
       <span class="value ${esc(changeClass(row.ch))}">${esc(changeText(row.ch))}</span>
     </div>`;
 }
@@ -1389,7 +1406,7 @@ function holdingIdentityCells(h, rowBg = "") {
     ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" ><a class="security-link" href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}</a></td>`
     : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;${background}white-space:nowrap">${esc(displayLabel)}</td>`;
   return `${securityCell}
-      <td title="${esc(companyName)}" style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(companyName)}</td>`;
+      <td title="${esc(companyName)}" class="company-name">${companyNameButton(h)}</td>`;
 }
 
 function holderFundCell(holder, rowBg = "") {
@@ -1819,6 +1836,11 @@ function wireSiteInteractions() {
     }
     const { action, col, dir, page } = target.dataset;
     switch (action) {
+      case "show-company-name":
+        $("companyNameText").textContent = target.dataset.companyName || "—";
+        $("companyNameDialog").showModal();
+        break;
+      case "close-company-name": $("companyNameDialog").close(); break;
       case "home": goHome(); break;
       case "fund-sort": onFundSort(col); break;
       case "stock-sort": onStockSort(col); break;
@@ -2088,7 +2110,7 @@ function globalSearch(q) {
         <span class="gsearch-tag ${esc(searchEntryTagClass(t))}">${esc(searchEntryTagLabel(t))}</span>
         <div style="min-width:0;display:flex;flex-direction:column">
           <span class="mono" style="font-weight:700;color:var(--ac)">${esc(tickerSearchSymbol(t))}</span>
-          <span title="${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}" style="font-size:12px;color:var(--mt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}</span>
+          <span title="${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name">${esc(compactHoldingName(t))}</span>
         </div>
       </a>
     `).join("")}` : "";
@@ -2475,7 +2497,7 @@ function renderFund(f) {
           ${summaryEvent("Largest Reduction", largestReduction, "No reduced or exited positions")}
           <div class="summary-line"></div>
           <div class="summary-label">New Position</div>
-          <div class="summary-list">${newPositions.length ? newPositions.map(h => `<span class="summary-new">${esc(fundTicker(h))}</span> ${esc(displayIssuer(holdingDisplayCompany(h)))}`).join("<br>") : "No new positions"}</div>
+          <div class="summary-list">${newPositions.length ? newPositions.map(h => `<span class="summary-new">${esc(fundTicker(h))}</span> ${esc(compactHoldingName(h))}`).join("<br>") : "No new positions"}</div>
           <div class="summary-line"></div>
           <div class="summary-label">Positions Reduced</div>
           <div class="summary-list">${reducedPositions.length ? reducedPositions.map(h => `<span class="summary-down">${esc(fundTicker(h))}</span>`).join(", ") : "No reduced positions"}</div>
