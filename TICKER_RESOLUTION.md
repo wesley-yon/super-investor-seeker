@@ -114,3 +114,18 @@ snapshot with the baseline and changed code to measure additional resolutions
 and withdrawals independently of changes in source data. Report coverage for a
 named quarter as well as the full historical master; historical and malformed
 identities are not all currently listed securities awaiting a ticker.
+
+## Audit execution
+
+Independent fund, peer-consistency, and stock-file checks use up to four worker
+processes, bounded by CPU availability and memory. Results are combined in the
+same file order as the serial checker. The parent process alone writes the
+acceleration cache and performs the full cross-file reconciliation; workers
+cannot publish or certify a snapshot independently.
+
+Use `python validate_data.py --incremental --workers 1` for a serial comparison.
+`--incremental --refresh-cache` executes every file check without reusing cached
+successes. The Pages audit reuses a successful file check only when the actual
+file bytes, checker code, and relevant dependencies match; changed code or data
+invalidates reuse. All global reconciliation and source-provenance gates still
+run. Phase durations and the actual process count are printed to workflow logs.

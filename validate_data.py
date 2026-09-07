@@ -36,6 +36,7 @@ from composition_integrity import (
     calculate_quarter_composition_hash as _calculate_quarter_composition_hash,
 )
 from data_contract import DATA_CONTRACT_VERSION
+from parallel_validation import audit_phase
 from quantity_estimation import (
     cache_dir_for_funds,
     load_book as load_quantity_evidence,
@@ -4833,11 +4834,11 @@ def validate_funds_index(
         )
 
 
-def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_cache: bool = False) -> int:
+def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_cache: bool = False, workers: int | None = None) -> int:
     cache = None
     if incremental:
         from incremental_validation import ValidationCache
-        cache = ValidationCache(sys.modules[__name__], cache_path, reuse=not refresh_cache)
+        cache = ValidationCache(sys.modules[__name__], cache_path, reuse=not refresh_cache, workers=workers)
     errors: list[str] = []
     warnings: list[str] = []
     quality_summary: dict[str, object] = {
@@ -4912,7 +4913,8 @@ def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_c
     )
     if registry_is_valid:
         registry = validate_registry(fund_cusips, errors, registry)
-        validate_private_sec_security_state(registry, errors)
+        with audit_phase('private SEC provenance'):
+            validate_private_sec_security_state(registry, errors)
         validate_security_labels(registry, errors)
 
     index = load_json(INDEX_PATH, errors)
@@ -5026,7 +5028,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--incremental", action="store_true", help="Reuse content-bound successful checks; all global gates still run")
     parser.add_argument("--refresh-cache", action="store_true", help="Run every file check and replace cached results (requires --incremental)")
+    parser.add_argument("--workers", type=int, help="File-check processes for --incremental (default: up to 4, bounded by CPUs and memory; 1 forces serial)")
     args = parser.parse_args()
     if args.refresh_cache and not args.incremental:
         parser.error("--refresh-cache requires --incremental")
-    sys.exit(main(incremental=args.incremental, refresh_cache=args.refresh_cache))
+    if args.workers is not None and (args.workers < 1 or not args.incremental):
+        parser.error("--workers requires --incremental and a positive integer")
+    sys.exit(main(incremental=args.incremental, refresh_cache=args.refresh_cache, workers=args.workers))
