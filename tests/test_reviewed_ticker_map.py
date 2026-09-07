@@ -125,3 +125,36 @@ class InstrumentProjectionTests(unittest.TestCase):
         typed = r.public_instrument_mappings('931142103', 'PREF', {'931142103|EQUITY': record})
         self.assertFalse(typed['EQUITY']['price_lookup_allowed'])
         self.assertNotIn('private_proofs', typed['EQUITY'])
+
+
+class ListedFundSearchTests(unittest.TestCase):
+    def test_historical_preferred_row_keeps_symbol_without_duplicate_fund_search(self):
+        import json
+        import pipeline as p
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / 'data'
+            funds = data / 'funds'
+            stocks = data / 'stocks'
+            funds.mkdir(parents=True)
+            entry = {'type': 'EQUITY', 'security_kind': 'ETF', 'name': 'Example fund',
+                     'ticker': 'FUND', 'mapping_status': 'resolved',
+                     'ticker_source': r.REVIEW_SOURCE, 'ticker_as_of': '2026-09-07',
+                     'instrument_mappings': {'PREF': {'ticker': 'FUND',
+                         'ticker_source': r.REVIEW_SOURCE, 'ticker_as_of': '2026-09-07'}}}
+            fund = {'cik': 123456, 'name': 'Example manager', 'quarters': [{
+                'report_date': '2026-06-30', 'filing_date': '2026-08-14',
+                'total_value': 200, 'num_holdings': 2,
+                'holdings': [{'cusip': '123456789', 'holding_type': kind,
+                    'issuer': 'Example fund', 'ticker': 'FUND', 'value': 100, 'shares': 10}
+                    for kind in ('EQUITY', 'PREF')]}]}
+            path = funds / '123456.json'
+            path.write_text(json.dumps(fund))
+            original = path.read_bytes()
+            with patch.multiple(p, DATA_DIR=data, FUNDS_DIR=funds, STOCKS_DIR=stocks,
+                    INDEX_PATH=data / 'index.json', FUNDS_INDEX_PATH=data / 'funds-index.json',
+                    load_cusip_registry=lambda: {'123456789': entry}):
+                p.regenerate_stock_files_and_index(state={})
+            index = json.loads((data / 'index.json').read_text())
+            self.assertEqual([row['stock_id'] for row in index['tickers']], ['123456789'])
+            self.assertEqual(json.loads((stocks / '123456789__PREF.json').read_text())['ticker'], 'FUND')
+            self.assertEqual(path.read_bytes(), original)

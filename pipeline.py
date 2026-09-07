@@ -2977,6 +2977,16 @@ def _registry_position_ticker(entry: dict | None, instrument_type: str) -> str |
     return display_ticker_for_holding_type(ticker, normalized_type)
 
 
+
+def _registry_search_ticker(entry: dict | None, instrument_type: str) -> str | None:
+    """Keep historical row labels without advertising a fund as preferred debt."""
+    if (_registry_entry_has_equity_fund_identity(entry)
+            and normalize_instrument_type(instrument_type)
+            not in {"EQUITY", "CALL", "PUT", "OPT"}):
+        return None
+    return _registry_position_ticker(entry, instrument_type)
+
+
 def _resolve_loaded_security(
     master: dict,
     cusip: object,
@@ -7856,7 +7866,7 @@ def regenerate_stock_files_and_index(
                     "cusip": cusip,
                     "ticker": display_ticker,
                     "issuer": display_issuer,
-                    "search_ticker": registry_ticker,
+                    "search_ticker": _registry_search_ticker(reg_entry, holding_type),
                     "instrument_type": holding_type,
                     "holders": {},
                     "_meta_key": ("", -1),
@@ -7872,7 +7882,7 @@ def regenerate_stock_files_and_index(
                     s["cusip"] = cusip
                     s["ticker"] = display_ticker
                     s["issuer"] = display_issuer
-                    s["search_ticker"] = registry_ticker
+                    s["search_ticker"] = _registry_search_ticker(reg_entry, holding_type)
                 holder = s["holders"].setdefault(cik, {
                     "cik": cik,
                     "name": name,
