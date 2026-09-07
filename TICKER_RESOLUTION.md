@@ -125,6 +125,7 @@ cannot publish or certify a snapshot independently.
 
 Use `python validate_data.py --incremental --workers 1` for a serial comparison.
 `--incremental --refresh-cache` executes every file check without reusing cached
-successes, including in the independent Pages audit. Phase durations and the
-actual process count are printed to the workflow log. Source-provenance checks
-remain mandatory and run after the file checks.
+successes. The Pages audit reuses a successful file check only when the actual
+file bytes, checker code, and relevant dependencies match; changed code or data
+invalidates reuse. All global reconciliation and source-provenance gates still
+run. Phase durations and the actual process count are printed to workflow logs.
