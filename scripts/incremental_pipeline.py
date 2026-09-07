@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Capture a pre-ingest baseline, then regenerate its complete dependency set.
 
-Routine filing updates reuse the verified SEC master. New identities remain
-tickerless until scheduled SEC evidence maintenance proves an exact mapping.
+Routine filing updates reuse the verified SEC master. A resolution-rule upgrade
+replays saved SEC evidence once; new identities remain tickerless until that
+evidence or scheduled SEC maintenance proves an exact mapping.
 All publication gates remain mandatory; this command is not a publisher.
 """
 from __future__ import annotations
@@ -11,6 +12,7 @@ import argparse
 import hashlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +21,10 @@ sys.path.insert(0, str(ROOT))
 import pipeline as p  # noqa: E402
 from incremental_validation import checker_fingerprint  # noqa: E402
 from sec_security_master import (  # noqa: E402
+    DEFAULT_MAX_EVIDENCE_AGE_DAYS,
+    DEFAULT_MIN_CONFIRMATION_DATES,
+    DEFAULT_RECENT_WINDOW_DAYS,
+    TICKER_RESOLUTION_RULES_VERSION,
     _retain_prior_mappings_with_unresolved_extensions,
 )
 
@@ -76,6 +82,69 @@ def affected(before, after, changed_cusips, changed_ciks=()):
     return names, stock_ids
 
 
+def upgrade_master_resolution_rules():
+    """Replay saved proof once per rule version, under every production gate."""
+    master = p.load_security_master(p.SEC_SECURITY_MASTER_PATH)
+    version = master.get('policy', {}).get('resolution_rules_version', 0)
+    if version > TICKER_RESOLUTION_RULES_VERSION:
+        raise p.FundDataError(
+            f'SEC ticker resolution rules version {version} is newer than '
+            f'this code ({TICKER_RESOLUTION_RULES_VERSION}); refusing downgrade')
+    if version == TICKER_RESOLUTION_RULES_VERSION:
+        return False
+
+    master, source = p.load_security_master_pair(
+        master_path=p.SEC_SECURITY_MASTER_PATH,
+        source_state_path=p.SEC_SOURCE_STATE_PATH)
+    # Recheck the bound pair in case recovery replaced the initially read
+    # master. Do not stamp a current marker onto evidence from newer rules.
+    version = master.get('policy', {}).get('resolution_rules_version', 0)
+    if version > TICKER_RESOLUTION_RULES_VERSION:
+        raise p.FundDataError(
+            f'SEC ticker resolution rules version {version} is newer than '
+            f'this code ({TICKER_RESOLUTION_RULES_VERSION}); refusing downgrade')
+    if version == TICKER_RESOLUTION_RULES_VERSION:
+        return False
+    universe = p.collect_security_master_universe()
+    # Keep saved identity types and historical as-filed witnesses, including
+    # keys no longer present in the current official list or fund corpus.
+    # Display labels and previous ticker decisions are never replay inputs.
+    for record in master.get('records', {}).values():
+        base = {'cusip': record['cusip'], 'instrument_type': record['instrument_type']}
+        identities = record.get('reported_identities', [])
+        if not identities:
+            universe.append({**base, **{field: record[field]
+                                       for field in ('reported_issuer', 'reported_class')
+                                       if field in record}})
+        for identity in identities:
+            evidence = [item for item in record.get('reported_identity_evidence', [])
+                        if all(item.get(field) == value for field, value in identity.items())]
+            universe.append({**base,
+                             'reported_issuer': identity['reported_issuer'],
+                             'reported_class': identity['reported_class'],
+                             'reported_identity_evidence': evidence})
+    policy = master.get('policy', {})
+    rebuilt = p.rebuild_sec_security_master(
+        source, universe,
+        recent_window_days=policy.get('recent_window_days', DEFAULT_RECENT_WINDOW_DAYS),
+        max_evidence_age_days=policy.get('max_evidence_age_days', DEFAULT_MAX_EVIDENCE_AGE_DAYS),
+        min_confirmation_dates=policy.get('min_confirmation_dates', DEFAULT_MIN_CONFIRMATION_DATES))
+    acceptance = p.audit_security_master(
+        rebuilt, prior_master=master, as_of=datetime.now(timezone.utc))
+    if not acceptance['ok']:
+        raise p.FundDataError(
+            'SEC ticker resolution rule upgrade failed the publication gate: '
+            + '; '.join(acceptance['issues']))
+    p.save_security_master_pair(
+        rebuilt, source, master_path=p.SEC_SECURITY_MASTER_PATH,
+        source_state_path=p.SEC_SOURCE_STATE_PATH)
+    p.log.info('Replayed saved SEC evidence for ticker rules %s -> %s; resolved mappings %s -> %s',
+               version, TICKER_RESOLUTION_RULES_VERSION,
+               master.get('summary', {}).get('resolved', 0),
+               rebuilt.get('summary', {}).get('resolved', 0))
+    return True
+
+
 def extend_master_for_changed_funds(paths):
     if not paths:
         return
@@ -114,7 +183,8 @@ def regenerate(path=BASELINE):
     prior_registry = p.load_cusip_registry()
     current = inventory(prior_registry)
     changed, _ = affected(baseline['funds'], current, set())
-    extend_master_for_changed_funds([p.FUNDS_DIR / name for name in sorted(changed) if name in current])
+    if not upgrade_master_resolution_rules():
+        extend_master_for_changed_funds([p.FUNDS_DIR / name for name in sorted(changed) if name in current])
     registry = p.build_cusip_registry()
     p.write_security_labels(registry)
     issues = p.validate_cusip_registry(current_cusips=registry.observed_cusips)

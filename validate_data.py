@@ -60,6 +60,7 @@ from sec_security_master import (
     PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO,
     SOURCE_STATE_SCHEMA_VERSION,
     SecurityMasterError,
+    _validate_symbol_alias_source_state,
     audit_security_master,
     load_security_master,
     load_source_state,
@@ -181,6 +182,7 @@ PRIVATE_SEC_EVIDENCE_FIELDS = frozenset({
     "symbol_evidence",
     "symbol_intervals",
     "symbol_validation_exchanges",
+    "symbol_validation_alias",
     "symbol_validation_sources",
     "symbol_validation_titles",
     "ticker_evidence_cusips",
@@ -889,6 +891,7 @@ def validate_private_sec_security_state(
         )
         master = load_security_master(resolved_master_path)
         source_state = load_source_state(resolved_source_path)
+        _validate_symbol_alias_source_state(master, source_state)
         projected_audit = (
             project_master_audit(master, source_state)
             if enforce_production_source_gates
@@ -1165,6 +1168,9 @@ def validate_private_sec_security_state(
         ):
             ftd_interval_mismatches.append(key)
         candidate = master_entry.get("candidate_ticker")
+        alias = master_entry.get("symbol_validation_alias")
+        if isinstance(alias, dict):
+            candidate = alias.get("sec_symbol")
         if (
             not candidate
             and master_entry.get("mapping_status") == "resolved"

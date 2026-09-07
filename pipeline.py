@@ -2793,6 +2793,7 @@ _PRIVATE_MASTER_FIELDS = frozenset({
     "symbol_evidence",
     "symbol_intervals",
     "symbol_validation_exchanges",
+    "symbol_validation_alias",
     "symbol_validation_sources",
     "symbol_validation_titles",
 })

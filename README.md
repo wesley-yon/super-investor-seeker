@@ -89,6 +89,10 @@ the derived master deterministically, and runs the complete provenance audit. Mi
 conflicting evidence stays unresolved instead of
 inheriting an issuer's common-stock ticker.
 
+[Ticker resolution](TICKER_RESOLUTION.md) describes stock, ETF, and ADR name
+normalization, evidence-backed share-class symbol spellings, and the one-time
+cached-evidence upgrade that applies changed rules to an existing dataset.
+
 The all-history rebuild understands both SEC archive layouts: quarterly ZIP
 bundles from the first actual observation on March 22, 2004 through June 2009,
 and half-month ZIPs beginning in July 2009. The SEC's disjoint half-month
