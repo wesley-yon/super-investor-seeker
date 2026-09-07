@@ -305,6 +305,11 @@ jobs:
             exit 1
           fi
 
+      - name: Verify reviewed-map compatibility before the corpus audit
+        run: >-
+          python -c "from pathlib import Path; from reviewed_ticker_map import load_review;
+          load_review(Path.cwd(), required=True)"
+
       - name: Validate restored snapshot against current code
         # A code-only change or manual rollback can pair today's validator and
         # frontend with an older retained dataset. Re-run the full corpus gate

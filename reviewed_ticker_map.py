@@ -59,9 +59,9 @@ def load_review(root: Path, *, required: bool = False) -> dict | None:
     return _read_review(str(path.resolve()), stat.st_mtime_ns, stat.st_size, date.today())
 
 
-def apply_review(master: dict, root: Path, *, document: dict | None = None) -> dict:
+def apply_review(master: dict, root: Path) -> dict:
     """Return a display-only projection, retaining the original SEC document."""
-    review = document if document is not None else load_review(root)
+    review = load_review(root)
     if review is None or not isinstance(master.get('records'), dict):
         return master
     records = dict(master['records'])

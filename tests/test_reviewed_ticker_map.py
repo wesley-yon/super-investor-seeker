@@ -22,7 +22,8 @@ class ReviewedIdentityTests(unittest.TestCase):
         }}}
 
     def apply(self):
-        return r.apply_review(self.master, Path('.'), document=self.review)
+        with patch.object(r, 'load_review', return_value=self.review):
+            return r.apply_review(self.master, Path('.'))
 
     def test_exact_key_only_and_no_raw_master_mutation(self):
         resolved = self.apply()
