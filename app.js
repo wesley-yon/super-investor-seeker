@@ -1297,14 +1297,11 @@ function compactHoldingName(holding) {
   return (isFund ? displayIssuer(name) : displayIssuer(stripLegalEntitySuffixes(name))) || "—";
 }
 
-function expandableCompanyName(holding) {
+function companyNameButton(holding) {
   const fullName = displayIssuer(holdingDisplayCompany(holding)) || "—";
-  const compactName = compactHoldingName(holding);
-  return `<details class="company-disclosure"><summary title="${esc(fullName)}">
-    <span class="company-compact">${esc(compactName)}</span>
-    <span class="company-full">${esc(fullName)}</span>
-    <span class="company-toggle" aria-hidden="true"></span>
-  </summary></details>`;
+  return `<button type="button" class="company-name-button" data-action="show-company-name"
+    data-company-name="${esc(fullName)}" title="${esc(fullName)}"
+    aria-haspopup="dialog" aria-label="Show full name: ${esc(fullName)}">${esc(compactHoldingName(holding))}</button>`;
 }
 
 function displayHolderName(name) {
@@ -1385,7 +1382,7 @@ function summaryEvent(label, row, emptyText) {
   return `<div class="summary-label">${label}</div>
     <div class="summary-row">
       <span class="ticker">${esc(fundTicker(row))}</span>
-      <div class="summary-company">${expandableCompanyName(row)}</div>
+      <div class="summary-company">${companyNameButton(row)}</div>
       <span class="value ${esc(changeClass(row.ch))}">${esc(changeText(row.ch))}</span>
     </div>`;
 }
@@ -1405,12 +1402,11 @@ function holdingIdentityCells(h, rowBg = "") {
   const displayLabel = fundTicker(h);
   const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
   const background = rowBg ? `background:${rowBg};` : "";
-  const mobileCompany = `<div class="mobile-security-company">${expandableCompanyName(h)}</div>`;
   const securityCell = lookupId
-    ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" ><a class="security-link" href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}</a>${mobileCompany}</td>`
-    : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;${background}white-space:nowrap">${esc(displayLabel)}${mobileCompany}</td>`;
+    ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" ><a class="security-link" href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}</a></td>`
+    : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;${background}white-space:nowrap">${esc(displayLabel)}</td>`;
   return `${securityCell}
-      <td title="${esc(companyName)}" class="company-name">${expandableCompanyName(h)}</td>`;
+      <td title="${esc(companyName)}" class="company-name">${companyNameButton(h)}</td>`;
 }
 
 function holderFundCell(holder, rowBg = "") {
@@ -1840,6 +1836,11 @@ function wireSiteInteractions() {
     }
     const { action, col, dir, page } = target.dataset;
     switch (action) {
+      case "show-company-name":
+        $("companyNameText").textContent = target.dataset.companyName || "—";
+        $("companyNameDialog").showModal();
+        break;
+      case "close-company-name": $("companyNameDialog").close(); break;
       case "home": goHome(); break;
       case "fund-sort": onFundSort(col); break;
       case "stock-sort": onStockSort(col); break;
@@ -2109,7 +2110,7 @@ function globalSearch(q) {
         <span class="gsearch-tag ${esc(searchEntryTagClass(t))}">${esc(searchEntryTagLabel(t))}</span>
         <div style="min-width:0;display:flex;flex-direction:column">
           <span class="mono" style="font-weight:700;color:var(--ac)">${esc(tickerSearchSymbol(t))}</span>
-          <span title="${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}" style="font-size:12px;color:var(--mt);white-space:normal;overflow-wrap:anywhere" class="company-search-name">${esc(compactHoldingName(t))}</span>
+          <span title="${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name">${esc(compactHoldingName(t))}</span>
         </div>
       </a>
     `).join("")}` : "";
