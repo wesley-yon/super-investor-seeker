@@ -328,7 +328,7 @@ before the disposable index can be removed.
 The immutable holding identity fields are covered by composition-hash protocol
 v3; the compact source list is independently schema-validated,
 accession-bound, and checked for complete holding coverage at publication. The
-cutover freezes a provider-neutral public mapping projection before any
+cutover freezes a source-neutral public mapping projection before any
 rewrite, compares it with the SEC-only result afterward, and blocks on any
 change to retained fund/quarter/holding counts, values, or position identity.
 The local difference report is excluded from snapshots and workflow artifact
@@ -524,7 +524,7 @@ complete corpus up front.
   private-snapshot contract.
 - A legacy restore reconstructs and verifies every retained immutable holding
   against SEC Form 13F bulk data and exact accession filings before rebuilding
-  mappings and verifies the provider-neutral cutover difference report. That
+  mappings and verifies the source-neutral cutover difference report. That
   local report is excluded from snapshots and workflow artifact uploads.
   Contract-v2 overnight runs
   reuse the verified corpus and discover only changed SEC security-master
@@ -638,8 +638,8 @@ retain the complete screening input digest and a compact exact median witness.
 Validation reproduces that witness rather than recalculating a changing median
 from the current database.
 
-An optional Fiscal.ai receipt has priority for a verified USD equity listing and
-exact quarter-end trading session. It binds the dated SEC identity, provider
+A previously saved quarter-end price receipt has priority for a verified USD equity listing and
+exact quarter-end trading session. It binds the dated SEC identity, source
 listing, response checksum, price, volume, and corporate-action conversion.
 Option receipts use underlying-share quantities while preserving CALL/PUT
 identity. A quote cannot supply a debt principal price or resolve a ticker.
@@ -649,8 +649,15 @@ fund write. Only derived quantity fields may change, and the reported-economic
 projection must remain identical. Evidence is saved before references to it;
 fund writes are atomic individually, and the operation is safely repeatable.
 A process interruption can leave mixed generations that require reapplying the
-policy before publication. Private snapshot restoration includes all three
+policy before publication. Private snapshot restoration includes both
 quantity caches in its rollback transaction without weakening the required SEC
-master/source-state pair. `scripts/quantity_policy.py` provides local request,
-import, plan, and apply commands; the scheduled pipeline uses saved market
+master/source-state pair. `scripts/quantity_policy.py` provides local receipt migration,
+plan, and apply commands; the scheduled pipeline uses saved market
 receipts, then peer evidence or an explicit unknown quantity.
+
+`saved_price_migration.py` only upgrades archived storage receipts. It has no
+network or import capability. The complete original receipt remains privately
+hash-bound. Restore performs the upgrade in staging before installing its
+transaction; local maintenance preflights all affected files and retains both
+receipt generations until every dependent annotation is rewritten. An
+interrupted local migration can be rerun without recomputing any quantity.

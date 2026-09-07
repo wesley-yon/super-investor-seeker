@@ -879,7 +879,7 @@ class SecOnlyRegistryBuildTests(unittest.TestCase):
         self.assertEqual("AAPL", pipeline._registry_position_ticker(entry, "CALL"))
 
 
-class ProviderNeutralRegressionTests(unittest.TestCase):
+class SourceNeutralRegressionTests(unittest.TestCase):
     def test_fund_validation_rejects_tickers_without_exact_registry_proof(
         self,
     ) -> None:
@@ -1149,16 +1149,16 @@ class ProviderNeutralRegressionTests(unittest.TestCase):
             # Coordinated edits to a stock payload and its search row used to
             # agree with each other and evade the cross-file checks.  The SEC
             # registry must remain the independent publication authority.
-            equity["ticker"] = "VENDOR"
-            equity["issuer"] = "VENDOR ISSUER"
+            equity["ticker"] = "UNVERIFIED"
+            equity["issuer"] = "UNVERIFIED ISSUER"
             (stocks_dir / "037833100.json").write_text(json.dumps(equity))
             apple_index = next(
                 entry
                 for entry in index["tickers"]
                 if entry["stock_id"] == "037833100"
             )
-            apple_index["ticker"] = "VENDOR"
-            apple_index["issuer"] = "VENDOR ISSUER"
+            apple_index["ticker"] = "UNVERIFIED"
+            apple_index["issuer"] = "UNVERIFIED ISSUER"
 
             errors.clear()
             with mock.patch.object(validate_data, "STOCKS_DIR", stocks_dir):
@@ -1176,7 +1176,7 @@ class ProviderNeutralRegressionTests(unittest.TestCase):
                 )
             self.assertTrue(
                 any(
-                    "stock file 037833100.json ticker 'VENDOR'" in error
+                    "stock file 037833100.json ticker 'UNVERIFIED'" in error
                     for error in errors
                 ),
                 errors,
@@ -1184,7 +1184,7 @@ class ProviderNeutralRegressionTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     "index.json ticker entry 037833100 publishes ticker "
-                    "'VENDOR'" in error
+                    "'UNVERIFIED'" in error
                     for error in errors
                 ),
                 errors,

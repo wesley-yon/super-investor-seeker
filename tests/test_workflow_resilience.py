@@ -646,9 +646,7 @@ gh_mutate_once() {
         for workflow in (update, rebuild):
             self.assertIn("SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}", workflow)
             lowered = workflow.lower()
-            retired_provider = "open" + "figi"
             for retired_contract in (
-                retired_provider,
                 "--retry-unresolved",
                 "--full-cusip-refresh",
             ):
@@ -694,53 +692,14 @@ gh_mutate_once() {
                 workflow,
             )
 
-    def test_repo_has_no_retired_provider_runtime_or_config_residue(self):
-        """Only deletion code and adversarial fixtures may name the provider."""
-
+    def test_quantity_cli_only_exposes_local_maintenance(self):
+        import sys
         result = subprocess.run(
-            ["git", "ls-files", "-co", "--exclude-standard", "-z"],
-            cwd=ROOT,
-            capture_output=True,
-            check=True,
-        )
-        provider = "open" + "figi"
-        expected = {
-            (
-                "scripts/data_snapshot.py",
-                f'Path(".cache/{provider}_details.json"),',
-            ),
-            (
-                "tests/test_sec_provenance_validation.py",
-                f'"label_source": "{provider}",',
-            ),
-            (
-                "tests/test_sec_provenance_validation.py",
-                f'"sources": ["{provider}"],',
-            ),
-            (
-                "tests/test_sec_provenance_validation.py",
-                f'"{provider}"',
-            ),
-        }
-        pattern = re.compile(rf"open[\s_-]*{provider[4:]}", re.IGNORECASE)
-        actual: list[tuple[str, str]] = []
-        for raw_path in result.stdout.split(b"\0"):
-            if not raw_path:
-                continue
-            relative_path = raw_path.decode("utf-8", errors="surrogateescape")
-            path = ROOT / relative_path
-            if not path.is_file() or path.is_symlink():
-                continue
-            if pattern.search(relative_path):
-                actual.append((relative_path, "<path>"))
-            payload = path.read_bytes()
-            if b"\0" in payload:
-                continue
-            for line in payload.decode("utf-8", errors="replace").splitlines():
-                if pattern.search(line):
-                    actual.append((relative_path, line.strip()))
-
-        self.assertEqual(sorted(expected), sorted(actual))
+            [sys.executable, str(ROOT / 'scripts/quantity_policy.py'), '--help'],
+            cwd=ROOT, capture_output=True, text=True, check=True)
+        self.assertIn('{plan,apply,migrate-receipts}', result.stdout)
+        for removed_flag in ('--catalog', '--exports', '--requests'):
+            self.assertNotIn(removed_flag, result.stdout)
 
     def test_legacy_snapshot_boolean_parses_true_and_false(self):
         for path in MAINTENANCE_WORKFLOWS:

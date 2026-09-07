@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 import quantity_estimation as q
-from scripts.quantity_policy import import_exports, prepare_requests
+from saved_price_migration import migrate_saved_prices, normalize_archived_close
 
 DAY = '2025-12-31'
 CUSIP = '037833100'
@@ -18,12 +18,7 @@ def peer(cik, price=100, kind='EQUITY', unit='SH'):
 
 
 def market_fixture():
-    identity = {'cusip': CUSIP, 'instrument_type': 'EQUITY', 'ticker': 'AAPL', 'ticker_source': 'sec_ftd', 'interval': {'symbol': 'AAPL', 'first_seen': '2020-01-01', 'last_seen': '2026-06-30', 'sources': [SOURCE]}}
-    company = {'companyKey': 'NASDAQ_AAPL', 'ticker': 'AAPL', 'micCode': 'XNAS', 'tradingCurrency': 'USD'}
-    listing = {'ticker': 'AAPL', 'operatingMic': 'XNAS', 'tradingCurrency': 'USD', 'exchangeCode': 'NASDAQ', 'listingFiscalIdentifier': 'f123'}
-    export = {'companyKey': company['companyKey'], 'listing': listing, 'seriesThrough': '2026-06-30', 'prices': [{'date': DAY, 'closePrice': 25.0, 'volume': 1000}], 'splits': [{'exDate': '2026-02-01', 'splitType': 'Stock Split', 'rate': 4}], 'fetchedAt': '2026-09-06T00:00:00Z'}
-    request = {'cusip': CUSIP, 'report_date': DAY, 'sec_identity': identity}
-    return company, export, request
+    return json.loads((Path(__file__).parent / 'fixtures/archived_price.json').read_text())
 
 
 class QuantityPolicyTests(unittest.TestCase):
@@ -48,29 +43,26 @@ class QuantityPolicyTests(unittest.TestCase):
         self.assertTrue(q.validate_reference(changed))
 
     def test_market_split_basis_and_rejections(self):
-        company, export, request = market_fixture()
-        ref = q.fiscal_reference(export, request, company)
+        original = market_fixture()
+        ref = normalize_archived_close(original)
         self.assertEqual(100, ref['price'])
         self.assertEqual([], q.validate_reference(ref))
-        mutations = [
-            lambda e: e['listing'].update(ticker='OTHER'),
-            lambda e: e['listing'].update(tradingCurrency='CAD'),
-            lambda e: e['prices'][0].update(volume=0),
-            lambda e: e['prices'][0].update(closePrice=float('nan')),
-            lambda e: e['prices'][0].update(date='2025-12-30'),
-            lambda e: e['splits'][0].update(splitType='Reverse Stock Split'),
-            lambda e: e.update(seriesThrough='2025-12-01'),
-            lambda e: e['prices'].append(deepcopy(e['prices'][0])),
-        ]
-        for mutate in mutations:
-            invalid = deepcopy(export); mutate(invalid)
-            with self.subTest(export=invalid), self.assertRaises(ValueError):
-                q.fiscal_reference(invalid, request, company)
-        wrong = deepcopy(request); wrong['cusip'] = 'BAD'
+        for key, value in [('price', 101), ('currency', 'CAD'), ('source_response_sha256', ''),
+                           ('price_date', '2025-12-30'), ('split_adjustment_factor', 2),
+                           ('original_receipt_sha256', 'c' * 64), ('method', 'unknown')]:
+            invalid = deepcopy(ref); invalid[key] = value
+            with self.subTest(key=key):
+                self.assertTrue(q.validate_reference(invalid))
+        invalid = deepcopy(original); invalid['provider_listing']['ticker'] = 'OTHER'
         with self.assertRaises(ValueError):
-            q.fiscal_reference(export, wrong, company)
+            normalize_archived_close(invalid)
         for malformed in (None, [], {'peers': [None], 'method': 'sec_same_quarter_median'}):
             self.assertTrue(q.validate_reference(malformed))
+
+    def test_archived_listing_id_cannot_be_replaced_by_another_listing_field(self):
+        original = market_fixture(); original['listing_id'] = 'XNAS'
+        with self.assertRaisesRegex(ValueError, 'exact listing identifier'):
+            normalize_archived_close(original)
 
     def write_funds(self, root, value=250):
         funds = root / 'data/funds'; funds.mkdir(parents=True)
@@ -83,7 +75,7 @@ class QuantityPolicyTests(unittest.TestCase):
         return q.build_plan(funds, evidence_path=root / '.cache/evidence.json', market_path=root / '.cache/market.json')
 
     def apply(self, root, funds, plan):
-        return q.apply_plan(plan, funds, evidence_path=root / '.cache/evidence.json', request_path=root / '.cache/requests.json')
+        return q.apply_plan(plan, funds, evidence_path=root / '.cache/evidence.json')
 
     def test_end_to_end_idempotent_frozen_estimate_and_exclusion(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,8 +110,8 @@ class QuantityPolicyTests(unittest.TestCase):
     def test_market_preferred_and_options_remain_separate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); funds = self.write_funds(root)
-            company, export, request = market_fixture(); export['prices'][0]['closePrice'] = 50
-            ref = q.fiscal_reference(export, request, company)
+            original = market_fixture(); original.update(split_adjusted_close=50, price=200)
+            ref = normalize_archived_close(original)
             q.atomic_json(root / '.cache/market.json', {'schema_version': 1, 'references': {q.canonical_json_hash(ref): ref}})
             path = funds / '4.json'; fund = json.loads(path.read_text()); option = deepcopy(fund['quarters'][0]['holdings'][0]); option.update(holding_type='CALL', put_call='CALL'); fund['quarters'][0]['holdings'].append(option); q.atomic_json(path, fund)
             plan = self.build(root, funds)
@@ -157,22 +149,51 @@ class QuantityPolicyTests(unittest.TestCase):
                 serial = q.collect_peer_observations(funds, keys)
             self.assertEqual(serial, q.collect_peer_observations(funds, keys))
 
-    def test_import_reports_rejections_and_keeps_valid_references(self):
-        company, export, request = market_fixture()
+    def test_saved_price_migration_preserves_numbers_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
-            market = Path(tmp) / 'market.json'
-            result = import_exports([{'company': company, 'requests': [request]}], [export], market)
-            self.assertEqual(1, result['accepted'])
-            export['prices'] = []
-            result = import_exports([{'company': company, 'requests': [request]}], [export], market)
-            self.assertEqual(1, len(result['rejected']))
-            self.assertEqual(1, len(q.load_book(market)['references']))
+            root = Path(tmp); funds = self.write_funds(root)
+            old = market_fixture(); old_id = q.canonical_json_hash(old)
+            book = {'schema_version': 1, 'references': {old_id: old}}
+            for name in ('quarter_close_prices.json', 'quantity_estimation_evidence.json'):
+                q.atomic_json(root / '.cache' / name, book)
+            path = funds / '4.json'; fund = json.loads(path.read_text())
+            row = fund['quarters'][0]['holdings'][0]
+            row.update(shares=2.5, shares_imputed=True, reported_shares=0,
+                       quantity_estimate={'policy_version': 1, 'reference_id': old_id,
+                                          'method': old['method'], 'unit': 'SH'})
+            q.atomic_json(path, fund)
+            expected = deepcopy(row); expected.pop('quantity_estimate')
+            result = migrate_saved_prices(root)
+            self.assertEqual(1, result['annotations'])
+            revised = json.loads(path.read_text())['quarters'][0]['holdings'][0]
+            evidence = q.load_book(root / '.cache/quantity_estimation_evidence.json')
+            self.assertEqual([], q.validate_quantity_annotation(revised, DAY, evidence, cik='4'))
+            revised.pop('quantity_estimate'); self.assertEqual(expected, revised)
+            before = path.read_bytes()
+            self.assertEqual(0, migrate_saved_prices(root)['references'])
+            self.assertEqual(before, path.read_bytes())
 
-    def test_request_preparation_fails_closed_without_sec_identity(self):
-        company, _, request = market_fixture(); company.update(name='Apple Inc.', cik=320193, availableDatasets=['stock_prices'])
-        result = prepare_requests([request], [company], {'records': {}}, {})
-        self.assertEqual([], result['groups'])
-        self.assertEqual(1, result['skipped']['no_exact_SEC_equity_mapping'])
+    def test_migration_resumes_after_interrupted_fund_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); funds = self.write_funds(root)
+            old = market_fixture(); old_id = q.canonical_json_hash(old)
+            book = {'schema_version': 1, 'references': {old_id: old}}
+            for name in ('quarter_close_prices.json', 'quantity_estimation_evidence.json'):
+                q.atomic_json(root / '.cache' / name, book)
+            path = funds / '4.json'; fund = json.loads(path.read_text())
+            fund['quarters'][0]['holdings'][0].update(shares=2.5, shares_imputed=True, reported_shares=0,
+                quantity_estimate={'policy_version': 1, 'reference_id': old_id, 'method': old['method'], 'unit': 'SH'})
+            q.atomic_json(path, fund)
+            original_write = q.atomic_json
+            def fail_fund(target, payload):
+                if target == path:
+                    raise OSError('simulated interruption')
+                original_write(target, payload)
+            with mock.patch.object(q, 'atomic_json', side_effect=fail_fund), self.assertRaises(OSError):
+                migrate_saved_prices(root)
+            self.assertEqual(1, migrate_saved_prices(root)['annotations'])
+            row = json.loads(path.read_text())['quarters'][0]['holdings'][0]
+            self.assertEqual([], q.validate_quantity_annotation(row, DAY, q.load_book(root / '.cache/quantity_estimation_evidence.json'), cik='4'))
 
 
 if __name__ == '__main__':

@@ -103,6 +103,74 @@ class DataSnapshotTests(unittest.TestCase):
             for relative in data_snapshot.OPTIONAL_CACHE_FILES:
                 self.assertFalse((target / relative).exists())
 
+    def write_archived_price(self, source: Path, *, invalid=False):
+        import quantity_estimation as q
+        receipt = json.loads((Path(__file__).parent / 'fixtures/archived_price.json').read_text())
+        if invalid:
+            receipt['price'] += 1
+        reference_id = q.canonical_json_hash(receipt)
+        book = {'schema_version': 1, 'references': {reference_id: receipt}}
+        for name in ('quarter_close_prices.json', 'quantity_estimation_evidence.json'):
+            q.atomic_json(source / '.cache' / name, book)
+        holding = {'cusip': receipt['cusip'], 'holding_type': 'EQUITY',
+                   'value': 250, 'shares': 2.5, 'reported_shares': 0,
+                   'share_amount_type': 'SH', 'shares_imputed': True,
+                   'quantity_estimate': {'policy_version': 1, 'reference_id': reference_id,
+                                         'method': receipt['method'], 'unit': 'SH'}}
+        q.atomic_json(source / 'data/funds/1.json', {'cik': 1, 'quarters': [
+            {'report_date': receipt['report_date'], 'holdings': [holding]}]})
+        return holding
+
+    def test_restore_upgrades_archived_prices_before_installation(self):
+        import quantity_estimation as q
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = self.make_source(root); target = self.make_source(root, 'target')
+            original = self.write_archived_price(source)
+            original_bytes = (source / 'data/funds/1.json').read_bytes()
+            archive = self.pack(source, root / 'output'); payload = root / 'payload'
+            data_snapshot.verify_snapshot(archive_path=Path(archive['archive_path']),
+                manifest_path=Path(archive['manifest_path']), extract_root=payload, max_archive_bytes=1_000_000)
+            data_snapshot._replace_payload(target, payload, contract_version=data_snapshot.CONTRACT_VERSION)
+            actual = json.loads((target / 'data/funds/1.json').read_text())['quarters'][0]['holdings'][0]
+            self.assertEqual('saved_quarter_close', actual['quantity_estimate']['method'])
+            self.assertEqual([], q.validate_quantity_annotation(actual, '2025-12-31',
+                q.load_book(target / '.cache/quantity_estimation_evidence.json'), cik='1'))
+            actual.pop('quantity_estimate'); original.pop('quantity_estimate')
+            self.assertEqual(original, actual)
+            self.assertEqual(original_bytes, (source / 'data/funds/1.json').read_bytes())
+
+    def test_invalid_archived_price_leaves_restore_target_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = self.make_source(root); target = self.make_source(root, 'target')
+            self.write_archived_price(source, invalid=True)
+            before = {p.relative_to(target): p.read_bytes() for p in target.rglob('*') if p.is_file()}
+            archive = self.pack(source, root / 'output'); payload = root / 'payload'
+            data_snapshot.verify_snapshot(archive_path=Path(archive['archive_path']),
+                manifest_path=Path(archive['manifest_path']), extract_root=payload, max_archive_bytes=1_000_000)
+            with self.assertRaisesRegex(data_snapshot.SnapshotError, 'saved price receipt migration failed'):
+                data_snapshot._replace_payload(target, payload, contract_version=data_snapshot.CONTRACT_VERSION)
+            self.assertEqual(before, {p.relative_to(target): p.read_bytes() for p in target.rglob('*') if p.is_file()})
+
+    def test_retired_quote_queue_is_verified_but_not_restored_or_packed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = self.make_source(root); target = self.make_source(root, 'target')
+            retired = data_snapshot.ARCHIVED_CACHE_FILES[0]
+            (source / retired).write_text('{"requests":[]}')
+            (target / retired).write_text('stale queue')
+            # Simulate the older packer's allowlist, keeping all integrity checks.
+            with mock.patch.object(data_snapshot, 'OPTIONAL_CACHE_FILES',
+                    (*data_snapshot.OPTIONAL_CACHE_FILES, retired)):
+                archive = self.pack(source, root / 'old-output')
+            payload = root / 'payload'
+            data_snapshot.verify_snapshot(archive_path=Path(archive['archive_path']),
+                manifest_path=Path(archive['manifest_path']), extract_root=payload, max_archive_bytes=1_000_000)
+            self.assertFalse((payload / retired).exists())
+            data_snapshot._replace_payload(target, payload, contract_version=data_snapshot.CONTRACT_VERSION)
+            self.assertFalse((target / retired).exists())
+            repacked = self.pack(source, root / 'new-output')
+            with tarfile.open(repacked['archive_path']) as archive_file:
+                self.assertNotIn(retired.as_posix(), archive_file.getnames())
+
     def test_pack_is_deterministic_and_uses_raw_digest_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -482,7 +550,7 @@ class DataSnapshotTests(unittest.TestCase):
         for discarded_name in (
             ".cache/cusip_map.json",
             ".cache/cusip_registry.json",
-            ".cache/legacy-provider-private.json",
+            ".cache/legacy-source-private.json",
         ):
             discarded_cache = tarfile.TarInfo(discarded_name)
             discarded_cache.type = tarfile.REGTYPE
@@ -578,7 +646,7 @@ class DataSnapshotTests(unittest.TestCase):
             )
             self.assertEqual(0o600, legacy.stat().st_mode & 0o777)
             self.assertFalse(
-                (restored / ".cache/legacy-provider-private.json").exists()
+                (restored / ".cache/legacy-source-private.json").exists()
             )
             self.assertFalse((restored / ".cache/cusip_map.json").exists())
             self.assertFalse((restored / ".cache/cusip_registry.json").exists())
@@ -617,9 +685,9 @@ class DataSnapshotTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.write_security_master_pair(target, "legacy-target")
-            for relative in data_snapshot.RETIRED_PROVIDER_CACHE_FILES:
+            for relative in data_snapshot.RETIRED_CACHE_FILES:
                 (target / relative).write_text(
-                    "retired provider cache\n",
+                    "retired cache\n",
                     encoding="utf-8",
                 )
 
@@ -634,10 +702,10 @@ class DataSnapshotTests(unittest.TestCase):
             for relative in data_snapshot.LEGACY_RESTORABLE_CACHE_FILES:
                 self.assertTrue((target / relative).is_file())
             self.assertFalse(
-                (target / ".cache/legacy-provider-private.json").exists()
+                (target / ".cache/legacy-source-private.json").exists()
             )
             for relative in (
-                *data_snapshot.RETIRED_PROVIDER_CACHE_FILES,
+                *data_snapshot.RETIRED_CACHE_FILES,
                 *data_snapshot.CACHE_FILES,
             ):
                 self.assertFalse((target / relative).exists(), relative)
@@ -688,7 +756,7 @@ class DataSnapshotTests(unittest.TestCase):
             )
             target = self.make_source(root, "target")
             protected = target / ".cache/local-only.txt"
-            retired = target / data_snapshot.RETIRED_PROVIDER_CACHE_FILES[0]
+            retired = target / data_snapshot.RETIRED_CACHE_FILES[0]
             retired.symlink_to(protected)
             before = (target / "data/funds/1.json").read_bytes()
 
@@ -728,7 +796,7 @@ class DataSnapshotTests(unittest.TestCase):
             }
             expected_cache: dict[Path, bytes] = {}
             for index, relative in enumerate(
-                data_snapshot.RETIRED_PROVIDER_CACHE_FILES
+                data_snapshot.RETIRED_CACHE_FILES
             ):
                 path = target / relative
                 path.write_text(f"retired-{index}\n", encoding="utf-8")
@@ -766,7 +834,7 @@ class DataSnapshotTests(unittest.TestCase):
                 extract_root=payload,
             )
             target = self.make_source(root, "target")
-            retired = target / data_snapshot.RETIRED_PROVIDER_CACHE_FILES[0]
+            retired = target / data_snapshot.RETIRED_CACHE_FILES[0]
             retired.write_text("preserve on interrupt\n", encoding="utf-8")
             old_fund = (target / "data/funds/1.json").read_bytes()
             old_pair = {
@@ -887,8 +955,8 @@ class DataSnapshotTests(unittest.TestCase):
             (target / "data/old-only.json").write_text("old\n")
             (target / ".cache/local-only.txt").write_text("preserve me\n")
             (target / "user-file.txt").write_text("also preserve me\n")
-            for relative in data_snapshot.RETIRED_PROVIDER_CACHE_FILES:
-                (target / relative).write_text("retired provider cache\n")
+            for relative in data_snapshot.RETIRED_CACHE_FILES:
+                (target / relative).write_text("retired cache\n")
 
             release = {
                 "assets": [
@@ -952,7 +1020,7 @@ class DataSnapshotTests(unittest.TestCase):
                     (publisher / relative).read_bytes(),
                     (target / relative).read_bytes(),
                 )
-            for relative in data_snapshot.RETIRED_PROVIDER_CACHE_FILES:
+            for relative in data_snapshot.RETIRED_CACHE_FILES:
                 self.assertFalse((target / relative).exists(), relative)
             self.assertEqual(
                 "preserve me\n",

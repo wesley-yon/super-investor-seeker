@@ -8,8 +8,7 @@ unsupported securities fail closed with a null ticker.
 
 The source-state file stores normalized evidence for each SEC URL together with
 the response SHA-256.  That makes an incremental refresh cheap and permits a
-byte-for-byte deterministic rebuild without contacting a third party (or the
-SEC).  Fetch failures retain the last accepted source entry and master.
+byte-for-byte deterministic rebuild without network access.  Fetch failures retain the last accepted source entry and master.
 """
 
 from __future__ import annotations
@@ -71,6 +70,7 @@ SEC_COMPANY_EXCHANGE_TICKERS_URL = (
 SEC_FUND_TICKERS_URL = "https://www.sec.gov/files/company_tickers_mf.json"
 
 MASTER_SCHEMA_VERSION = 1
+TICKER_RESOLUTION_RULES_VERSION = 2
 SOURCE_STATE_SCHEMA_VERSION = 4
 TIMELINE_SOURCE_STATE_SCHEMA_VERSION = 3
 COMPACT_SOURCE_STATE_SCHEMA_VERSION = 2
@@ -3771,7 +3771,12 @@ def _fund_issuer_conflict(
     # the symbol proof; no symbol is inferred from these names.
     def brand(value: str) -> list[str]:
         return [token for token in re.findall(r"[A-Z0-9]+", value.upper())
-                if token not in {"TR", "TRUST", "SER", "SERIES", "THE"}]
+                if token not in {
+                    "TR", "TRUST", "SER", "SERIES", "THE", "ETF", "ETFS",
+                    "FUND", "FUNDS", "FD", "FDS", "EXCHANGE", "EXCHNG",
+                    "EXCH", "EX", "EXC", "TRADED", "TRAD", "TRD",
+                    "SHARES", "SHS", "INC",
+                }]
     if len(official_issuers) != 1 or not brand(official_issuers[0]):
         return "fund_lacks_official_issuer_identity"
     expected = brand(official_issuers[0])
@@ -3786,6 +3791,119 @@ def _fund_issuer_conflict(
     )
 
 
+def _ftd_proof_symbol(entry: Mapping[str, Any]) -> str | None:
+    """Read the retained FTD spelling without rewriting source observations."""
+
+    alias = entry.get("symbol_validation_alias")
+    if isinstance(alias, Mapping):
+        return alias.get("ftd_symbol")
+    return entry.get("ticker")
+
+
+def _ftd_alias_share_class(
+    entry: Mapping[str, Any], raw_symbol: str, sec_symbol: str,
+) -> str | None:
+    match = re.fullmatch(r"([A-Z]+)[.-]([A-Z])", sec_symbol)
+    if (
+        entry.get("instrument_type") != "EQUITY"
+        or match is None
+        or raw_symbol != "".join(match.groups())
+    ):
+        return None
+    share_class = match.group(2)
+    official = entry.get("official_13f")
+    if not isinstance(official, Mapping) or official.get("status") != "active":
+        return None
+    rows = official.get("records", [])
+    if not isinstance(rows, list) or not rows or any(
+        not isinstance(row, Mapping)
+        or row.get("cusip") != entry.get("cusip")
+        or row.get("status") == "*D*"
+        or _sec_edgar_class_profile(row.get("description"))[1]
+        != frozenset({share_class})
+        or _sec_edgar_class_profile(row.get("description"))[0]
+        not in {None, "EQUITY"}
+        for row in rows
+    ):
+        return None
+    dates = set(entry.get("confirmation_dates", []))
+    descriptions = [
+        description
+        for item in entry.get("symbol_evidence", [])
+        if item.get("symbol") == raw_symbol
+        and item.get("settlement_date") in dates
+        for description in item.get("descriptions", [])
+    ]
+    if not descriptions or any(
+        _sec_edgar_class_profile(description)[1] != frozenset({share_class})
+        or _sec_edgar_class_profile(description)[0] not in {None, "EQUITY"}
+        for description in descriptions
+    ):
+        return None
+    return share_class
+
+
+def _make_ftd_symbol_alias(
+    entry: Mapping[str, Any], candidate: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    raw_symbol = str(entry.get("candidate_ticker") or "")
+    sec_symbol = str(candidate.get("sec_symbol") or "")
+    share_class = _ftd_alias_share_class(entry, raw_symbol, sec_symbol)
+    if share_class is None:
+        return None
+    official = entry["official_13f"]
+    if any(field not in official for field in ("url", "sha256", "period")):
+        return None
+    return {
+        "ftd_symbol": raw_symbol,
+        "sec_symbol": sec_symbol,
+        "share_class": share_class,
+        "sec_sources": copy.deepcopy(candidate["sec_sources"]),
+        "official_13f": {
+            field: official[field] for field in ("url", "sha256", "period")
+        },
+    }
+
+
+def _validate_ftd_symbol_alias(
+    entry: Mapping[str, Any], master: Mapping[str, Any], *, key: str,
+) -> None:
+    alias = entry.get("symbol_validation_alias")
+    if alias is None:
+        return
+    if not isinstance(alias, Mapping) or set(alias) != {
+        "ftd_symbol", "sec_symbol", "share_class", "sec_sources", "official_13f",
+    }:
+        raise SecurityMasterError(f"malformed FTD share-symbol alias: {key}")
+    sources = alias.get("sec_sources")
+    source_references = {
+        (source.get("url"), source.get("sha256")): source.get("kind")
+        for source in master.get("sources", [])
+    }
+    if (
+        alias.get("sec_symbol") != entry.get("ticker")
+        or not isinstance(sources, list)
+        or not sources
+        or any(
+            not isinstance(source, Mapping)
+            or set(source) != {"url", "sha256", "kind"}
+            or source.get("kind") not in {
+                "sec_company_tickers", "sec_company_exchange_tickers",
+            }
+            or source_references.get((source.get("url"), source.get("sha256")))
+            != source.get("kind")
+            for source in sources
+        )
+        or sources != sorted(sources, key=lambda source: source["url"])
+        or len({source["url"] for source in sources}) != len(sources)
+        or _make_ftd_symbol_alias(entry, alias) != dict(alias)
+    ):
+        raise SecurityMasterError(f"invalid FTD share-symbol alias proof: {key}")
+    official = alias["official_13f"]
+    if source_references.get((official["url"], official["sha256"])) != "sec_13f_list":
+        raise SecurityMasterError(f"unbound FTD share-symbol official class: {key}")
+
+
 def _validate_ftd_resolution_proof(
     entry: Mapping[str, Any],
     *,
@@ -3794,6 +3912,8 @@ def _validate_ftd_resolution_proof(
     source_kinds: set[str],
 ) -> None:
     ticker = str(entry["ticker"])
+    _validate_ftd_symbol_alias(entry, master, key=key)
+    ftd_symbol = _ftd_proof_symbol(entry)
     ticker_as_of = str(entry["ticker_as_of"])
     confirmation_dates = entry.get("confirmation_dates")
     validation_sources = entry.get("symbol_validation_sources")
@@ -3842,7 +3962,7 @@ def _validate_ftd_resolution_proof(
     evidence_by_date = {
         item["settlement_date"]: item
         for item in entry.get("symbol_evidence", [])
-        if item.get("symbol") == ticker
+        if item.get("symbol") == ftd_symbol
     }
     if any(value not in evidence_by_date for value in confirmation_dates):
         raise SecurityMasterError(
@@ -3851,7 +3971,7 @@ def _validate_ftd_resolution_proof(
     active_intervals = [
         interval
         for interval in entry.get("symbol_intervals", [])
-        if interval.get("symbol") == ticker
+        if interval.get("symbol") == ftd_symbol
         and ticker_as_of in interval.get("observation_dates", [])
     ]
     if (
@@ -4315,6 +4435,11 @@ def _validate_security_master(master: Mapping[str, Any]) -> None:
     policy = master.get("policy")
     if not isinstance(policy, dict):
         raise SecurityMasterError("security master policy must be an object")
+    if "resolution_rules_version" in policy and (
+        type(policy["resolution_rules_version"]) is not int
+        or policy["resolution_rules_version"] < 1
+    ):
+        raise SecurityMasterError("security master resolution rules version must be a positive integer")
     source_references, source_kinds = _validate_master_sources(master)
     source_state_version = master.get("source_state_schema_version")
     if source_state_version is not None and source_state_version not in {
@@ -4506,7 +4631,10 @@ def _validate_security_master(master: Mapping[str, Any]) -> None:
                 master=master,
                 source_kinds=source_kinds,
             )
-            _validate_ftd_master_identity(entry, key=key)
+            _validate_ftd_master_identity(
+                entry, key=key,
+                enforce_ftd_class=policy.get("resolution_rules_version", 0) >= 2,
+            )
         elif status == "resolved" and ticker_source == "sec_ixbrl":
             _validate_edgar_resolution_proof(
                 entry,
@@ -5387,6 +5515,7 @@ def _load_security_master_pair_locked(
         raise SecurityMasterError(
             "security-master pair source-state digest does not match"
         )
+    _validate_symbol_alias_source_state(loaded_master, state)
     return loaded_master, state
 
 
@@ -5485,6 +5614,7 @@ def save_security_master_pair(
         raise SecurityMasterError(
             "security master is not bound to the supplied SEC source state"
         )
+    _validate_symbol_alias_source_state(master, normalized_state)
 
     master_target, state_target, parent = _validate_security_master_pair_paths(
         master_path,
@@ -6126,6 +6256,76 @@ def _validation_symbol_metadata(
     })
 
 
+def _share_symbol_alias_candidates(state: Mapping[str, Any]) -> dict[str, dict]:
+    """Locate unique SEC class punctuation variants; names prove no symbol."""
+
+    symbols, _titles, _exchanges = _validation_symbol_metadata(state)
+    candidates: dict[str, set[str]] = defaultdict(set)
+    for symbol in symbols:
+        match = re.fullmatch(r"([A-Z]+)[.-]([A-Z])", symbol)
+        if match:
+            candidates["".join(match.groups())].add(symbol)
+    aliases = {}
+    for raw_symbol, variants in sorted(candidates.items()):
+        # An independently listed unpunctuated symbol is a collision, even
+        # when one of its names happens to resemble the requested issuer.
+        if raw_symbol in symbols or len(variants) != 1:
+            continue
+        sec_symbol = next(iter(variants))
+        sources = [
+            {"url": url, "sha256": source["sha256"], "kind": source["kind"]}
+            for url, source in sorted(state.get("sources", {}).items())
+            if source.get("kind") in {
+                "sec_company_tickers", "sec_company_exchange_tickers",
+            }
+            and sec_symbol in source.get("symbols", [])
+            and source.get("symbol_titles", {}).get(sec_symbol)
+        ]
+        if sources:
+            aliases[raw_symbol] = {"sec_symbol": sec_symbol, "sec_sources": sources}
+    return aliases
+
+
+def _validate_symbol_alias_source_state(
+    master: Mapping[str, Any], state: Mapping[str, Any],
+) -> None:
+    entries = [
+        (key, entry) for key, entry in master.get("records", {}).items()
+        if entry.get("mapping_status") == "resolved"
+        and entry.get("symbol_validation_alias") is not None
+    ]
+    if not entries:
+        return
+    aliases = _share_symbol_alias_candidates(state)
+    symbol_sources, symbol_titles, symbol_exchanges = _validation_symbol_metadata(state)
+    official_index, official_source = _official_13f_index(state)
+    expected_evidence, expected_intervals, _latest = _aggregate_ftd_evidence(
+        state, {entry["cusip"] for _key, entry in entries},
+    )
+    for key, entry in entries:
+        proof = entry["symbol_validation_alias"]
+        candidate = aliases.get(proof["ftd_symbol"])
+        official = entry.get("official_13f", {})
+        active_rows = [
+            row for row in official_index.get(entry["cusip"], [])
+            if row.get("status") != "*D*"
+            and str(row.get("description") or "").strip().upper() not in {"CALL", "PUT"}
+        ]
+        symbol = entry["ticker"]
+        if (
+            candidate is None
+            or _make_ftd_symbol_alias(entry, candidate) != proof
+            or official_source != proof["official_13f"]
+            or official.get("records") != active_rows
+            or entry.get("symbol_evidence", []) != expected_evidence.get(entry["cusip"], [])
+            or entry.get("symbol_intervals", []) != expected_intervals.get(entry["cusip"], [])
+            or entry.get("symbol_validation_sources") != symbol_sources.get(symbol, [])
+            or entry.get("symbol_validation_titles") != symbol_titles.get(symbol, [])
+            or entry.get("symbol_validation_exchanges") != symbol_exchanges.get(symbol, [])
+        ):
+            raise SecurityMasterError(f"FTD share-symbol alias differs from SEC source state: {key}")
+
+
 def _fund_series_name_evidence(
     state: Mapping[str, Any],
 ) -> dict[str, dict[str, str]]:
@@ -6534,11 +6734,56 @@ _ISSUER_SUFFIXES = frozenset({
     "PLC",
 })
 
+# EDGAR company titles append incorporation / jurisdiction markers. These
+# are presentation metadata, not part of the issuer or security identity.
+_ISSUER_SEC_LOCATION_RE = re.compile(
+    r"\s*/(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|"
+    r"ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|"
+    r"SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|NEW)/?$"
+)
+_ISSUER_RECEIPT_SUFFIX_RE = re.compile(
+    r"\s+(?:(?:SPONSORED|SPONS|SPON|UNSPONSORED)\s+)?(?:ADRS?|ADS)"
+    r"(?:\s*\([^)]*\)?|\s+(?:EACH|REP|REPRESENTING|NEW|USD|ORD)\b.*)?$"
+)
+
+
+def _normalize_issuer_presentation(text: str) -> str:
+    """Remove bounded source formatting; never discover a symbol by name."""
+    text = _ISSUER_SEC_LOCATION_RE.sub("", text).strip()
+    text = re.sub(r"\b(CL(?:ASS)?)[.-](?=[A-Z0-9]\b)", r"\1 ", text)
+    # FTD descriptions use all of INC (NEW), INC, NEW, and INC-NEW.
+    text = re.sub(
+        r"\b(INC|CORP|CORPORATION|LTD|LIMITED|PLC)\.?"
+        r"(?:\s*[,\-]\s*NEW|\s+\(NEW\)|\s+NEW)$",
+        r"\1", text,
+    ).strip()
+    text = _ISSUER_RECEIPT_SUFFIX_RE.sub("", text).strip()
+    # Iterate because a description may end in both a class and a share
+    # suffix, e.g. 'CL A COMMON'. Class compatibility is checked separately
+    # against the exact official CUSIP before admitting an FTD symbol.
+    previous = None
+    while previous != text:
+        previous = text
+        text = _ISSUER_SEC_LOCATION_RE.sub("", text).strip()
+        text = re.sub(
+            r"\s+(?:COM(?:MON)?(?:\s+(?:STK|STOCK))?|"
+            r"ORD(?:INARY)?(?:\s+(?:SHS?|SHARES?))?|SHS?)"
+            r"(?:\s+(?:NEW|PAR|NPV)\b.*|\s+(?:USD|EUR|GBP|\$).*|\s*\(.*)?$",
+            "", text,
+        ).strip()
+        text = _ISSUER_TRAILING_CLASS_RE.sub("", text).strip()
+    return text
+
 
 def _issuer_proof_key(value: object | None, *, normalize_class: bool = True) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
+    raw = str(value or "")
+    if normalize_class:
+        raw = unescape(unescape(raw))
+    text = unicodedata.normalize("NFKD", raw)
     text = "".join(character for character in text if not unicodedata.combining(character))
     text = text.upper().replace("&", " AND ")
+    if normalize_class:
+        text = _normalize_issuer_presentation(text)
     # FTD DESCRIPTION commonly appends a security class after a semicolon
     # (for example ``APPLE INC;COM NPV``).  Strip only a recognized class
     # suffix; the issuer portion remains an exact, deterministic comparison.
@@ -6562,6 +6807,27 @@ def _issuer_proof_key(value: object | None, *, normalize_class: bool = True) -> 
     return " ".join(tokens)
 
 
+def _issuer_initial_order_keys(key: str) -> set[str]:
+    """Allow EDGAR's 'SURNAME D R' versus 'D R SURNAME' only."""
+    tokens = key.split()
+    keys = {"".join(tokens)}
+    for reverse in (False, True):
+        ordered = list(reversed(tokens)) if reverse else tokens
+        count = 0
+        while count < len(ordered) and len(ordered[count]) == 1 and ordered[count].isalpha():
+            count += 1
+        # Two or more initials and a substantial unchanged issuer name keep
+        # this narrower than unordered token or fuzzy matching.
+        if count >= 2 and sum(map(len, ordered[count:])) >= 4:
+            initials = ordered[:count]
+            name = ordered[count:]
+            if reverse:
+                initials.reverse()
+                name.reverse()
+            keys.add("".join(initials + name))
+    return keys
+
+
 def _issuer_compatible(
     left: object | None, right: object | None, *, normalize_class: bool = True
 ) -> bool:
@@ -6580,6 +6846,10 @@ def _issuer_compatible(
     # spacing-only variants as exact after removing corporate suffixes; this
     # is deterministic and deliberately does not admit fuzzy name matches.
     if left_key.replace(" ", "") == right_key.replace(" ", ""):
+        return True
+    if normalize_class and (
+        _issuer_initial_order_keys(left_key) & _issuer_initial_order_keys(right_key)
+    ):
         return True
     shorter, longer = sorted((left_key, right_key), key=len)
     # Official-list and FTD issuer fields are fixed-width and can truncate a
@@ -6719,6 +6989,37 @@ def _class_conflict_reason(
     return None
 
 
+def _ftd_class_conflict_reason(
+    official_descriptions: list[str],
+    ftd_descriptions: list[str],
+    symbol: str | None,
+) -> str | None:
+    """Name cleanup must not erase an explicit contradictory share class."""
+    def designators(value: str) -> frozenset[str]:
+        # Fixed-width FTD descriptions spell a numbered class both A1 and
+        # A-1. Normalize only this bounded class token, not arbitrary numbers
+        # or punctuation elsewhere in an issuer / fund name.
+        normalized = re.sub(
+            r"\b(CL(?:ASS)?)\s+([A-Z])-([0-9]+)\b", r"\1 \2\3",
+            _sec_edgar_normalized_text(value).upper(),
+        )
+        return _sec_edgar_class_profile(normalized)[1]
+
+    official_classes = {
+        designator for value in official_descriptions
+        for designator in designators(value)
+    }
+    if official_classes:
+        for description in ftd_descriptions:
+            observed = designators(description)
+            if observed and observed != official_classes:
+                return "ftd_class_designator_conflicts_with_official_13f_identity"
+        symbol_class = re.fullmatch(r"[A-Z]+[.-]([A-Z])", str(symbol or ""))
+        if symbol_class and {symbol_class.group(1)} != official_classes:
+            return "symbol_class_designator_conflicts_with_official_13f_identity"
+    return None
+
+
 def _master_reported_text_values(
     entry: Mapping[str, Any],
     *,
@@ -6758,6 +7059,7 @@ def _validate_ftd_master_identity(
     entry: Mapping[str, Any],
     *,
     key: str,
+    enforce_ftd_class: bool = True,
 ) -> None:
     """Replay the exact as-filed identity checks for one resolved FTD row."""
 
@@ -6843,7 +7145,7 @@ def _validate_ftd_master_identity(
         )
 
     confirmation_dates = set(entry.get("confirmation_dates", []))
-    ticker = entry.get("ticker")
+    ticker = _ftd_proof_symbol(entry)
     recent_descriptions = sorted({
         description
         for item in entry.get("symbol_evidence", [])
@@ -6852,6 +7154,16 @@ def _validate_ftd_master_identity(
         for description in item.get("descriptions", [])
         if isinstance(description, str) and description
     })
+    ftd_class_conflict = _ftd_class_conflict_reason(
+        official_descriptions, recent_descriptions,
+        (entry.get("symbol_validation_alias") or {}).get("sec_symbol")
+        or entry.get("ticker"),
+    )
+    if enforce_ftd_class and ftd_class_conflict:
+        raise SecurityMasterError(
+            f"resolved FTD proof conflicts with its official class "
+            f"({ftd_class_conflict}): {key}"
+        )
     if entry.get("symbol_validation_fund_identity"):
         issuer_conflict = _fund_issuer_conflict(
             reported_issuers, recent_descriptions, official_issuers,
@@ -6902,6 +7214,7 @@ def _reconcile_current_symbol_cusips(
     records: Mapping[str, dict[str, Any]],
     *,
     concurrent_window_days: int,
+    source_provenance: Iterable[Mapping[str, Any]] = (),
 ) -> None:
     """Fail closed when a symbol has moved to a materially newer CUSIP.
 
@@ -6920,6 +7233,13 @@ def _reconcile_current_symbol_cusips(
     by_ticker: dict[str, list[tuple[dict[str, Any], date, bool]]] = defaultdict(
         list
     )
+    alias_symbols = {
+        record["symbol_validation_alias"]["ftd_symbol"]: record["ticker"]
+        for record in records.values()
+        if record.get("mapping_status") == "resolved"
+        and isinstance(record.get("symbol_validation_alias"), Mapping)
+    }
+    proof_master = {"sources": list(source_provenance)}
     for record in records.values():
         if record.get("mapping_status") == "resolved":
             ticker = _normalize_symbol(record.get("ticker"))
@@ -6942,7 +7262,22 @@ def _reconcile_current_symbol_cusips(
             )
         )
         if candidate_has_exact_ftd_proof:
-            by_ticker[candidate].append(
+            candidate_symbol = alias_symbols.get(candidate, candidate)
+            alias = record.get("symbol_validation_alias")
+            if isinstance(alias, Mapping) and proof_master["sources"]:
+                # A one-date candidate can already prove class punctuation
+                # even though it cannot yet publish a ticker. Bind its own
+                # alias before grouping it with an older canonical claim.
+                proof_record = {**record, "ticker": alias.get("sec_symbol")}
+                proof_key = str(record.get("cusip") or "")
+                try:
+                    _validate_ftd_symbol_alias(proof_record, proof_master, key=proof_key)
+                    _validate_ftd_master_identity(proof_record, key=proof_key)
+                except SecurityMasterError:
+                    pass
+                else:
+                    candidate_symbol = alias["sec_symbol"]
+            by_ticker[candidate_symbol].append(
                 (record, date.fromisoformat(candidate_as_of), False)
             )
 
@@ -7045,6 +7380,7 @@ def rebuild_security_master(
     ) = _validation_symbol_metadata(state)
     official_index, official_source = _official_13f_index(state)
     fund_identities = _fund_validation_identities(state)
+    share_symbol_aliases = _share_symbol_alias_candidates(state)
     records: dict[str, dict[str, Any]] = {}
     quarantine: dict[str, dict[str, str]] = {}
     status_counts = {status: 0 for status in sorted(VALID_MAPPING_STATUSES)}
@@ -7229,6 +7565,40 @@ def rebuild_security_master(
                     })
                     for symbol in recent_symbols
                 }
+                equivalent_symbols: dict[str, str] = {}
+                for observed_symbol in recent_symbols:
+                    alias_candidate = share_symbol_aliases.get(observed_symbol)
+                    if alias_candidate is None:
+                        continue
+                    probe = {
+                        **entry, "candidate_ticker": observed_symbol,
+                        "confirmation_dates": recent_dates_by_symbol[observed_symbol],
+                    }
+                    alias = _make_ftd_symbol_alias(probe, alias_candidate)
+                    if alias is None:
+                        continue
+                    canonical_symbol = alias["sec_symbol"]
+                    # Both spellings must identify the same explicit class.
+                    # The selected spelling still needs its own date minimum;
+                    # equivalent observations are never summed for publication.
+                    equivalent_descriptions = [
+                        description for item in recent
+                        if item.get("symbol") in {observed_symbol, canonical_symbol}
+                        for description in item.get("descriptions", [])
+                    ]
+                    if any(
+                        _sec_edgar_class_profile(description)[1]
+                        != frozenset({alias["share_class"]})
+                        or _sec_edgar_class_profile(description)[0] not in {None, "EQUITY"}
+                        for description in equivalent_descriptions
+                    ) or _issuer_conflict_reason(
+                        reported_issuers=reported_issuers,
+                        ftd_descriptions=equivalent_descriptions,
+                        sec_titles=validation_titles.get(canonical_symbol, []),
+                        official_issuers=official_issuers,
+                    ):
+                        continue
+                    equivalent_symbols[observed_symbol] = canonical_symbol
                 # A single uncorroborated FTD symbol typo must not withdraw a
                 # repeatedly observed symbol that is present in the current
                 # SEC ticker metadata.  A competing current SEC symbol or a
@@ -7244,19 +7614,30 @@ def rebuild_security_master(
                         >= min_confirmation_dates
                     )
                 )
-                if (
-                    len(recent_symbols) > 1
-                    and len(credible_recent_symbols) != 1
-                ):
+                recent_symbol_groups = {
+                    equivalent_symbols.get(symbol, symbol) for symbol in recent_symbols
+                }
+                credible_symbol_groups = {
+                    equivalent_symbols.get(symbol, symbol) for symbol in credible_recent_symbols
+                }
+                if len(recent_symbol_groups) > 1 and len(credible_symbol_groups) != 1:
                     entry["mapping_status"] = "ambiguous"
                     entry["resolution_reason"] = "conflicting_recent_ftd_symbols"
                     entry["candidate_symbols"] = recent_symbols
                     entry["candidate_as_of"] = latest_for_security.isoformat()
                 else:
-                    candidate = (
-                        credible_recent_symbols[0]
-                        if credible_recent_symbols
-                        else recent_symbols[0]
+                    chosen_group = next(iter(credible_symbol_groups or recent_symbol_groups))
+                    candidate_spellings = [
+                        symbol for symbol in recent_symbols
+                        if equivalent_symbols.get(symbol, symbol) == chosen_group
+                    ]
+                    confirmed_spellings = [
+                        symbol for symbol in candidate_spellings
+                        if len(recent_dates_by_symbol[symbol]) >= min_confirmation_dates
+                    ]
+                    candidate = max(
+                        confirmed_spellings or candidate_spellings,
+                        key=lambda symbol: (recent_dates_by_symbol[symbol][-1], symbol),
                     )
                     candidate_dates = recent_dates_by_symbol[candidate]
                     candidate_interval = next(
@@ -7268,19 +7649,37 @@ def rebuild_security_master(
                         None,
                     )
                     if candidate_interval is None:
+                        if equivalent_symbols:
+                            # Simultaneous spellings do not establish one
+                            # unambiguous active interval for either spelling.
+                            entry.update({
+                                "mapping_status": "ambiguous",
+                                "resolution_reason": "overlapping_ftd_symbol_spellings",
+                                "candidate_symbols": recent_symbols,
+                                "candidate_as_of": latest_for_security.isoformat(),
+                            })
+                            records[key] = entry
+                            continue
                         raise SecurityMasterError(
                             f"active FTD symbol interval is missing for {key}"
                         )
                     entry["candidate_ticker"] = candidate
                     entry["candidate_as_of"] = candidate_dates[-1]
                     entry["confirmation_dates"] = candidate_dates
+                    validation_symbol = candidate
+                    alias_candidate = share_symbol_aliases.get(candidate)
+                    if alias_candidate is not None:
+                        alias = _make_ftd_symbol_alias(entry, alias_candidate)
+                        if alias is not None:
+                            entry["symbol_validation_alias"] = alias
+                            validation_symbol = alias["sec_symbol"]
                     entry["symbol_validation_sources"] = validation_sources.get(
-                        candidate, []
+                        validation_symbol, []
                     )
                     entry["symbol_validation_titles"] = validation_titles.get(
-                        candidate, []
+                        validation_symbol, []
                     )
-                    candidate_exchanges = validation_exchanges.get(candidate, [])
+                    candidate_exchanges = validation_exchanges.get(validation_symbol, [])
                     entry["symbol_validation_exchanges"] = candidate_exchanges
                     recent_descriptions = sorted({
                         description
@@ -7295,8 +7694,8 @@ def rebuild_security_master(
                     ):
                         entry["security_label"] = recent_descriptions[0]
                         entry["security_label_source"] = "sec_ftd"
-                    fund_identity = fund_identities.get(candidate)
-                    if fund_identity and not validation_titles.get(candidate):
+                    fund_identity = fund_identities.get(validation_symbol)
+                    if fund_identity and not validation_titles.get(validation_symbol):
                         entry["symbol_validation_fund_identity"] = fund_identity
                     else:
                         fund_identity = None
@@ -7304,14 +7703,21 @@ def rebuild_security_master(
                         entry["resolution_reason"] = (
                             "insufficient_distinct_ftd_settlement_dates"
                         )
-                    elif candidate not in validation_sources:
+                    elif validation_symbol not in validation_sources:
                         entry["resolution_reason"] = (
                             "symbol_absent_from_current_sec_validation_inputs"
                         )
-                    elif not validation_titles.get(candidate) and not fund_identity:
+                    elif not validation_titles.get(validation_symbol) and not fund_identity:
                         entry["resolution_reason"] = (
                             "symbol_lacks_current_sec_issuer_metadata"
                         )
+                    elif (
+                        ftd_class_conflict := _ftd_class_conflict_reason(
+                            official_descriptions, recent_descriptions, validation_symbol,
+                        )
+                    ):
+                        entry["mapping_status"] = "ambiguous"
+                        entry["resolution_reason"] = ftd_class_conflict
                     elif (
                         issuer_conflict := (
                             _fund_issuer_conflict(
@@ -7320,7 +7726,7 @@ def rebuild_security_master(
                             if fund_identity else _issuer_conflict_reason(
                                 reported_issuers=reported_issuers,
                                 ftd_descriptions=recent_descriptions,
-                                sec_titles=validation_titles.get(candidate, []),
+                                sec_titles=validation_titles.get(validation_symbol, []),
                                 official_issuers=official_issuers,
                             )
                         )
@@ -7330,7 +7736,7 @@ def rebuild_security_master(
                     else:
                         entry.update({
                             "mapping_status": "resolved",
-                            "ticker": candidate,
+                            "ticker": validation_symbol,
                             "ticker_source": "sec_ftd",
                             "ticker_as_of": candidate_dates[-1],
                             "last_verification_date": candidate_dates[-1],
@@ -7356,6 +7762,7 @@ def rebuild_security_master(
     _reconcile_current_symbol_cusips(
         records,
         concurrent_window_days=recent_window_days,
+        source_provenance=state.get("sources", {}).values(),
     )
     _apply_fund_series_names(records, state)
     status_counts = {status: 0 for status in sorted(VALID_MAPPING_STATUSES)}
@@ -7393,6 +7800,7 @@ def rebuild_security_master(
         "source_state_sha256": _mapping_sha256(state),
         "universe_sha256": _mapping_sha256(universe_payload),
         "policy": {
+            "resolution_rules_version": TICKER_RESOLUTION_RULES_VERSION,
             "recent_window_days": recent_window_days,
             "max_evidence_age_days": max_evidence_age_days,
             "min_confirmation_dates": min_confirmation_dates,
@@ -7520,6 +7928,12 @@ def _retain_prior_mappings_with_unresolved_extensions(
             policy.get("min_confirmation_dates", DEFAULT_MIN_CONFIRMATION_DATES)
         ),
     )
+    # Most records below are copied from the last-good master, so this is
+    # not a completed upgrade to the current resolution rules.
+    if "resolution_rules_version" in policy:
+        fallback["policy"]["resolution_rules_version"] = policy["resolution_rules_version"]
+    else:
+        fallback["policy"].pop("resolution_rules_version", None)
     fallback_records = fallback["records"]
     prior_keys = set(prior_records)
     for key, record in prior_records.items():
