@@ -52,6 +52,7 @@ from sec_13f_bulk_backfill import (
     Sec13FBulkError,
     normalize_sec_identity_source_url,
 )
+from reviewed_ticker_map import apply_review, public_instrument_mappings, REVIEW_SOURCE
 from sec_security_master import (
     MASTER_AUDIT_SCHEMA_VERSION,
     MASTER_SCHEMA_VERSION,
@@ -115,6 +116,7 @@ STATE_PATH = DATA_DIR / "pipeline_state.json"
 SEC_SECURITY_MASTER_PATH = ROOT / ".cache" / "sec_security_master.json"
 SEC_SOURCE_STATE_PATH = ROOT / ".cache" / "sec_source_state.json"
 SEC_TICKER_SOURCES = frozenset({
+    REVIEW_SOURCE,
     "sec_ftd",
     "sec_ixbrl",
 })
@@ -138,6 +140,7 @@ PUBLIC_REGISTRY_LABEL_SOURCES = frozenset({
     "synthetic_identifier",
 })
 PUBLIC_REGISTRY_EVIDENCE_SOURCES = frozenset({
+    REVIEW_SOURCE,
     "sec_13f_list",
     "sec_13f_filer_consensus",
     "sec_company_tickers",
@@ -380,6 +383,11 @@ def expected_registry_position_ticker(
         raw_ticker = entry.get("underlying_ticker")
         source = entry.get("underlying_ticker_source")
         as_of = entry.get("underlying_ticker_as_of")
+    elif normalized_type in (entry.get("instrument_mappings") or {}):
+        typed = entry["instrument_mappings"][normalized_type]
+        raw_ticker = typed.get("ticker")
+        source = typed.get("ticker_source")
+        as_of = typed.get("ticker_as_of")
     else:
         raw_entry_type = entry.get("type")
         if (
@@ -1308,6 +1316,13 @@ def validate_private_sec_security_state(
             + ", ".join(sorted(edgar_content_mismatches)[:10])
         )
 
+    try:
+        master = apply_review(master, resolved_master_path.parent.parent)
+    except SecurityMasterError as error:
+        errors.append(f"invalid reviewed identity layer: {error}")
+        return
+    records = master["records"]
+
     missing: list[str] = []
     mismatched: list[str] = []
     underlying_mismatched: list[str] = []
@@ -1323,7 +1338,12 @@ def validate_private_sec_security_state(
         if not isinstance(master_entry, dict):
             missing.append(key)
             continue
-        fields = ("mapping_status", "ticker", "ticker_source", "ticker_as_of")
+        if entry.get("instrument_mappings", {}) != public_instrument_mappings(
+            cusip, entry.get("type"), records
+        ):
+            mismatched.append(key)
+        fields = ("mapping_status", "ticker", "ticker_source", "ticker_as_of",
+                  "price_lookup_allowed", "trading_status")
         if any(entry.get(field) != master_entry.get(field) for field in fields):
             mismatched.append(key)
         elif entry.get("product_name_source") == "sec_fund_series" and (

@@ -1027,10 +1027,11 @@ class GeneratedDataContractTests(unittest.TestCase):
         )
         if any("mapping_status" in entry for entry in registry.values()):
             # The legacy snapshot below used manual/unverified-era display
-            # overrides. An SEC cutover must instead reconcile every public
-            # identity and mapping to its exact provenance-bearing master.
-            master = pipeline.load_security_master(
-                pipeline.SEC_SECURITY_MASTER_PATH
+            # overrides. Reconcile each public identity to the validated SEC
+            # master plus the independently checksum-pinned reviewed projection.
+            master = pipeline.apply_review(
+                pipeline.load_security_master(pipeline.SEC_SECURITY_MASTER_PATH),
+                pipeline.SEC_SECURITY_MASTER_PATH.parent.parent,
             )
             errors: list[str] = []
             validate_data.validate_sec_mapping_provenance(registry, errors)
@@ -1044,9 +1045,14 @@ class GeneratedDataContractTests(unittest.TestCase):
                     self.assertIn(key, master["records"])
                     exact = master["records"][key]
                     for field in (
-                        "mapping_status", "ticker", "ticker_source", "ticker_as_of"
+                        "mapping_status", "ticker", "ticker_source", "ticker_as_of",
+                        "price_lookup_allowed", "trading_status",
                     ):
                         self.assertEqual(exact.get(field), entry.get(field))
+                    self.assertEqual(
+                        pipeline.public_instrument_mappings(cusip, entry['type'], master['records']),
+                        entry.get('instrument_mappings', {}),
+                    )
                     self.assertEqual(
                         entry["security_label"], labels["labels"][cusip]
                     )
