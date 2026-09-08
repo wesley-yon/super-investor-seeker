@@ -38,6 +38,13 @@ fund-product-name tests and full regression suite. The next registry rebuild
 incorporates the approved descriptions, followed by normal snapshot validation
 and Pages publication.
 
+For a description/security-master refresh of the existing validated holdings,
+dispatch `Rebuild SEC Security Master` with `reconcile_filings=false` and
+`rebuild_security_master=false`. This skips broad filing replay only. It still
+runs classification repairs, refreshes and audits the complete security master,
+regenerates site data, and runs the usual validation, tests and publication
+checks. Scheduled runs and the default manual run continue to replay filings.
+
 If ordinary HTTP access is unavailable, capture fresh issuer HTML or a Fund
 Details fragment in a normal browser and retain the exact name, ticker and
 CUSIP evidence. `--source-directory /path/to/captures` reads `TICKER.html` files

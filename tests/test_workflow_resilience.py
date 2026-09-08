@@ -643,6 +643,25 @@ gh_mutate_once() {
         self.assertIn("rebuild_security_master:", rebuild)
         self.assertIn("inputs.rebuild_security_master == true", rebuild)
         self.assertIn("inputs.rebuild_security_master != true", rebuild)
+        dispatch = rebuild.split("  workflow_dispatch:", 1)[1].split("\nconcurrency:", 1)[0]
+        self.assertRegex(dispatch, r"(?ms)^      reconcile_filings:\n.*?^        default: true$.*?^        type: boolean$")
+        replay = rebuild.split("- name: Reconcile broad SEC filing indexes overnight", 1)[1].split("- name:", 1)[0]
+        self.assertIn("github.event_name != 'workflow_dispatch' || inputs.reconcile_filings == true", replay)
+        # This input only controls discovery work, never identity acceptance,
+        # dataset validation, regression tests or publication checks.
+        self.assertEqual(1, rebuild.count("inputs.reconcile_filings"))
+        for required_step in (
+            "Repair reviewed note classifications once per snapshot policy",
+            "Repair reviewed preferred classifications once per snapshot policy",
+            "Refresh and audit private SEC security master and derived data",
+            "Validate generated data",
+            "Validate reviewed identities and report coverage warnings",
+            "Run generated-data contract regression tests",
+            "Run full Python regression suite",
+            "Publish refreshed private snapshot",
+        ):
+            block = rebuild.split(f"- name: {required_step}", 1)[1].split("- name:", 1)[0]
+            self.assertNotIn("reconcile_filings", block)
         for workflow in (update, rebuild):
             self.assertIn("SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}", workflow)
             lowered = workflow.lower()
