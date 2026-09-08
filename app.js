@@ -1014,6 +1014,47 @@ function aggregateEligibleHolderTrends(
   return { quarters, values, shares };
 }
 
+// Supplemental terms omitted by the exchange's short security names.
+// Alphabet: https://www.sec.gov/Archives/edgar/data/1652044/000119312526267578/d57679d8k.htm
+// EPR: https://investors.eprkc.com/news/detail/444/epr-properties-declares-monthly-dividend-for-common-shareholders-and-quarterly-dividends-for-preferred-shareholders
+// El Paso: https://www.sec.gov/Archives/edgar/vprr/2100/21000461.pdf
+// Strategy: https://www.strategy.com/strk/learn
+// Wheeler: https://ir.whlr.us/sec-filings/all-sec-filings/content/0001213900-26-095106/ea0303265-s11_wheeler.htm
+const preferredSearchTerms = {
+  "02079K404": {rate:"6.25%"},
+  "02079K602": {rate:"6.25%"},
+  "26884U307": {rate:"9%"},
+  "283678209": {series:"Series C", rate:"4.75%", conversion:"Convertible"},
+  "594972887": {conversion:"Convertible"},
+  "963025309": {rate:"9%", conversion:"Convertible (conditional mandatory)"},
+};
+
+function preferredSearchDescription(entry) {
+  if (holdingDisplayKind(entry) !== "PREFERRED") return "";
+  const cusip = String(entry?.cusip || "").trim().toUpperCase();
+  const name = securityInstrumentNames[cusip] || securityLabelForCusip(cusip);
+  const extra = securityInstrumentNames[cusip] ? (preferredSearchTerms[cusip] || {}) : {};
+  const series = name.match(/\b(?:Series|Ser)\s+([A-Z0-9]+)\b/i);
+  const cls = name.match(/\bClass\s+([A-Z0-9]+)\b/i);
+  const seriesText = extra.series || (series ? `Series ${series[1].toUpperCase()}`
+    : cls ? `Class ${cls[1].toUpperCase()}` : "");
+  const percent = name.match(/\b(\d+(?:\.\d+)?)%/);
+  const dividend = name.match(/\$\d+(?:\.\d+)?/);
+  const rate = extra.rate || (percent ? `${Number(percent[1])}%` : dividend ? `${dividend[0]} dividend` : "");
+  const conversion = extra.conversion || (/\bmandatory convertible\b/i.test(name)
+    ? "Mandatory convertible" : /\b(?:convertible|conv)\b/i.test(name) ? "Convertible" : "");
+  // Absence of conversion wording is not evidence of non-convertibility.
+  const structure = /fixed-to-floating/i.test(name) ? "Fixed-to-floating"
+    : /\bperpetual\b/i.test(name) ? "Perpetual" : "";
+  return [seriesText, rate, conversion || structure].filter(Boolean).join(" · ") || "Preferred shares";
+}
+
+function tickerSearchPriority(entry) {
+  // Instrument identity outranks match quality and symbol length.
+  if (holdingDisplayKind(entry) === "PREFERRED") return 1;
+  return searchTypeRank(entry.instrument_type);
+}
+
 function searchTypeRank(type) {
   const t = normalizeInstrumentType(type);
   if (t === "EQUITY") return 0;
@@ -1172,7 +1213,7 @@ function normalizeTickerEntry(entry) {
 }
 
 function compareTickerMatch(a, b) {
-  const typeCmp = searchTypeRank(a.instrument_type) - searchTypeRank(b.instrument_type);
+  const typeCmp = tickerSearchPriority(a) - tickerSearchPriority(b);
   if (typeCmp !== 0) return typeCmp;
   if (a._matchRank !== b._matchRank) return a._matchRank - b._matchRank;
   const aSymbol = tickerSearchSymbol(a);
@@ -2160,7 +2201,8 @@ function globalSearch(q) {
     if (!isCommonStockSearchEntry(entry)) continue;
     const symbol = tickerSearchSymbol(entry).toUpperCase();
     const productName = (securityInstrumentNames[entry.cusip]
-      || securityProductNameForCusip(entry.cusip)).toUpperCase();
+      || securityProductNameForCusip(entry.cusip)
+      || holdingDisplayCompany(entry)).toUpperCase();
     if (!symbol) continue;
     if (symbol === q) tickerMatches.push({ ...entry, _matchRank: 0 });
     else if (symbol.startsWith(q)) tickerMatches.push({ ...entry, _matchRank: 1 });
@@ -2185,7 +2227,7 @@ function globalSearch(q) {
         <span class="gsearch-tag ${esc(searchEntryTagClass(t))}">${esc(searchEntryTagLabel(t))}</span>
         <div style="min-width:0;display:flex;flex-direction:column">
           <span class="mono" style="font-weight:700;color:var(--ac)">${esc(tickerSearchSymbol(t))}</span>
-          <span title="${esc(formattedHoldingCompany(t) || t.cusip || t.stock_id)}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name${securityInstrumentNames[t.cusip] ? " reviewed-instrument-name" : ""}">${esc(compactHoldingName(t))}</span>
+          <span title="${esc(formattedHoldingCompany(t) || t.cusip || t.stock_id)}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name${securityInstrumentNames[t.cusip] ? " reviewed-instrument-name" : ""}">${esc(preferredSearchDescription(t) || compactHoldingName(t))}</span>
         </div>
       </a>
     `).join("")}` : "";

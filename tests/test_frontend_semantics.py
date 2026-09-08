@@ -44,6 +44,26 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual(['595017302|PREF','595017302|CALL','65339F655',
           'Microchip Series A Preferred Depositary Shares','Preferred',True,False,True], result)
 
+    def test_preferred_search_is_compact_and_equities_always_rank_first(self):
+        result = self.run_javascript("""
+          securityKinds = {'595017302':'PREFERRED','02079K404':'PREFERRED'};
+          securityInstrumentNames = {
+            '595017302':'Microchip Technology Incorporated Depositary Shares Each Representing a 1/20th Interest in a Share of 7.50% Series A Mandatory Convertible Preferred Stock',
+            '02079K404':'Alphabet Inc. Series A Mandatory Convertible Preferred Stock'
+          };
+          const pref = {cusip:'595017302',instrument_type:'PREF',ticker:'MCHPP',_matchRank:0};
+          const common = {cusip:'595017104',instrument_type:'EQUITY',ticker:'MCHP',_matchRank:3};
+          console.log(JSON.stringify([
+            preferredSearchDescription(pref),
+            preferredSearchDescription({cusip:'02079K404',instrument_type:'PREF'}),
+            [pref,common].sort(compareTickerMatch).map(r=>r.ticker),
+            preferredSearchDescription({...pref,instrument_type:'CALL'}),
+            preferredSearchDescription({cusip:'unknown',instrument_type:'PREF'})
+          ]));
+        """)
+        self.assertEqual(['Series A · 7.5% · Mandatory convertible',
+          'Series A · 6.25% · Mandatory convertible',['MCHP','MCHPP'],'','Preferred shares'], result)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = APPLICATION_JS.read_text()
