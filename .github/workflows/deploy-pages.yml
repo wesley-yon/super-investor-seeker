@@ -357,6 +357,12 @@ jobs:
             case "$relative" in
               .nojekyll|CNAME|index.html|app.js|site-data-loader.js|deployment-manifest.json|data/funds-index.json|data/index.json|data/security_labels.json|data/funds/*.json.gz|data/stocks/*.json.gz)
                 ;;
+              app.*.js|site-data-loader.*.js)
+                if [[ ! "$relative" =~ ^(app|site-data-loader)\.[0-9a-f]{64}\.js$ ]]; then
+                  echo "::error::Invalid versioned script name: $relative"
+                  exit 1
+                fi
+                ;;
               *)
                 echo "::error::Unexpected public Pages file: $relative"
                 exit 1
