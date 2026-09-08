@@ -6,9 +6,11 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import sys
+import re
 import time
 from urllib.parse import urlparse
 
@@ -20,10 +22,33 @@ sys.path.insert(0, str(ROOT))
 from fund_product_names import ISSUER_HOSTS, REVIEW_PATH  # noqa: E402
 
 
+def parse_dws_pdf_text(text: str, *, cusip: str, ticker: str) -> dict:
+    """Use the fund header and ETF details, excluding index/NAV tickers."""
+    text = " ".join(text.split())
+    header = re.match(r"^(.*?) Q[1-4] \| \d{1,2}\.\d{1,2}\.\d{2} Ticker: ([A-Z0-9.-]+)\b", text)
+    details = re.findall(r"ETF details (.*?) Index details", text)
+    if not header or len(details) != 1:
+        raise ValueError("missing or ambiguous issuer ETF factsheet fields")
+    symbols = re.findall(r"NYSE ticker ([A-Z0-9.-]+) NAV ticker", details[0])
+    cusips = re.findall(r"\bCUSIP ([A-Z0-9]{9})\b", details[0])
+    name, source_ticker = header.groups()
+    if source_ticker != ticker or symbols != [ticker] or cusips != [cusip] or not name.endswith(" ETF"):
+        raise ValueError("issuer PDF does not prove the exact ETF CUSIP and ticker")
+    return {"name": name, "series": ""}
+
+
 def parse_page(raw: bytes, *, url: str, cusip: str, ticker: str) -> dict:
     host = urlparse(url).hostname
     if host not in ISSUER_HOSTS or urlparse(url).scheme != "https":
         raise ValueError("unapproved issuer host")
+    if host == "etf.dws.com":
+        if not raw.startswith(b"%PDF-"):
+            raise ValueError("issuer factsheet must be a PDF")
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise ValueError("PDF source revalidation requires the optional pypdf package") from exc
+        return parse_dws_pdf_text(PdfReader(BytesIO(raw)).pages[0].extract_text(), cusip=cusip, ticker=ticker)
     doc = html.fromstring(raw)
 
     def one(xpath: str, **kwargs) -> str:
@@ -93,6 +118,30 @@ def parse_page(raw: bytes, *, url: str, cusip: str, ticker: str) -> dict:
             facts[key] = value
         source_cusip, source_ticker = facts.get("CUSIP"), facts.get("Ticker")
         name = facts.get("Product Name", "")
+    elif host == "www.allianzim.com":
+        def fact(label):
+            return one('//li[.//span[@class="page-sidebar__label"][normalize-space(.)=$label]]'
+                       '/div[@class="page-sidebar__value"]', label=label)
+        source_cusip, source_ticker = fact("CUSIP"), fact("Ticker")
+        name = fact("Fund Name")
+    elif host == "bluemontefunds.com":
+        source_cusip = one('//tr[td[1][normalize-space(.)="Cusip"]]/td[2]')
+        source_ticker = one('//tr[td[1][normalize-space(.)="Ticker"]]/td[2]')
+        if one('//h1') != source_ticker:
+            raise ValueError("conflicting issuer heading and fund symbol")
+        name = one('//h2')
+    elif host == "coinshares.com":
+        def fact(label):
+            return one('//li[span[@class="table-name"][normalize-space(.)=$label]]/button/span', label=label)
+        source_cusip, source_ticker = fact("CUSIP"), fact("Ticker")
+        name = fact("Product name")
+    elif host == "www.rexshares.com":
+        def fact(label):
+            return one('//div[@class="t-row"][div[normalize-space(.)=$label]]'
+                       '/div[contains(concat(" ",normalize-space(@class)," ")," t-data ")]', label=label)
+        source_cusip, source_ticker = fact("CUSIP"), fact("Ticker")
+        name = one('//h2[starts-with(normalize-space(.),"T-REX ") and substring(normalize-space(.),'
+                   'string-length(normalize-space(.))-3)=" ETF"]')
     else:
         source_cusip = one('//meta[@name="cusip"]/@content')
         source_ticker = one('//meta[@name="ticker"]/@content')
@@ -106,7 +155,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="New candidate JSON; must not exist")
     parser.add_argument("--source-directory", type=Path,
-                        help="Use freshly captured TICKER.html evidence files instead of HTTP requests")
+                        help="Use freshly captured TICKER.html/.pdf evidence instead of HTTP requests")
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError("candidate output already exists")
@@ -119,7 +168,8 @@ def main() -> None:
         cusip, entry = item
         try:
             if args.source_directory:
-                source = args.source_directory / f'{entry["ticker"]}.html'
+                suffix = "pdf" if entry.get("source_format") == "pdf" else "html"
+                source = args.source_directory / f'{entry["ticker"]}.{suffix}'
                 captured_at = datetime.fromtimestamp(source.stat().st_mtime, timezone.utc)
                 if captured_at.date() != datetime.now(timezone.utc).date():
                     raise ValueError("local evidence must be freshly captured today")
@@ -130,7 +180,7 @@ def main() -> None:
                 response.raise_for_status()
                 raw, url = response.content, response.url
                 captured_at = datetime.now(timezone.utc)
-                source_format = "html"
+                source_format = "pdf" if raw.startswith(b"%PDF-") else "html"
             parsed = parse_page(raw, url=url, cusip=cusip, ticker=entry["ticker"])
             result = {**entry, **parsed, "url": url,
                       "sha256": hashlib.sha256(raw).hexdigest(),

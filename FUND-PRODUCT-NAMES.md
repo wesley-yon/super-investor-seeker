@@ -8,13 +8,13 @@ The registry takes full names from exact SEC fund-series evidence first.
 `reviewed_fund_product_names.json` supplies issuer descriptions for reviewed
 gaps in that directory. Each record binds a full name to an exact CUSIP, ticker,
 retrieval date, issuer URL and source-artifact SHA-256. Most proofs are downloaded
-HTML; BondBloxx proofs are captured, normalized Fund Details HTML fragments,
-explicitly marked `rendered_html_fragment`. Innovator's published
+HTML; browser-captured identity fragments are explicitly marked
+`rendered_html_fragment`, and the DWS factsheet is marked `pdf`. Innovator's published
 Series field is retained because its product title can omit the month or term.
 
 This review cannot resolve a ticker or change an instrument type. It only
 applies to an EQUITY entry already classified as an ETF, with an exact CUSIP.
-Resolved symbols must match the issuer proof. An unresolved entry can receive
+Resolved symbols must match the issuer proof. An unresolved or ambiguous entry can receive
 the description only if its published ticker remains null; neither its mapping
 status nor ticker changes. Both registry and browser-metadata
 validation reject a description copied onto a different security. Position
@@ -51,4 +51,8 @@ CUSIP evidence. `--source-directory /path/to/captures` reads `TICKER.html` files
 instead of issuing HTTP requests. Every file must have been captured that UTC
 day and every identity must pass the same parser. Review each page's provenance
 and capture format before approving the resulting candidate; a file timestamp
-alone is not evidence that the issuer facts are current.
+alone is not evidence that the issuer facts are current. PDF proofs use
+`TICKER.pdf` and require the optional `pypdf` package for source revalidation
+(tested with 6.18.0). The PDF parser checks both the header ticker and the ETF
+details ticker/CUSIP, excluding the index's own ticker. Normal site generation
+and publication do not parse PDFs or require this optional package.

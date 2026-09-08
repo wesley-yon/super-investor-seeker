@@ -16,11 +16,13 @@ from urllib.parse import urlparse
 from security_identity import normalize_security_label
 
 REVIEW_PATH = Path(__file__).with_name("reviewed_fund_product_names.json")
-REVIEW_SHA256 = "7b22abae1b53c5d28d0a8d417209ccd3072e206df6df7264e2d9cafbb90f5687"
+REVIEW_SHA256 = "7fcd3b03ad78eb3975437e343b41878f4d48d9070dec2fa8ab573f25af9931c7"
 PRODUCT_NAME_SOURCE = "reviewed_primary_product_name"
 ISSUER_HOSTS = frozenset({
     "www.innovatoretfs.com", "www.blackrock.com", "www.invesco.com",
     "leverageshares.com", "bondbloxxetf.com",
+    "www.allianzim.com", "bluemontefunds.com", "coinshares.com",
+    "www.rexshares.com", "etf.dws.com",
 })
 
 
@@ -50,7 +52,8 @@ def validate_review_bytes(raw: bytes, *, as_of: date | None = None) -> dict:
             or url.username or url.password
             or not re.fullmatch(r"[a-f0-9]{64}", entry.get("sha256", ""))
             or not entry.get("locator")
-            or entry.get("source_format", "html") not in {"html", "rendered_html_fragment"}
+            or entry.get("source_format", "html") not in {"html", "rendered_html_fragment", "pdf"}
+            or (entry.get("source_format") == "pdf" and url.hostname != "etf.dws.com")
             or not str(entry.get("retrieved_at", "")).startswith(review["as_of"] + "T")
         ):
             raise ValueError(f"invalid exact issuer product-name proof: {cusip}")
@@ -63,7 +66,7 @@ def load_review() -> dict:
 
 
 def reviewed_product_name(cusip: str, entry: dict) -> str | None:
-    """Name an exact CUSIP without promoting an unresolved symbol mapping."""
+    """Name an exact CUSIP without promoting an unresolved or ambiguous symbol."""
     if (
         entry.get("type") != "EQUITY"
         or entry.get("security_kind") != "ETF"
@@ -77,7 +80,7 @@ def reviewed_product_name(cusip: str, entry: dict) -> str | None:
         and entry.get("ticker") == proof["ticker"]
     )
     unresolved_without_symbol = (
-        entry.get("mapping_status") == "unresolved"
+        entry.get("mapping_status") in {"unresolved", "ambiguous"}
         and entry.get("ticker") is None
     )
     if not (resolved_match or unresolved_without_symbol):
