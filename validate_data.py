@@ -53,7 +53,10 @@ from sec_13f_bulk_backfill import (
     Sec13FBulkError,
     normalize_sec_identity_source_url,
 )
-from reviewed_ticker_map import apply_review, public_instrument_mappings, REVIEW_SOURCE
+from reviewed_ticker_map import (
+    apply_review, public_instrument_mappings, REVIEW_SOURCE, load_review,
+    public_display_mappings, reviewed_display_ticker, assert_display_compatibility,
+)
 from sec_security_master import (
     MASTER_AUDIT_SCHEMA_VERSION,
     MASTER_SCHEMA_VERSION,
@@ -1324,6 +1327,8 @@ def validate_private_sec_security_state(
         return
     records = master["records"]
 
+    review = load_review(resolved_master_path.parent.parent)
+
     missing: list[str] = []
     mismatched: list[str] = []
     underlying_mismatched: list[str] = []
@@ -1342,6 +1347,12 @@ def validate_private_sec_security_state(
         if entry.get("instrument_mappings", {}) != public_instrument_mappings(
             cusip, entry.get("type"), records
         ):
+            mismatched.append(key)
+        if entry.get('display_mappings', {}) != public_display_mappings(cusip, review):
+            mismatched.append(key)
+        try:
+            assert_display_compatibility(entry)
+        except SecurityMasterError:
             mismatched.append(key)
         fields = ("mapping_status", "ticker", "ticker_source", "ticker_as_of",
                   "price_lookup_allowed", "trading_status")
@@ -3497,6 +3508,13 @@ def validate_security_labels(
     if not isinstance(payload, dict):
         return {}
     validate_data_contract(payload, "security_labels.json", errors)
+    expected_displays = {
+        f'{cusip}|{kind}': display
+        for cusip, row in registry.items()
+        for kind, display in row.get('display_mappings', {}).items()
+    }
+    if payload.get('reviewed_displays', {}) != expected_displays:
+        errors.append('security_labels.json reviewed displays differ from the verified registry')
     labels = payload.get("labels")
     if not isinstance(labels, dict):
         errors.append("security_labels.json must contain an object-valued labels map")
@@ -4566,7 +4584,8 @@ def validate_index(
                 )
 
             normalized_note_label = normalize_note_security_label(ticker)
-            if instrument_type == "NOTE" and ticker:
+            if (instrument_type == "NOTE" and ticker
+                    and ticker != reviewed_display_ticker(registry.get(cusip), instrument_type)):
                 if normalized_note_label != ticker:
                     errors.append(
                         f"index.json ticker entry for "
@@ -4617,7 +4636,7 @@ def validate_index(
         indexed_entries_by_stock_id[lookup_id] = entry
         registry_entry = registry.get(cusip) or {}
         if registry_entry:
-            expected_search_ticker = expected_registry_position_ticker(
+            expected_search_ticker = reviewed_display_ticker(registry_entry, instrument_type) or expected_registry_position_ticker(
                 registry_entry,
                 instrument_type,
             )
@@ -4656,6 +4675,9 @@ def validate_index(
                 errors,
             )
             if recomputed is not None:
+                display_ticker = reviewed_display_ticker(registry_entry, instrument_type)
+                if display_ticker:
+                    recomputed['ticker'] = display_ticker
                 for field in (
                     "stock_id",
                     "cusip",

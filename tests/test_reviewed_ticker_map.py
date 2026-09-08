@@ -63,6 +63,25 @@ class ReviewedIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(r.SecurityMasterError, 'checksum'):
             r.validate_review_bytes(b'{"mappings":{}}')
 
+    def test_display_review_rejects_conflicts_and_incomplete_option_proof(self):
+        import hashlib
+        import json
+        base = {'as_of':'2026-09-07', 'mappings':{}, 'display_mappings':{
+            '78462F953|PUT': {'ticker':'SPY', 'confidence_tier':'A',
+                'match_kind':'underlying_only', 'underlying_cusip':'78462F103',
+                'proofs':[{'url':'https://www.sec.gov/example'}]},
+        }}
+        for field, value in [('confidence_tier','C'), ('match_kind','exact_cusip'),
+                             ('underlying_cusip',None), ('proofs',[]), ('ticker','PCGpG')]:
+            with self.subTest(field=field):
+                document = json.loads(json.dumps(base))
+                document['display_mappings']['78462F953|PUT'][field] = value
+                raw = json.dumps(document).encode()
+                with patch.multiple(r, REVIEW_SHA256=hashlib.sha256(raw).hexdigest(),
+                                    REVIEW_MAPPING_COUNT=0, DISPLAY_MAPPING_COUNT=1):
+                    with self.assertRaises(r.SecurityMasterError):
+                        r.validate_review_bytes(raw, as_of=date(2026,9,7))
+
     def test_missing_required_map_blocks(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(r.SecurityMasterError, 'missing'):
@@ -135,6 +154,62 @@ class InstrumentProjectionTests(unittest.TestCase):
 
 
 class ListedFundSearchTests(unittest.TestCase):
+    def test_reviewed_displays_add_search_without_mutating_filing_identity(self):
+        import json
+        import pipeline as p
+        import validate_data as v
+        from scripts.incremental_pipeline import registry_identity
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / 'data'
+            funds, stocks = data / 'funds', data / 'stocks'
+            funds.mkdir(parents=True)
+            entries = {}
+            holdings = []
+            for cusip, kind, ticker, match in [
+                ('921937827', 'NOTE', 'BSV', 'exact_cusip'),
+                ('78462F953', 'PUT', 'SPY', 'underlying_only'),
+            ]:
+                display = {'ticker':ticker, 'match_kind':match, 'confidence_tier':'A'}
+                if kind == 'PUT':
+                    display['underlying_cusip'] = '78462F103'
+                entries[cusip] = {'type':kind, 'ticker':None, 'mapping_status':'unresolved',
+                    'name':'Example security', 'display_mappings':{kind:display}}
+                holdings.append({'cusip':cusip, 'holding_type':kind, 'ticker':None,
+                    'issuer':'Example security', 'value':100, 'shares':10})
+            fund = {'cik':123456, 'name':'Example manager', 'quarters':[{
+                'report_date':'2026-06-30', 'filing_date':'2026-08-14',
+                'total_value':200, 'num_holdings':2, 'holdings':holdings}]}
+            path = funds / '123456.json'
+            path.write_text(json.dumps(fund)); original = path.read_bytes()
+            with patch.multiple(p, DATA_DIR=data, FUNDS_DIR=funds, STOCKS_DIR=stocks,
+                    INDEX_PATH=data/'index.json', FUNDS_INDEX_PATH=data/'funds-index.json',
+                    load_cusip_registry=lambda:entries):
+                p.regenerate_stock_files_and_index(state={})
+            index = json.loads((data/'index.json').read_text())
+            self.assertEqual({x['ticker'] for x in index['tickers']}, {'BSV','SPY'})
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(json.loads((stocks/'921937827__NOTE.json').read_text())['ticker'], '921937827')
+            self.assertIsNone(p._registry_position_ticker(entries['921937827'], 'NOTE'))
+            self.assertIsNone(v.expected_registry_position_ticker(entries['921937827'], 'NOTE'))
+            self.assertIsNone(p._registry_search_ticker(entries['78462F953'], 'CALL'))
+            errors = []
+            v.validate_index(index, {'123456':path},
+                {x.stem:x for x in stocks.glob('*.json')}, entries, errors, [])
+            self.assertEqual(errors, [])
+            self.assertIn('display_mappings', registry_identity(entries)['921937827'])
+
+    def test_display_projection_omits_proofs_and_blocks_resolved_conflicts(self):
+        review = {'display_mappings': {'78462F953|PUT': {
+            'ticker':'SPY', 'match_kind':'underlying_only', 'underlying_cusip':'78462F103',
+            'proofs':[{'url':'https://www.sec.gov/example'}], 'notes':['private review'],
+        }}}
+        projected = r.public_display_mappings('78462F953', review)
+        self.assertEqual(set(projected), {'PUT'})
+        self.assertNotIn('proofs', projected['PUT'])
+        self.assertNotIn('notes', projected['PUT'])
+        with self.assertRaisesRegex(r.SecurityMasterError, 'conflict'):
+            r.assert_display_compatibility({'display_mappings':projected, 'underlying_ticker':'OTHER'})
+
     def test_historical_preferred_row_keeps_symbol_without_duplicate_fund_search(self):
         import json
         import pipeline as p

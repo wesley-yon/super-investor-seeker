@@ -103,7 +103,10 @@ from sec_edgar_evidence import (
     merge_sec_edgar_evidence_caches,
     refresh_sec_edgar_evidence,
 )
-from reviewed_ticker_map import apply_review, public_instrument_mappings, REVIEW_SOURCE
+from reviewed_ticker_map import (
+    apply_review, public_instrument_mappings, REVIEW_SOURCE, load_review,
+    public_display_mappings, reviewed_display_ticker, assert_display_compatibility,
+)
 from sec_security_master import (
     DEFAULT_MASTER_PATH as SEC_SECURITY_MASTER_PATH,
     DEFAULT_SOURCE_STATE_PATH as SEC_SOURCE_STATE_PATH,
@@ -113,6 +116,7 @@ from sec_security_master import (
     PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO,
     RefreshResult as SecSecurityMasterRefreshResult,
     SecurityMasterAcceptanceError,
+    SecurityMasterError,
     SourceParseError,
     SourceSchemaChangeError,
     SourceSchemaError,
@@ -2980,6 +2984,9 @@ def _registry_position_ticker(entry: dict | None, instrument_type: str) -> str |
 
 def _registry_search_ticker(entry: dict | None, instrument_type: str) -> str | None:
     """Keep historical row labels without advertising a fund as preferred debt."""
+    display = reviewed_display_ticker(entry, normalize_instrument_type(instrument_type))
+    if display:
+        return display
     if (_registry_entry_has_equity_fund_identity(entry)
             and normalize_instrument_type(instrument_type)
             not in {"EQUITY", "CALL", "PUT", "OPT"}):
@@ -3034,6 +3041,7 @@ def build_cusip_registry() -> CusipRegistry:
     evidence = _aggregate_cusip_evidence()
     master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
                           SEC_SECURITY_MASTER_PATH.parent.parent)
+    review = load_review(SEC_SECURITY_MASTER_PATH.parent.parent)
     registry: dict[str, dict] = {}
 
     for cusip, rec in sorted(evidence.items()):
@@ -3227,6 +3235,10 @@ def build_cusip_registry() -> CusipRegistry:
         typed = public_instrument_mappings(cusip, instrument_type, master.get("records", {}))
         if typed:
             entry["instrument_mappings"] = typed
+        displays = public_display_mappings(cusip, review)
+        if displays:
+            entry['display_mappings'] = displays
+            assert_display_compatibility(entry)
         registry[cusip] = entry
 
     save_cusip_registry(registry)
@@ -3253,6 +3265,7 @@ def validate_cusip_registry(
     master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
                           SEC_SECURITY_MASTER_PATH.parent.parent)
     master_records = master.get("records") or {}
+    review = load_review(SEC_SECURITY_MASTER_PATH.parent.parent)
 
     if not LEGACY_CUSIP_REGISTRY_PATH.exists():
         issues.append(
@@ -3302,6 +3315,12 @@ def validate_cusip_registry(
         if entry.get("instrument_mappings", {}) != public_instrument_mappings(
             cusip, entry.get("type"), master_records
         ):
+            unsafe_entries.append(cusip)
+        if entry.get('display_mappings', {}) != public_display_mappings(cusip, review):
+            unsafe_entries.append(cusip)
+        try:
+            assert_display_compatibility(entry)
+        except SecurityMasterError:
             unsafe_entries.append(cusip)
 
         status = entry.get("mapping_status")
@@ -8656,7 +8675,10 @@ def write_security_labels(registry: dict[str, dict]) -> None:
     kinds: dict[str, str] = {}
     product_names: dict[str, str] = {}
     fund_identities: list[str] = []
+    displays: dict[str, dict] = {}
     for identifier, entry in sorted(registry.items()):
+        for kind, display in entry.get('display_mappings', {}).items():
+            displays[f'{identifier}|{kind}'] = display
         label = normalize_security_label(
             entry.get("security_label"),
             identifier=identifier,
@@ -8699,6 +8721,7 @@ def write_security_labels(registry: dict[str, dict]) -> None:
             "kinds": kinds,
             "labels": labels,
             "product_names": product_names,
+            "reviewed_displays": displays,
         },
         indent=None,
         sort_keys=True,

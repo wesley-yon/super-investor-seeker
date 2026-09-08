@@ -162,6 +162,53 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertIn('href="#fund/7"', result["holder"])
         self.assertNotIn("<img>", result["holder"])
 
+    def test_option_rows_show_side_without_changing_identity(self) -> None:
+        result = self.run_javascript("""
+            const base = {cusip: "037833100", ticker: "AAPL", issuer: "APPLE INC"};
+            console.log(JSON.stringify(Object.fromEntries(
+              ["CALL", "PUT", "OPT", "EQUITY"].map(holding_type => [holding_type,
+                holdingIdentityCells({...base, holding_type})])
+            )));
+        """, application=True)
+        for kind, label in [("CALL", "CALL"), ("PUT", "PUT"), ("OPT", "OPTION")]:
+            self.assertIn(f"AAPL · {label}</a>", result[kind])
+            self.assertIn(f'#stock/037833100%7C{kind}', result[kind])
+            self.assertNotIn("Strike", result[kind])
+            self.assertNotIn("expiry", result[kind])
+        self.assertIn("AAPL</a>", result["EQUITY"])
+
+    def test_reviewed_labels_use_exact_types_and_option_underlying_proof(self) -> None:
+        result = self.run_javascript("""
+            securityReviewedDisplays = normalizeReviewedDisplays({
+              '78462F953|PUT': {ticker:'SPY', match_kind:'underlying_only', underlying_cusip:'78462F103'},
+              '921937827|NOTE': {ticker:'BSV', match_kind:'exact_cusip'},
+              '000000001|CALL': {ticker:'BAD', match_kind:'exact_cusip'},
+              '012653200|PREF': {ticker:'ALBPRA', match_kind:'exact_cusip'},
+            });
+            securityKinds = {'012653200':'BOND'};
+            const put = {cusip:'78462F953', holding_type:'PUT', ticker:null};
+            const note = {cusip:'921937827', holding_type:'NOTE', ticker:null};
+            console.log(JSON.stringify({
+              put: holdingIdentityCells(put), note: holdingIdentityCells(note),
+              sibling: holdingTrustedTicker({...put, holding_type:'EQUITY'}),
+              invalid: holdingTrustedTicker({cusip:'000000001', holding_type:'CALL'}),
+              search: tickerSearchSymbol({...put, instrument_type:'PUT'}),
+              unchanged: [put.ticker, note.ticker, note.holding_type],
+              preferredRoute: canonicalStockLookupId('012653200|PREF'),
+              preferred: holdingIdentityCells({cusip:'012653200', holding_type:'PREF'}),
+            }));
+        """, application=True)
+        self.assertIn('SPY · PUT</a>', result['put'])
+        self.assertIn('#stock/78462F953%7CPUT', result['put'])
+        self.assertIn('BSV</a>', result['note'])
+        self.assertIn('#stock/921937827%7CNOTE', result['note'])
+        self.assertEqual('', result['sibling'])
+        self.assertEqual('', result['invalid'])
+        self.assertEqual('SPY', result['search'])
+        self.assertEqual([None, None, 'NOTE'], result['unchanged'])
+        self.assertEqual('012653200|PREF', result['preferredRoute'])
+        self.assertIn('#stock/012653200%7CPREF', result['preferred'])
+
     def test_badges_preserve_nonfinite_changes_and_sort_column_defaults(self) -> None:
         result = self.run_javascript("""
             const states = [null, {t:"NEW"}, {t:"EXIT"}, {t:"UP",p:1.25},

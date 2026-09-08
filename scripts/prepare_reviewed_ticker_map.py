@@ -39,7 +39,8 @@ def main():
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_text_output(path, private_mode=0o600) as handle:
         handle.write(raw.decode())
-    print(f"Prepared {len(document['mappings'])} reviewed identities from {REVIEW_COMMIT}")
+    print(f"Prepared {len(document['mappings'])} reviewed identities and "
+          f"{len(document.get('display_mappings', {}))} typed display labels from {REVIEW_COMMIT}")
 
 
 if __name__ == '__main__':

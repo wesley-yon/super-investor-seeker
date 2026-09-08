@@ -15,13 +15,15 @@ import re
 
 from sec_security_master import SecurityMasterError
 
-REVIEW_COMMIT = '24a837e856d2e0cb5cccee19e307bd3217432deb'
-REVIEW_PATH = 'reviewed-maps/2026-09-07/candidate-map.json'
-REVIEW_BLOB = '9023e68b4a7e953bab7c5e8765b30e7bad725110'
-REVIEW_SHA256 = '1777f853a18fff01292647584d11350f646dbf04e2f56a71cdf1dbf5445d03b2'
+REVIEW_COMMIT = 'bc4015fa852bfae4060a65afb59ea4589a854d5e'
+REVIEW_PATH = 'reviewed-maps/2026-09-07/holder-research-display-map.json'
+REVIEW_BLOB = '780aa14838bce20df5db8066adb5a921546d2c77'
+REVIEW_SHA256 = '0f9ac4ed6acf34edc957efae4434c8d56fef4eed38457c1c0e351e7713f70c2b'
 CACHE_RELATIVE_PATH = Path('.cache/reviewed_ticker_map.json')
 REVIEW_SOURCE = 'reviewed_primary_identity'
 REVIEW_MAX_AGE_DAYS = 90
+DISPLAY_MAPPING_COUNT = 2185
+REVIEW_MAPPING_COUNT = 10532
 
 
 def validate_review_bytes(raw: bytes, *, as_of: date | None = None) -> dict:
@@ -32,13 +34,30 @@ def validate_review_bytes(raw: bytes, *, as_of: date | None = None) -> dict:
     if not 0 <= age <= REVIEW_MAX_AGE_DAYS:
         raise SecurityMasterError('reviewed map requires source revalidation before publication')
     mappings = document['mappings']
-    if len(mappings) != 10532:
+    if len(mappings) != REVIEW_MAPPING_COUNT:
         raise SecurityMasterError('reviewed map population differs from approved revision')
     for key, entry in mappings.items():
         if (not re.fullmatch(r'[A-Z0-9]{9}\|(EQUITY|PREF|WARRANT)', key)
                 or entry.get('baseline_record') != key
                 or not re.fullmatch(r'[A-Z0-9][A-Z0-9.\-^/]{0,19}', entry['ticker'])):
             raise SecurityMasterError(f'invalid reviewed identity: {key}')
+    displays = document.get('display_mappings', {})
+    if len(displays) != DISPLAY_MAPPING_COUNT:
+        raise SecurityMasterError('reviewed display population differs from approved revision')
+    for key, entry in displays.items():
+        if (not re.fullmatch(r'[A-Z0-9]{9}\|(EQUITY|PREF|WARRANT|NOTE|CALL|PUT)', key)
+                or not isinstance(entry, dict)
+                or entry.get('confidence_tier') not in {'A', 'B'}
+                or not isinstance(entry.get('ticker'), str)
+                or not re.fullmatch(r'[A-Z0-9][A-Z0-9.\-^/]{0,19}', entry.get('ticker', ''))
+                or not entry.get('proofs')):
+            raise SecurityMasterError(f'invalid reviewed display identity: {key}')
+        option = key.endswith(('|CALL', '|PUT'))
+        if (entry.get('match_kind') != ('underlying_only' if option else 'exact_cusip')
+                or (option and (not isinstance(entry.get('underlying_cusip'), str)
+                    or not re.fullmatch(r'[A-Z0-9]{9}', entry['underlying_cusip'])))
+                or (not option and entry.get('underlying_cusip'))):
+            raise SecurityMasterError(f'invalid reviewed display instrument: {key}')
     return document
 
 
@@ -109,3 +128,40 @@ def public_instrument_mappings(cusip: str, primary_type: str, records: dict) -> 
             'price_lookup_allowed', 'trading_status',
         ) if field in record}
     return result
+
+
+def public_display_mappings(cusip: str, review: dict | None) -> dict:
+    """Publish only exact typed display metadata; proofs stay in the private map.
+
+    Display evidence never changes retained SEC position types, amounts, or the
+    raw resolver's ticker. In particular an option underlying is not a contract
+    ticker and a misclassified fund share is not silently rewritten as equity.
+    """
+    rows = (review or {}).get('display_mappings', {})
+    result = {}
+    for kind in ('EQUITY', 'PREF', 'WARRANT', 'NOTE', 'CALL', 'PUT'):
+        entry = rows.get(f'{cusip}|{kind}')
+        if entry:
+            result[kind] = {field: entry[field] for field in (
+                'ticker', 'match_kind', 'underlying_cusip',
+                'confidence_tier', 'reviewed_as_of', 'ticker_temporality',
+            ) if entry.get(field) is not None}
+    return result
+
+
+def reviewed_display_ticker(entry: dict | None, kind: str) -> str | None:
+    """Never fall back to another instrument type at the same CUSIP."""
+    return ((entry or {}).get('display_mappings', {}).get(kind, {}).get('ticker'))
+
+
+def assert_display_compatibility(entry: dict) -> None:
+    """Conflicting resolved symbols require review rather than an override."""
+    for kind, display in entry.get('display_mappings', {}).items():
+        if kind in {'CALL', 'PUT'}:
+            prior = entry.get('underlying_ticker')
+        elif kind == entry.get('type'):
+            prior = entry.get('ticker')
+        else:
+            prior = entry.get('instrument_mappings', {}).get(kind, {}).get('ticker')
+        if prior and prior != display['ticker']:
+            raise SecurityMasterError(f'SEC/reviewed display conflict for {kind}: {prior} / {display["ticker"]}')
