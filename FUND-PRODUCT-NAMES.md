@@ -45,6 +45,16 @@ runs classification repairs, refreshes and audits the complete security master,
 regenerates site data, and runs the usual validation, tests and publication
 checks. Scheduled runs and the default manual run continue to replay filings.
 
+For fund descriptions alone, dispatch the same workflow with
+`fund_names_only=true` and `rebuild_security_master=false`. This skips broad
+filing replay and fetches only the SEC series/class pages needed by existing
+verified fund-symbol mappings. It preserves every mapping decision, identity,
+filing witness and position amount; it cannot change FTD, fund-directory or
+EDGAR evidence. All source freshness and acceptance checks still apply. An
+outdated or unbound master must first pass the normal security-master refresh.
+The corresponding CLI is
+`python pipeline.py --regenerate-only --refresh-fund-names`.
+
 If ordinary HTTP access is unavailable, capture fresh issuer HTML or a Fund
 Details fragment in a normal browser and retain the exact name, ticker and
 CUSIP evidence. `--source-directory /path/to/captures` reads `TICKER.html` files

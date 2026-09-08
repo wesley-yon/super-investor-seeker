@@ -813,6 +813,33 @@ probe()
 
 
 class RegistryPublicationGateTests(unittest.TestCase):
+    def test_fund_name_cli_keeps_ticker_discovery_and_quantity_work_out(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            names, tickers, outputs = mock.Mock(), mock.Mock(), mock.Mock()
+            with mock.patch("sys.argv", ["pipeline.py", "--regenerate-only", "--refresh-fund-names"]), mock.patch.multiple(
+                pipeline, DATA_DIR=data_dir, FUNDS_DIR=data_dir / "funds", STOCKS_DIR=data_dir / "stocks",
+                USER_AGENT="test ops@example.org", load_state=mock.Mock(return_value={}),
+                enforce_published_quarter_health=mock.Mock(), save_state=mock.Mock(),
+                refresh_sec_fund_names_only=names, rebuild_tickers_in_place=tickers,
+                rebuild_registry_backed_outputs=outputs,
+            ):
+                self.assertEqual(0, pipeline.main())
+            names.assert_called_once_with()
+            tickers.assert_not_called()
+            outputs.assert_called_once_with(preserve_position_economics=True, apply_quantity_policy=False)
+
+    def test_fund_name_cli_rejects_conflicting_refresh_modes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            with mock.patch.multiple(pipeline, DATA_DIR=data_dir, FUNDS_DIR=data_dir / "funds",
+                                     STOCKS_DIR=data_dir / "stocks"):
+                for extra in (["--all"], ["--regenerate-only", "--refresh-security-master"],
+                              ["--regenerate-only", "--rebuild-security-master"],
+                              ["--regenerate-only", "--apply-quantity-policy"]):
+                    with mock.patch("sys.argv", ["pipeline.py", "--refresh-fund-names", *extra]):
+                        self.assertEqual(2, pipeline.main())
+
     def test_security_master_cli_uses_economics_preserving_regeneration(
         self,
     ) -> None:

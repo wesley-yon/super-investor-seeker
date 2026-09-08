@@ -133,6 +133,7 @@ from sec_security_master import (
     rebuild_security_master as rebuild_sec_security_master,
     recover_security_master_pair,
     refresh_security_master,
+    refresh_fund_series_names,
     resolve_security,
     save_security_master,  # noqa: F401 - retained for test/caller compatibility
     save_security_master_pair,
@@ -5357,6 +5358,7 @@ def _refresh_sec_fund_series_evidence(
     *,
     refreshed_at: datetime | None = None,
     fetcher=None,
+    preserve_mappings: bool = False,
     master_path: Path = SEC_SECURITY_MASTER_PATH,
     source_state_path: Path = SEC_SOURCE_STATE_PATH,
 ):
@@ -5452,18 +5454,21 @@ def _refresh_sec_fund_series_evidence(
         return replace(result, errors=tuple(errors))
     candidate_state["updated_at"] = checked_at
     policy = result.master.get("policy", {})
-    rebuilt = rebuild_sec_security_master(
-        candidate_state,
-        universe,
-        recent_window_days=int(policy.get("recent_window_days", 31)),
-        max_evidence_age_days=int(policy.get("max_evidence_age_days", 395)),
-        min_confirmation_dates=int(policy.get("min_confirmation_dates", 2)),
-    )
+    if preserve_mappings:
+        rebuilt = refresh_fund_series_names(result.master, result.state, candidate_state)
+    else:
+        rebuilt = rebuild_sec_security_master(
+            candidate_state,
+            universe,
+            recent_window_days=int(policy.get("recent_window_days", 31)),
+            max_evidence_age_days=int(policy.get("max_evidence_age_days", 395)),
+            min_confirmation_dates=int(policy.get("min_confirmation_dates", 2)),
+        )
     acceptance = audit_security_master(
         rebuilt,
         prior_master=result.master,
         as_of=current,
-        enforce_sec_ixbrl_freshness=False,
+        enforce_sec_ixbrl_freshness=preserve_mappings,
     )
     if not acceptance["ok"]:
         raise SecurityMasterRefreshError(
@@ -5486,6 +5491,28 @@ def _refresh_sec_fund_series_evidence(
         errors=tuple(errors),
         acceptance=acceptance,
     )
+
+
+def refresh_sec_fund_names_only() -> None:
+    """Refresh SEC fund descriptions against the existing verified mappings."""
+    master, source = load_security_master_pair(
+        master_path=SEC_SECURITY_MASTER_PATH,
+        source_state_path=SEC_SOURCE_STATE_PATH,
+    )
+    log.info("Refreshing SEC fund descriptions for %s registrants; preserving all %s mapping decisions",
+             len(_sec_fund_series_target_ciks(master, source)), len(master.get("records", {})))
+    result = SecSecurityMasterRefreshResult(
+        master=master, state=source, changed=False, refreshed_urls=(),
+        retained_urls=(), errors=(), acceptance={},
+    )
+    result = _refresh_sec_fund_series_evidence(result, [], preserve_mappings=True)
+    if result.errors:
+        raise SecurityMasterRefreshError("SEC fund descriptions incomplete: " + "; ".join(result.errors))
+    acceptance = result.acceptance or audit_security_master(result.master, as_of=datetime.now(timezone.utc))
+    if not acceptance["ok"]:
+        raise SecurityMasterRefreshError("SEC fund descriptions failed the publication gate: " + "; ".join(acceptance["issues"]))
+    log.info("SEC fund descriptions refreshed: %s pages, %s named records",
+             len(result.refreshed_urls), sum(bool(r.get("fund_series_name")) for r in result.master.get("records", {}).values()))
 
 
 def _sec_edgar_discovery_candidates(
@@ -10851,6 +10878,12 @@ def main() -> int:
              "master, and regenerate derived data",
     )
     parser.add_argument(
+        "--refresh-fund-names",
+        action="store_true",
+        help="with --regenerate-only, refresh SEC fund-series descriptions while "
+             "preserving existing ticker decisions and position economics",
+    )
+    parser.add_argument(
         "--rebuild-security-master",
         action="store_true",
         help="with --regenerate-only, reconstruct immutable filing identity "
@@ -10890,6 +10923,12 @@ def main() -> int:
     if args.refresh_security_master and not args.regenerate_only:
         log.error("--refresh-security-master requires --regenerate-only")
         return 2
+    if args.refresh_fund_names and (
+        not args.regenerate_only or args.refresh_security_master
+        or args.rebuild_security_master or args.apply_quantity_policy
+    ):
+        log.error("--refresh-fund-names requires --regenerate-only and cannot be combined with other refresh/quantity modes")
+        return 2
     if args.apply_quantity_policy and not args.regenerate_only:
         log.error("--apply-quantity-policy requires --regenerate-only")
         return 2
@@ -10906,13 +10945,13 @@ def main() -> int:
         log.error("--defer-regeneration cannot be used with --regenerate-only")
         return 2
 
-    # Plain --regenerate-only is offline. The two explicit security-master
+    # Plain --regenerate-only is offline. The explicit SEC refresh
     # modes fetch only official SEC-hosted sources and therefore require the
     # declared SEC user agent.
     if args.regenerate_only:
         log.info("=== Regenerate-only mode ===")
         network_refresh = (
-            args.refresh_security_master or args.rebuild_security_master
+            args.refresh_security_master or args.rebuild_security_master or args.refresh_fund_names
         )
         if network_refresh and (
             USER_AGENT == DEFAULT_USER_AGENT
@@ -10934,10 +10973,13 @@ def main() -> int:
         )
         # First pass: refresh exact SEC security evidence when requested and
         # rewrite stored fund files from the resulting master.
-        rebuild_tickers_in_place(
-            full_refresh=args.rebuild_security_master,
-            refresh_master=network_refresh,
-        )
+        if args.refresh_fund_names:
+            refresh_sec_fund_names_only()
+        else:
+            rebuild_tickers_in_place(
+                full_refresh=args.rebuild_security_master,
+                refresh_master=network_refresh,
+            )
         rebuild_registry_backed_outputs(
             preserve_position_economics=network_refresh,
             apply_quantity_policy=args.refresh_security_master or args.apply_quantity_policy,
