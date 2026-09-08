@@ -29,6 +29,8 @@ on:
 concurrency:
   group: data-maintenance
   cancel-in-progress: false
+  # Preserve requested security-master rebuilds behind an active update.
+  queue: max
 
 permissions:
   contents: read

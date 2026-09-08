@@ -16,6 +16,8 @@ on:
 concurrency:
   group: data-maintenance
   cancel-in-progress: false
+  # Routine update triggers must not replace a waiting rebuild.
+  queue: max
 
 permissions:
   contents: read
