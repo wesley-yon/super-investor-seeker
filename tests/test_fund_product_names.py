@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import fund_product_names as names
-from scripts.review_fund_product_names import parse_page
+from scripts.review_fund_product_names import parse_dws_pdf_text, parse_page
 
 
 class FundProductNameTests(unittest.TestCase):
@@ -38,6 +38,55 @@ class FundProductNameTests(unittest.TestCase):
         for change in ({"type": "NOTE"}, {"security_kind": "BOND"}, {"ticker": "AAOG"},
                        {"mapping_status": "quarantined"}, {"mapping_status": "no_symbol"}):
             self.assertIsNone(names.reviewed_product_name("88340C412", {**row, **change}))
+
+    def test_ambiguous_exact_etf_gets_only_a_description(self):
+        row = {"type": "EQUITY", "security_kind": "ETF", "mapping_status": "ambiguous", "ticker": None,
+               "candidate_ticker": "APRT", "resolution_reason": "issuer_conflict_with_ftd_description"}
+        before = deepcopy(row)
+        self.assertEqual("AllianzIM U.S. Equity Buffer10 Apr ETF", names.reviewed_product_name("00888H109", row))
+        self.assertEqual(before, row)
+        for change in ({"ticker": "APRT"}, {"ticker": "OTHER"}, {"type": "NOTE"},
+                       {"security_kind": "BOND"}, {"mapping_status": "quarantined"}):
+            self.assertIsNone(names.reviewed_product_name("00888H109", {**row, **change}))
+
+    def test_new_issuer_parsers_reject_mismatched_and_duplicate_identity_fields(self):
+        cases = [
+            ("https://www.allianzim.com/etfs/aprt/", "00888H109", "APRT",
+             '<ul><li><span class="page-sidebar__label">Ticker</span><div class="page-sidebar__value">APRT</div></li>'
+             '<li><span class="page-sidebar__label">CUSIP</span><div class="page-sidebar__value">00888H109</div></li>'
+             '<li><span class="page-sidebar__label">Fund Name</span><div class="page-sidebar__value">AllianzIM U.S. Equity Buffer10 Apr ETF</div></li></ul>'),
+            ("https://bluemontefunds.com/blgr", "301505418", "BLGR",
+             '<h1>BLGR</h1><h2>Bluemonte Large Cap Growth ETF</h2><table>'
+             '<tr><td>Ticker</td><td>BLGR</td></tr><tr><td>Cusip</td><td>301505418</td></tr></table>'),
+            ("https://coinshares.com/us/etf/wgmi/", "91917A207", "WGMI",
+             '<ul><li><span class="table-name">Ticker</span><button><span>WGMI</span></button></li>'
+             '<li><span class="table-name">CUSIP</span><button><span>91917A207</span></button></li>'
+             '<li><span class="table-name">Product name</span><button><span>CoinShares Bitcoin Mining and Digital Power ETF</span></button></li></ul>'),
+            ("https://www.rexshares.com/tslz/", "26923N181", "TSLZ",
+             '<h2>T-REX 2X Inverse Tesla Daily Target ETF</h2>'
+             '<div class="t-row"><div class="t-label">Ticker</div><div class="t-data">TSLZ</div></div>'
+             '<div class="t-row"><div class="t-label">CUSIP</div><div class="t-data">26923N181</div></div>'),
+        ]
+        for url, cusip, ticker, page in cases:
+            args = dict(url=url, cusip=cusip, ticker=ticker)
+            with self.subTest(url=url):
+                self.assertIn("ETF", parse_page(page.encode(), **args)["name"])
+                for bad in (page.replace(cusip, "000000000"), page.replace(ticker, "OTHER"), page + page):
+                    with self.assertRaises(ValueError):
+                        parse_page(bad.encode(), **args)
+
+    def test_pdf_factsheet_uses_fund_identity_and_excludes_benchmark(self):
+        text = '''Xtrackers MSCI EAFE High Dividend Yield Equity ETF Q2 | 6.30.26 Ticker: HDEF
+        Objective and strategy ETF details (6/30/26) NYSE ticker HDEF NAV ticker HDEF.NV
+        CUSIP 233051630 Index details Ticker M1EAHDVD'''
+        args = dict(cusip="233051630", ticker="HDEF")
+        self.assertEqual("Xtrackers MSCI EAFE High Dividend Yield Equity ETF",
+                         parse_dws_pdf_text(text, **args)["name"])
+        for bad in (text.replace("233051630", "000000000"), text.replace("NYSE ticker HDEF", "NYSE ticker OTHER"),
+                    text.replace("CUSIP 233051630", "CUSIP 233051630 CUSIP 000000000"),
+                    text.replace("Ticker: HDEF", "Ticker: OTHER")):
+            with self.assertRaises(ValueError):
+                parse_dws_pdf_text(bad, **args)
 
     def test_leverage_parser_requires_matching_provider_product_and_identifiers(self):
         page = b'''<h1>2x Long AAOI Daily ETF</h1>
@@ -93,7 +142,7 @@ class FundProductNameTests(unittest.TestCase):
         raw = names.REVIEW_PATH.read_bytes()
         review = json.loads(raw)
         as_of = date.fromisoformat(review["as_of"])
-        self.assertEqual(185, len(names.validate_review_bytes(raw, as_of=as_of)))
+        self.assertEqual(218, len(names.validate_review_bytes(raw, as_of=as_of)))
         with self.assertRaisesRegex(ValueError, "checksum"):
             names.validate_review_bytes(raw + b" ", as_of=as_of)
         with self.assertRaisesRegex(ValueError, "revalidation"):

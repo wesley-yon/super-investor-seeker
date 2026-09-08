@@ -1980,6 +1980,36 @@ class RebuildAndResolutionTests(unittest.TestCase):
         self.assertEqual(fund_page_url, record["fund_series_evidence"]["url"])
         self.assertEqual("e" * 64, record["fund_series_evidence"]["sha256"])
 
+        # A description-only refresh must produce the same name evidence as a
+        # complete resolution pass, without changing any mapping decision.
+        before_state = copy.deepcopy(state)
+        before_state["sources"].pop(fund_page_url)
+        before_state = master._normalize_source_state(before_state)
+        state = master._normalize_source_state(state)
+        before_master = master.rebuild_security_master(before_state, [{
+            "cusip": cusip, "instrument_type": "EQUITY",
+            "reported_issuer": "SPDR S&P 500 ETF TRUST", "reported_class": "UNIT SER 1",
+        }])
+        original = copy.deepcopy(before_master)
+        enriched = master.refresh_fund_series_names(before_master, before_state, state)
+        self.assertEqual(rebuilt, enriched)
+        self.assertEqual(original, before_master)
+        for key, prior in before_master["records"].items():
+            self.assertEqual(prior, {k: v for k, v in enriched["records"][key].items()
+                                     if k not in {"fund_series_name", "fund_series_evidence"}})
+        changed_ticker_evidence = copy.deepcopy(state)
+        changed_ticker_evidence["sources"][master.SEC_FUND_TICKERS_URL]["sha256"] = "a" * 64
+        with self.assertRaisesRegex(master.SecurityMasterError, "ticker evidence"):
+            master.refresh_fund_series_names(before_master, before_state, changed_ticker_evidence)
+        changed_other_state = copy.deepcopy(state)
+        changed_other_state["filter_universes"]["0" * 64] = []
+        with self.assertRaises(master.SecurityMasterError):
+            master.refresh_fund_series_names(before_master, before_state, changed_other_state)
+        unbound = copy.deepcopy(before_master)
+        unbound["source_state_sha256"] = "0" * 64
+        with self.assertRaisesRegex(master.SecurityMasterError, "bound prior"):
+            master.refresh_fund_series_names(unbound, before_state, state)
+
     def test_rebuild_is_deterministic_and_resolves_exact_key(self) -> None:
         state = self.apple_state()
         first = master.rebuild_security_master(state, self.apple_universe())

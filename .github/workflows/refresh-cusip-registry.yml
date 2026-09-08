@@ -17,6 +17,11 @@ on:
         required: false
         default: true
         type: boolean
+      fund_names_only:
+        description: Refresh SEC ETF descriptions using existing verified ticker mappings
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: data-maintenance
@@ -117,6 +122,18 @@ jobs:
           echo "code_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "legacy_snapshot=$legacy_snapshot" >> "$GITHUB_OUTPUT"
           echo "Restored private snapshot $release_tag ($dataset_id)"
+
+      - name: Validate description refresh scope
+        env:
+          FUND_NAMES_ONLY: ${{ inputs.fund_names_only || 'false' }}
+          CLEAN_REBUILD: ${{ inputs.rebuild_security_master || 'false' }}
+          LEGACY_SNAPSHOT: ${{ steps.restore_snapshot.outputs.legacy_snapshot }}
+        run: |
+          if [ "$FUND_NAMES_ONLY" = true ] &&
+             { [ "$CLEAN_REBUILD" = true ] || [ "$LEGACY_SNAPSHOT" = true ]; }; then
+            echo "::error::A description-only refresh requires an existing verified master and cannot be a clean rebuild"
+            exit 1
+          fi
 
       - name: Restore pinned reviewed primary-source identities
         env:
@@ -238,6 +255,7 @@ jobs:
         if: >-
           steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
           inputs.rebuild_security_master != true &&
+          inputs.fund_names_only != true &&
           (github.event_name != 'workflow_dispatch' || inputs.reconcile_filings == true)
         timeout-minutes: 50
         env:
@@ -262,7 +280,13 @@ jobs:
         timeout-minutes: 90
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-        run: python pipeline.py --regenerate-only --refresh-security-master
+          FUND_NAMES_ONLY: ${{ inputs.fund_names_only || 'false' }}
+        run: |
+          if [ "$FUND_NAMES_ONLY" = true ]; then
+            python pipeline.py --regenerate-only --refresh-fund-names
+          else
+            python pipeline.py --regenerate-only --refresh-security-master
+          fi
 
       - name: Validate generated data
         run: python validate_data.py --incremental --refresh-cache

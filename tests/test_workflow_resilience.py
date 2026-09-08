@@ -650,6 +650,10 @@ gh_mutate_once() {
         # This input only controls discovery work, never identity acceptance,
         # dataset validation, regression tests or publication checks.
         self.assertEqual(1, rebuild.count("inputs.reconcile_filings"))
+        self.assertRegex(dispatch, r"(?ms)^      fund_names_only:\n.*?^        default: false$.*?^        type: boolean$")
+        self.assertIn("inputs.fund_names_only != true", replay)
+        self.assertIn("pipeline.py --regenerate-only --refresh-fund-names", rebuild)
+        self.assertIn("Validate description refresh scope", rebuild)
         for required_step in (
             "Repair reviewed note classifications once per snapshot policy",
             "Repair reviewed preferred classifications once per snapshot policy",

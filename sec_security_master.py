@@ -7336,6 +7336,52 @@ def _apply_fund_series_names(
         record["fund_series_evidence"] = evidence
 
 
+def refresh_fund_series_names(
+    prior_master: Mapping[str, Any],
+    prior_state: Mapping[str, Any],
+    candidate_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rebind descriptive SEC fund pages without rerunning ticker decisions."""
+    _validate_security_master(prior_master)
+    _validate_source_state(prior_state)
+    _validate_source_state(candidate_state)
+    if prior_master.get("policy", {}).get("resolution_rules_version") != TICKER_RESOLUTION_RULES_VERSION:
+        raise SecurityMasterError("fund-name refresh requires current verified resolution rules")
+    if prior_master.get("source_state_sha256") != _mapping_sha256(prior_state):
+        raise SecurityMasterError("fund-name refresh requires a bound prior master/source pair")
+    if candidate_state.get("updated_at", "") < prior_state.get("updated_at", ""):
+        raise SecurityMasterError("fund-name refresh cannot backdate source state")
+    if {k: v for k, v in prior_state.items() if k not in {"sources", "updated_at"}} != {
+        k: v for k, v in candidate_state.items() if k not in {"sources", "updated_at"}
+    }:
+        raise SecurityMasterError("fund-name refresh cannot change non-fund source state")
+    old_sources, new_sources = prior_state["sources"], candidate_state["sources"]
+    for url in set(old_sources) | set(new_sources):
+        before, after = old_sources.get(url), new_sources.get(url)
+        if before == after:
+            continue
+        if (not isinstance(after, Mapping) or after.get("kind") != "sec_fund_series"
+                or (before is not None and before.get("kind") != "sec_fund_series")):
+            raise SecurityMasterError("fund-name refresh cannot replace ticker evidence")
+    # Copy record shells only: names are top-level fields, while large immutable
+    # filing witnesses stay shared. No mapping, identity or quantity is edited.
+    refreshed = dict(prior_master)
+    refreshed["records"] = {key: dict(record) for key, record in prior_master["records"].items()}
+    _apply_fund_series_names(refreshed["records"], candidate_state)
+    refreshed["generated_at"] = candidate_state.get("updated_at")
+    refreshed["source_state_sha256"] = _mapping_sha256(candidate_state)
+    refreshed["sources"] = [
+        {"url": url, "sha256": entry["sha256"], "kind": entry["kind"],
+         "schema_sha256": _source_schema_fingerprint(entry)}
+        for url, entry in sorted(new_sources.items())
+    ]
+    refreshed["audit"] = dict(prior_master["audit"])
+    refreshed["audit"]["fund_series_source_checkpoints"] = _fund_series_source_checkpoints(refreshed["records"])
+    refreshed["audit"] = project_master_audit(refreshed, candidate_state)
+    _validate_security_master(refreshed)
+    return refreshed
+
+
 def rebuild_security_master(
     source_state: Mapping[str, Any] | Path = DEFAULT_SOURCE_STATE_PATH,
     securities: (
