@@ -11,6 +11,38 @@ APPLICATION_JS = ROOT / "app.js"
 
 
 class FrontendSemanticsTests(unittest.TestCase):
+    def test_fund_descriptions_keep_class_identity_across_site_surfaces(self):
+        result = self.run_javascript("""
+            securityLabels = {
+              '78464A409':'SPDR SERIES TRUST — ST STR P500GRW',
+              '78464A508':'SPDR SERIES TRUST — ST STR P500VAL',
+              '78464A854':'SPDR SERIES TRUST — ST STR P500ETF',
+              '464287432':'ISHARES TR — 20 YR TR BD ETF',
+              '33939L803':'FLEXSHARES TR — M STAR DEV MKT',
+            };
+            securityKinds = {'78464A409':'ETF','78464A508':'ETF',
+              '78464A854':'ETF','464287432':'ETF','26210CAD6':'BOND'};
+            const descriptions = ['78464A409','78464A508','78464A854'].map(cusip => {
+              const row = {cusip,issuer:'SPDR SERIES TRUST',instrument_type:'EQUITY'};
+              return [searchResultDescription(row), formattedHoldingCompany(row), companyNameButton(row)];
+            });
+            const bond = {cusip:'26210CAD6',issuer:'DROPBOX INC',instrument_type:'NOTE'};
+            const tlt = {cusip:'464287432',issuer:'ISHARES TR',instrument_type:'EQUITY'};
+            const fallback = holdingDisplayCompany(tlt);
+            securityProductNames = {'464287432':'iShares 20+ Year Treasury Bond ETF'};
+            console.log(JSON.stringify({descriptions, fallback, full:holdingDisplayCompany(tlt),
+              broad:holdingDisplayCompany({cusip:'33939L803',issuer:'FLEXSHARES TR'}),
+              bond:holdingDisplayCompany(bond), bondType:holdingPublishedInstrumentType(bond)}));
+        """, application=True)
+        for row, suffix in zip(result['descriptions'], ['P500GRW','P500VAL','P500ETF']):
+            for surface in row:
+                self.assertIn(suffix.casefold(), surface.casefold())
+        self.assertIn('20 YR TR BD ETF', result['fallback'])
+        self.assertEqual('iShares 20+ Year Treasury Bond ETF', result['full'])
+        self.assertIn('M STAR DEV MKT', result['broad'])
+        self.assertEqual('DROPBOX INC', result['bond'])
+        self.assertEqual('NOTE', result['bondType'])
+
     def test_repaired_note_bookmarks_route_to_exact_fund_or_preferred(self) -> None:
         result = self.run_javascript("""
             securityNoteTypeCorrections = {'921937827': 'EQUITY', '012653200': 'PREF'};
