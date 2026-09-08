@@ -8,6 +8,19 @@ private `YOUR_GITHUB_OWNER/super-investor-seeker-data` repository.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline, data, website, and
 deployment contracts.
 
+## Reviewed ticker displays
+
+The pinned private review includes 2,185 additional typed display mappings:
+1,645 exact security tickers and 540 option underlying tickers supported by
+first-party research at confidence tiers A or B. Unresolved and conflicting
+candidates remain excluded. Public display metadata and search entries retain
+the exact CUSIP and reported instrument type; they do not rewrite the SEC
+resolver, saved filing classifications, shares, or values. Option rows show
+the underlying symbol followed by PUT or CALL. Historical identities remain
+historical labels, not a claim of a current listing.
+
+See [TODO.md](TODO.md) for the deferred note-classification follow-up.
+
 ## Local setup
 
 ```bash

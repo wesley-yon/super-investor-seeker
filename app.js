@@ -106,6 +106,7 @@ function normalizeInstrumentType(type) {
 let securityLabels = Object.create(null);
 let securityKinds = Object.create(null);
 let securityProductNames = Object.create(null);
+let securityReviewedDisplays = Object.create(null);
 let securityFundIdentities = new Set();
 let securityLabelsPromise = null;
 const VALID_SECURITY_KINDS = new Set([
@@ -139,6 +140,25 @@ function normalizeSecurityTextMap(source) {
     normalized[cusip] = label;
   }
   return normalized;
+}
+
+function normalizeReviewedDisplays(source) {
+  const result = Object.create(null);
+  if (!source || typeof source !== "object" || Array.isArray(source)) return result;
+  for (const [key, entry] of Object.entries(source)) {
+    if (!/^[A-Z0-9]{9}\|(EQUITY|PREF|WARRANT|NOTE|CALL|PUT)$/.test(key)) continue;
+    if (!entry || !/^[A-Z0-9][A-Z0-9.\-^/]{0,19}$/.test(entry.ticker || "")) continue;
+    const option = /\|(CALL|PUT)$/.test(key);
+    if (entry.match_kind !== (option ? "underlying_only" : "exact_cusip")) continue;
+    if (option && !/^[A-Z0-9]{9}$/.test(entry.underlying_cusip || "")) continue;
+    result[key] = entry;
+  }
+  return result;
+}
+
+function holdingReviewedDisplay(holding) {
+  const cusip = String(holding?.cusip || "").trim().toUpperCase();
+  return securityReviewedDisplays[`${cusip}|${holdingInstrumentType(holding)}`];
 }
 
 function normalizeSecurityKindPayload(data) {
@@ -181,6 +201,7 @@ async function ensureSecurityLabels() {
         securityLabels = normalizeSecurityTextMap(data.labels);
         securityKinds = normalizeSecurityKindPayload(data);
         securityProductNames = normalizeSecurityTextMap(data.product_names);
+        securityReviewedDisplays = normalizeReviewedDisplays(data.reviewed_displays);
         securityFundIdentities = normalizeSecurityFundIdentityPayload(data);
         return securityLabels;
       })
@@ -192,6 +213,7 @@ async function ensureSecurityLabels() {
         securityLabels = Object.create(null);
         securityKinds = Object.create(null);
         securityProductNames = Object.create(null);
+        securityReviewedDisplays = Object.create(null);
         securityFundIdentities = new Set();
         throw (
           error instanceof DataContractMismatchError
@@ -218,6 +240,10 @@ function holdingInstrumentType(holding) {
 
 function holdingPublishedInstrumentType(holding) {
   const rawType = holdingInstrumentType(holding);
+  // Reviewed displays belong to an exact retained position, including known
+  // classification issues. Keep its existing artifact until filing replay
+  // explicitly corrects that identity.
+  if (holdingReviewedDisplay(holding)) return rawType;
   const kind = securityKindForCusip(holding?.cusip);
   if (kind === "BOND") return "NOTE";
   if (
@@ -353,6 +379,8 @@ function securityTypeFallbackLabel(instrumentType) {
 }
 
 function holdingTrustedTicker(holding) {
+  const reviewed = holdingReviewedDisplay(holding);
+  if (reviewed) return reviewed.ticker;
   const ticker = securityDisplayTicker(
     holding?.ticker,
     holdingPublishedInstrumentType(holding)
@@ -363,6 +391,8 @@ function holdingTrustedTicker(holding) {
 
 function holdingDisplayLabel(holding) {
   if (!holding) return "—";
+  const reviewed = holdingReviewedDisplay(holding);
+  if (reviewed) return reviewed.ticker;
   const cusip = String(holding.cusip || "").trim().toUpperCase();
   const mappedLabel = securityLabelForCusip(cusip);
   const trustedTicker = holdingTrustedTicker(holding);
@@ -440,6 +470,9 @@ function parseStockLookupId(stockId) {
 
 function canonicalStockLookupId(stockId) {
   const parsed = parseStockLookupId(stockId);
+  if (holdingReviewedDisplay({cusip: parsed.id_base, instrument_type: parsed.instrument_type})) {
+    return parsed.stock_id;
+  }
   // Canonicalize direct and bookmarked CUSIP routes with the same structural
   // evidence used for fund-table links. This keeps legacy CALL/PUT debt URLs
   // from requesting option artifacts removed by the current data build.
@@ -974,6 +1007,8 @@ function searchEntryTagLabel(entry) {
 }
 
 function tickerSearchSymbol(entry) {
+  const reviewed = holdingReviewedDisplay(entry);
+  if (reviewed) return reviewed.ticker;
   const mappedLabel = securityLabelForCusip(entry?.cusip);
   const mappedSymbol = /^[A-Z][A-Z0-9.-]{0,15}(?:\/(?:W|WS|RT))?$/i.test(
     mappedLabel
@@ -1179,7 +1214,11 @@ function displayDate(dateStr) {
 }
 
 function fundTicker(h) {
-  return holdingDisplayLabel(h);
+  const label = holdingDisplayLabel(h);
+  const kind = holdingDisplayKind(h);
+  return ["CALL", "PUT", "OPTION"].includes(kind)
+    ? `${label} · ${kind}`
+    : label;
 }
 
 // Display-only cleanup for SEC legal names; stored names remain untouched.
