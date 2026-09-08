@@ -1,7 +1,7 @@
-"""Reviewed, dated display continuity; never changes a position's identity.
+"""Reviewed, dated continuity within the same security or share class.
 
-The graph joins search results and documents corporate actions. It grants no
-permission to combine holdings, convert quantities, or enable quote lookups.
+Investor views combine these typed identities by manager and report date.
+Original filing records remain unchanged; this graph grants no quote permission.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
-REVIEW_SHA256 = 'dfb38958f5e0890b8ada42aab0a1674d718a56a19ec9a6ec59ca2adc71881c20'
+REVIEW_SHA256 = 'eb0e26af18e6151593abda85b90f0a97c2d3d5d2b333c5c545bb5d166c0069bb'
 SCHEMA_VERSION = 1
 
 

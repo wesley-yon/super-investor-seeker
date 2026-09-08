@@ -148,7 +148,7 @@ class FrontendIdentityContractTests(unittest.TestCase):
             tuple(re.findall(r'"([A-Z]+)"', match.group(1))),
         )
 
-    def test_frontend_normalizes_type_and_uses_exact_stock_identity(self) -> None:
+    def test_frontend_normalizes_type_and_preserves_unreviewed_stock_identity(self) -> None:
         self.assertRegex(
             self.html,
             r"function normalizeInstrumentType\(type\)\s*\{\s*"
@@ -157,8 +157,8 @@ class FrontendIdentityContractTests(unittest.TestCase):
         )
         self.assertRegex(
             self.html,
-            r"(?s)function holdingHistoryKey\(h\)\s*\{\s*"
-            r"return stockLookupId\(.*?holdingPublishedInstrumentType\(h\)",
+            r"(?s)function holdingHistoryKey\(h\)\s*\{.*?"
+            r": stockLookupId\(.*?holdingPublishedInstrumentType\(h\)",
         )
         for field in (
             "cusip: parsed.id_base",

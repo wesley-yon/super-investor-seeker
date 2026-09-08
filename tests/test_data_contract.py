@@ -1314,14 +1314,14 @@ class GeneratedDataContractTests(unittest.TestCase):
                 f"async function {loader}(",
                 f"function {renderer}(",
             )
-            await_pos = detail_load.rindex("await ")
-            blocked_pos = detail_load.index(
-                "if (dataContractBlocked)",
-                await_pos,
-            )
-            render_pos = detail_load.index(f"{renderer}(")
-            self.assertLess(await_pos, blocked_pos)
-            self.assertLess(blocked_pos, render_pos)
+            # The stock loader has both combined-class and single-identifier
+            # paths. Each render must check maintenance after its own await.
+            for render in re.finditer(rf"{renderer}\(", detail_load):
+                render_pos = render.start()
+                await_pos = detail_load.rfind("await ", 0, render_pos)
+                blocked_pos = detail_load.index("if (dataContractBlocked)", await_pos)
+                self.assertLess(await_pos, blocked_pos)
+                self.assertLess(blocked_pos, render_pos)
 
     def test_update_workflow_publishes_private_snapshot_without_git_data(
         self,

@@ -100,6 +100,177 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertTrue(result['historical'])
         self.assertIsNone(result['ambiguous'])
 
+
+    def run_history_javascript(self, body, *, application=False):
+        return self.run_javascript(
+            "securityIdentityHistory = normalizeIdentityHistory(" +
+            (ROOT / "reviewed_security_history.json").read_text() + ");" + body,
+            application=application)
+
+    def test_investor_holdings_combine_cusips_but_keep_google_share_classes_separate(self):
+        result = self.run_history_javascript("""
+            const rows = [
+              {cusip:'38259P508',ticker:'GOOGL',holding_type:'EQUITY',shares:10,value:100},
+              {cusip:'02079K305',ticker:'GOOGL',holding_type:'EQUITY',shares:20,value:200},
+              {cusip:'02079K107',ticker:'GOOG',holding_type:'EQUITY',shares:30,value:300},
+              {cusip:'02079K404',ticker:'GOOGM',holding_type:'PREF',shares:40,value:400},
+              {cusip:'02079K602',ticker:'GOOGN',holding_type:'PREF',shares:50,value:500},
+              {cusip:'38259P508',ticker:'GOOGL',holding_type:'CALL',shares:60,value:600},
+            ];
+            const before = JSON.stringify(rows);
+            const combined = groupHoldingsByKey(rows, {reportDate:'2026-06-30'});
+            console.log(JSON.stringify({unchanged:before===JSON.stringify(rows),
+              rows:combined.map(r=>({key:holdingHistoryKey(r),ticker:r.ticker,shares:r.shares,value:r.value,
+                sources:r.reported_cusips}))}));
+        """)
+        self.assertTrue(result['unchanged'])
+        self.assertEqual(5, len(result['rows']))
+        self.assertEqual(['02079K305','02079K107','02079K404|PREF','02079K602|PREF','38259P508|CALL'],
+                         [row['key'] for row in result['rows']])
+        self.assertEqual({'key':'02079K305','ticker':'GOOGL','shares':30,'value':300,
+                          'sources':['38259P508','02079K305']}, result['rows'][0])
+
+    def test_combined_history_counts_a_manager_once_and_avoids_false_cusip_exits(self):
+        result = self.run_history_javascript("""
+            var idx = {proven_split_adjustments:{}};
+            const group = securityIdentityHistory.groups['38259P508|EQUITY'];
+            const stocks = [
+              {cusip:'38259P508',instrument_type:'EQUITY',holders:[{cik:'00042',name:'Fund',history:[
+                {date:'2025-09-30',shares:10,value:100,pct_of_fund:1},
+                {date:'2025-12-31',shares:10,value:110,pct_of_fund:1.1},
+                {date:'2026-06-30',shares:2,value:24,pct_of_fund:.24}
+              ]}]},
+              {cusip:'02079K305',instrument_type:'EQUITY',holders:[{cik:42,name:'Fund',history:[
+                {date:'2026-03-31',shares:10,value:120,pct_of_fund:1.2},
+                {date:'2026-06-30',shares:8,value:96,pct_of_fund:.96}
+              ]}]}
+            ];
+            const before = JSON.stringify(stocks);
+            const combined = combineSecurityHistoryStocks(group,stocks);
+            const aligned = alignHolderHistory(combined.holders[0].history,
+              {q:[20262,20261,20254,20253]},20262,{historyGroup:group});
+            console.log(JSON.stringify({unchanged:before===JSON.stringify(stocks),
+              holders:combined.holders.length,history:combined.holders[0].history,aligned}));
+        """)
+        self.assertTrue(result['unchanged'])
+        self.assertEqual(1, result['holders'])
+        self.assertEqual(4, len(result['history']))
+        self.assertEqual(10, result['history'][0]['shares'])
+        self.assertEqual(120, result['history'][0]['value'])
+        self.assertAlmostEqual(1.2, result['history'][0]['pct_of_fund'])
+        self.assertEqual(2, len(result['history'][0]['reported_positions']))
+        self.assertEqual({'t':'SAME'}, result['aligned']['ch'])
+        self.assertEqual([10,10,10,10], result['aligned']['sparkShares'])
+        self.assertEqual([100,110,120,120], result['aligned']['sparkValues'])
+
+    def test_combined_history_preserves_quantity_quality_and_rejects_wrong_sources(self):
+        result = self.run_history_javascript("""
+            var idx = {proven_split_adjustments:{}};
+            const group = securityIdentityHistory.groups['38259P508|EQUITY'];
+            const first = {cusip:'38259P508',instrument_type:'EQUITY',holders:[{cik:1,history:[
+              {date:'2026-06-30',shares:0,value:100,quantity_unknown:true}]}]};
+            const second = {cusip:'02079K305',instrument_type:'EQUITY',holders:[{cik:1,history:[
+              {date:'2026-06-30',shares:10,value:200,shares_imputed:true}]}]};
+            const combined = combineSecurityHistoryStocks(group,[first,second]).holders[0].history[0];
+            const rejected = [[first,first],[first,{...second,cusip:'02079K107'}],
+              [first,{...second,instrument_type:'PREF'}],
+              [{...first,holders:[{cik:1,history:[{date:'2026-06-30',shares:NaN,value:100}]}]}]
+              ].map(stocks=>{
+                try{combineSecurityHistoryStocks(group,stocks);return false;}catch{return true;}
+              });
+            console.log(JSON.stringify({combined,rejected}));
+        """)
+        self.assertEqual(300, result['combined']['value'])
+        self.assertTrue(result['combined']['quantity_unknown'])
+        self.assertTrue(result['combined']['shares_imputed'])
+        self.assertEqual([True,True,True,True], result['rejected'])
+
+    def test_share_class_split_proof_is_used_once_without_adjusting_reported_positions(self):
+        result = self.run_history_javascript("""
+            const proof={from_report_date:'2026-03-31',to_report_date:'2026-06-30',factor:1/3,proven:true};
+            var idx={proven_split_adjustments:{'26614N102':[proof],'26614N201':[proof]}};
+            const group=securityIdentityHistory.groups['26614N102|EQUITY'];
+            const h=canonicalHistoryHolding({cusip:'26614N102',holding_type:'EQUITY'});
+            const adjustments=historySplitAdjustments(h);
+            const rows=groupHoldingsByKey([
+              {cusip:'26614N102',holding_type:'EQUITY',shares:60,value:600},
+              {cusip:'26614N201',holding_type:'EQUITY',shares:40,value:400}
+            ]);
+            const aligned=alignHolderHistory([
+              {date:'2026-06-30',shares:100,value:1000},
+              {date:'2026-03-31',shares:300,value:900}
+            ],{q:[20262,20261]},20262,{splitAdjustments:adjustments,historyGroup:group});
+            console.log(JSON.stringify({adjustments:adjustments.length,shares:rows[0].shares,ch:aligned.ch,spark:aligned.sparkShares,
+              unsafe:positionChange({shares:98.456},{shares:100},{unverifiedCorporateAction:true})}));
+        """)
+        self.assertEqual(1, result['adjustments'])
+        self.assertEqual(100, result['shares'])
+        self.assertEqual({'t':'SAME'}, result['ch'])
+        self.assertEqual([100,100], result['spark'])
+        self.assertIsNone(result['unsafe'])
+
+    def test_combined_page_never_renders_partial_totals_after_one_source_fails(self):
+        result = self.run_history_javascript("""
+            (async()=>{
+              idx={tickers:[
+                {cusip:'38259P508',stock_id:'38259P508',instrument_type:'EQUITY',ticker:'GOOGL'},
+                {cusip:'02079K305',stock_id:'02079K305',instrument_type:'EQUITY',ticker:'GOOGL'}
+              ]};
+              ensureSecurityLabels=async()=>{};
+              enterDetailView=()=>true;showLoadingMessage=()=>{};
+              let renders=0,failures=0,lastError="",fetches=0;
+              renderStock=()=>renders++;
+              showLoadError=()=>failures++;
+              console.error=(message,error)=>{lastError=error.message;};
+              fetchJson=async url=>{
+                fetches++;
+                if(url.includes('02079K305'))throw Error('offline');
+                return {cusip:'38259P508',instrument_type:'EQUITY',holders:[]};
+              };
+              await loadStock('38259P508');
+              console.log(JSON.stringify({renders,failures,lastError,fetches}));
+            })();
+        """, application=True)
+        self.assertEqual({'renders':0,'failures':1,'lastError':'offline','fetches':2}, result)
+
+
+    def test_late_combined_request_cannot_replace_another_share_class_and_cache_is_reused(self):
+        result = self.run_history_javascript("""
+            (async()=>{
+              idx={tickers:[
+                {cusip:'38259P508',stock_id:'38259P508',instrument_type:'EQUITY',ticker:'GOOGL'},
+                {cusip:'02079K305',stock_id:'02079K305',instrument_type:'EQUITY',ticker:'GOOGL'},
+                {cusip:'02079K107',stock_id:'02079K107',instrument_type:'EQUITY',ticker:'GOOG'}
+              ]};
+              ensureSecurityLabels=async()=>{};
+              enterDetailView=()=>true;showLoadingMessage=()=>{};
+              const renders=[],release=[];
+              let fetches=0;
+              renderStock=stock=>renders.push({ticker:stock.ticker,
+                value:stock.holders.reduce((sum,h)=>sum+h.history.reduce((s,r)=>s+r.value,0),0)});
+              fetchJson=url=>{
+                fetches++;
+                if(url.includes('02079K107'))return Promise.resolve({
+                  cusip:'02079K107',ticker:'GOOG',instrument_type:'EQUITY',holders:[]});
+                return new Promise(resolve=>release.push(()=>resolve({
+                  cusip:url.includes('38259P508')?'38259P508':'02079K305',
+                  instrument_type:'EQUITY',holders:[{cik:1,history:[
+                    {date:'2026-06-30',shares:10,value:100}]}]})));
+              };
+              const oldRequest=loadStock('38259P508');
+              await Promise.resolve();
+              await loadStock('02079K107');
+              release.forEach(done=>done());
+              await oldRequest;
+              const beforeCached=renders.map(row=>row.ticker);
+              await loadStock('02079K305');
+              console.log(JSON.stringify({beforeCached,renders,fetches}));
+            })();
+        """, application=True)
+        self.assertEqual(['GOOG'], result['beforeCached'])
+        self.assertEqual([{'ticker':'GOOG','value':0},{'ticker':'GOOGL','value':200}], result['renders'])
+        self.assertEqual(3, result['fetches'])
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = APPLICATION_JS.read_text()
@@ -885,11 +1056,11 @@ class FrontendSemanticsTests(unittest.TestCase):
     ) -> None:
         self.assertIn('"data/security_labels.json"', self.html)
         self.assertGreaterEqual(
-            self.html.count("const securityLabelsReady = ensureSecurityLabels();"),
+            self.html.count("const securityLabelsReady = ensureSecurityLabels();") + self.html.count("await ensureSecurityLabels();"),
             3,
         )
         self.assertGreaterEqual(
-            self.html.count("await securityLabelsReady;"),
+            self.html.count("await securityLabelsReady;") + self.html.count("await ensureSecurityLabels();"),
             3,
         )
         self.assertNotIn("note-security-cell", self.html)
@@ -995,7 +1166,7 @@ class FrontendSemanticsTests(unittest.TestCase):
         stock_end = self.html.index("function renderStock(", stock_start)
         stock_logic = self.html[stock_start:stock_end]
         self.assertLess(
-            stock_logic.index("await securityLabelsReady;"),
+            stock_logic.index("await ensureSecurityLabels();"),
             stock_logic.index("canonicalStockLookupId(stockId)"),
         )
         self.assertIn("resolveStockEntry(canonicalId)", stock_logic)
@@ -1925,7 +2096,7 @@ class FrontendSemanticsTests(unittest.TestCase):
             self.html,
         )
         self.assertIn(
-            "positionChange(h, prevRec, { splitFactor })",
+            "positionChange(h, prevRec, { splitFactor, unverifiedCorporateAction:",
             self.html,
         )
 

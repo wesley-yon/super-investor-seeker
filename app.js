@@ -232,44 +232,174 @@ function isHistoricalSecurity(holding) {
 function searchResultDescription(entry) {
   const group = searchHistoryGroup(entry);
   if (group) {
-    return `${group.name} · ${isHistoricalSecurity(entry) ? "Historical holdings" : "Identifier history"}`;
+    return `${group.name} · Combined holdings`;
   }
   if (isHistoricalSecurity(entry)) return `Historical identifier · ${entry.cusip}`;
   return preferredSearchDescription(entry) || compactHoldingName(entry);
 }
 
+function securityGroupLookupId(group) {
+  return stockLookupId(group.cusips[group.cusips.length - 1], group.instrument_type);
+}
+
+function canonicalHistoryHolding(holding) {
+  const group = securityHistoryGroup(holding);
+  if (!group) return { ...holding };
+  return {
+    ...holding,
+    cusip: group.cusips[group.cusips.length - 1],
+    stock_id: securityGroupLookupId(group),
+    instrument_type: group.instrument_type,
+    holding_type: group.instrument_type,
+    ticker: group.ticker,
+    issuer: group.name,
+    identity_group: group.id,
+  };
+}
+
+function reportedPositionParts(holding, date = null) {
+  if (Array.isArray(holding?.reported_positions)) {
+    return holding.reported_positions.map(row => ({ ...row }));
+  }
+  return [{
+    cusip: holding?.cusip || "",
+    instrument_type: holdingInstrumentType(holding),
+    date: date || holding?.date || null,
+    shares: Number(holding?.shares) || 0,
+    value: Number(holding?.value) || 0,
+    pct_of_fund: Number(holding?.pct_of_fund) || 0,
+    shares_imputed: holding?.shares_imputed === true,
+    quantity_unknown: holding?.quantity_unknown === true,
+  }];
+}
+
+// Reporting-date quantities are combined as filed. A stale CUSIP is not
+// evidence that a filer failed to apply a split; never multiply its current
+// shares merely because its identifier predates a corporate action.
+function combineReportedPositions(rows, metadata = {}, date = null) {
+  const parts = rows.flatMap(row => reportedPositionParts(row, date));
+  return {
+    ...metadata,
+    ...(date ? { date } : {}),
+    shares: parts.reduce((sum, row) => sum + row.shares, 0),
+    value: parts.reduce((sum, row) => sum + row.value, 0),
+    pct_of_fund: parts.reduce((sum, row) => sum + row.pct_of_fund, 0),
+    shares_imputed: parts.some(row => row.shares_imputed),
+    quantity_unknown: parts.some(row => row.quantity_unknown),
+    reported_positions: parts,
+    reported_cusips: [...new Set(parts.map(row => row.cusip))],
+  };
+}
+
+function historySplitAdjustments(holding, extra = []) {
+  const group = securityHistoryGroup(holding);
+  const keys = group
+    ? group.cusips.map(cusip => stockLookupId(cusip, group.instrument_type))
+    : [holdingHistoryKey(holding)];
+  const rows = keys.flatMap(key => idx?.proven_split_adjustments?.[key] || []).concat(extra);
+  const byPeriod = new Map();
+  for (const row of rows) {
+    if (row?.proven !== true || !(row.factor > 0) || !Number.isFinite(row.factor)) continue;
+    const key = JSON.stringify([row.from_report_date, row.to_report_date]);
+    const existing = byPeriod.get(key);
+    if (!existing) byPeriod.set(key, { ...row });
+    else if (Math.abs(existing.factor - row.factor) > 1e-8) existing.proven = false;
+  }
+  return [...byPeriod.values()];
+}
+
+function historyActionBetween(group, previousDate, currentDate) {
+  return Boolean(group && previousDate && currentDate && group.events.some(event =>
+    previousDate < event.effective_date && event.effective_date <= currentDate
+  ));
+}
+
+function combineSecurityHistoryStocks(group, stocks) {
+  if (!group || !Array.isArray(stocks) || !stocks.length) {
+    throw new Error("No filing records available for this share class");
+  }
+  const seen = new Set(), holders = new Map();
+  const adjustments = [];
+  for (const stock of stocks) {
+    if (!group.cusips.includes(stock?.cusip)
+        || holdingInstrumentType(stock) !== group.instrument_type
+        || seen.has(stock.cusip) || !Array.isArray(stock.holders)) {
+      throw new Error("Conflicting share-class filing records");
+    }
+    seen.add(stock.cusip);
+    adjustments.push(...(Array.isArray(stock.split_adjustments) ? stock.split_adjustments : []));
+    const sourceHolders = new Set();
+    for (const holder of stock.holders) {
+      const cik = cikKey(holder.cik);
+      if (!cik || sourceHolders.has(cik) || !Array.isArray(holder.history)) {
+        throw new Error("Duplicate or invalid manager in source holdings");
+      }
+      sourceHolders.add(cik);
+      let combined = holders.get(cik);
+      if (!combined) {
+        combined = { cik: holder.cik, name: holder.name, byDate: new Map() };
+        holders.set(cik, combined);
+      }
+      const sourceDates = new Set();
+      for (const record of holder.history) {
+        if (!reportQuarterCode(record?.date) || sourceDates.has(record.date)
+            || typeof record.shares !== "number" || !Number.isFinite(record.shares) || record.shares < 0
+            || typeof record.value !== "number" || !Number.isFinite(record.value) || record.value < 0
+            || (record.pct_of_fund != null && (typeof record.pct_of_fund !== "number"
+              || !Number.isFinite(record.pct_of_fund) || record.pct_of_fund < 0))) {
+          throw new Error("Duplicate or invalid position in source holdings");
+        }
+        sourceDates.add(record.date);
+        const rows = combined.byDate.get(record.date) || [];
+        rows.push({ ...record, cusip: stock.cusip, instrument_type: group.instrument_type });
+        combined.byDate.set(record.date, rows);
+      }
+    }
+  }
+  const latest = [...stocks].sort((a, b) => group.cusips.indexOf(b.cusip) - group.cusips.indexOf(a.cusip))[0];
+  const metadata = canonicalHistoryHolding(latest);
+  return {
+    ...metadata,
+    identity_group: group.id,
+    combined_cusips: group.cusips.filter(cusip => seen.has(cusip)),
+    price_lookup_allowed: latest.cusip === group.cusips[group.cusips.length - 1]
+      && latest.price_lookup_allowed === true,
+    // Quote restrictions remain on the raw identifiers. This object is a
+    // class-level holdings view, not a new tradable instrument.
+    trading_status: "combined_filing_history",
+    split_adjustments: historySplitAdjustments(metadata, adjustments),
+    holders: [...holders.values()].map(holder => ({
+      cik: holder.cik,
+      name: holder.name,
+      history: [...holder.byDate.entries()].sort(([a], [b]) => b.localeCompare(a))
+        .map(([date, rows]) => combineReportedPositions(rows, {}, date)),
+    })),
+  };
+}
+
 function securityHistoryPanel(holding, entries = []) {
   const group = securityHistoryGroup(holding);
-  const historical = isHistoricalSecurity(holding);
-  if (!group) return historical ? `<div class="info-note identity-history-notice"><strong>Historical identifier.</strong>
-    These filing records use ${esc(holding.cusip)}. The historical symbol does not establish a currently traded security.</div>` : "";
-  const latest = group.cusips[group.cusips.length - 1];
-  const available = new Set(entries.filter(entry =>
+  if (!group) return isHistoricalSecurity(holding)
+    ? `<div class="info-note identity-history-notice"><strong>Historical identifier.</strong>
+       These filing records use ${esc(holding.cusip)}. The historical symbol does not establish a currently traded security.</div>`
+    : "";
+  const available = new Set(holding.combined_cusips || entries.filter(entry =>
     holdingInstrumentType(entry) === group.instrument_type).map(entry => entry.cusip));
-  available.add(holding.cusip);
   const items = group.cusips.map((cusip, i) => {
     const start = i ? group.events[i - 1].effective_date : null;
     const end = group.events[i]?.effective_date;
     const period = start && end ? `${displayDate(start)} – ${displayDate(end)}`
       : start ? `From ${displayDate(start)}` : `Before ${displayDate(end)}`;
-    const selected = holding.cusip === cusip;
-    const stockId = stockLookupId(cusip, group.instrument_type);
-    const link = available.has(cusip)
-      ? `<a class="mono" href="#stock/${esc(encodeURIComponent(stockId))}"${selected ? ' aria-current="page"' : ""}>${esc(cusip)}</a>`
-      : `<span class="mono">${esc(cusip)}</span>`;
     const event = group.events[i - 1];
     const source = event ? `<a href="${esc(event.sources[0])}" target="_blank" rel="noopener noreferrer">${esc(event.description)}</a>` : "";
-    return `<li>${link}<span class="identity-period">${esc(period)}</span>
-      <span>${cusip === latest ? "Latest reviewed identifier" : "Historical identifier"}${selected ? " · Viewing filings" : ""}</span>
-      ${available.has(cusip) ? "" : '<span>No holdings data in this snapshot</span>'}${source}</li>`;
+    return `<li><span class="mono">${esc(cusip)}</span><span class="identity-period">${esc(period)}</span>
+      <span>${available.has(cusip) ? "Included in combined holdings" : "No separate filing records in this snapshot"}</span>${source}</li>`;
   }).join("");
-  return `<section class="identity-history" aria-label="Identifier history">
-    <div class="identity-history-notice">${historical
-      ? `<strong>Viewing a historical identifier.</strong> Latest reviewed CUSIP: <span class="mono">${esc(latest)}</span>.`
-      : "<strong>Dated identifier history.</strong>"}
-      Holdings below belong only to <span class="mono">${esc(holding.cusip)}</span>; amounts are not combined across identifiers.</div>
-    <details open><summary>Identifier history <span>Reviewed ${esc(displayDate(group.reviewed_as_of))}</span></summary>
-      <ol>${items}</ol><p class="fineprint">Dates describe the documented legal or trading change. Original filing identifiers and share quantities are preserved.</p>
+  return `<section class="identity-history" aria-label="Combined share-class holdings">
+    <div class="identity-history-notice"><strong>Combined holdings for ${esc(group.ticker)}.</strong>
+      Positions reported under ${available.size} verified CUSIPs are combined. Each manager is counted once.</div>
+    <details><summary>Filing identifiers and corporate actions <span>Reviewed ${esc(displayDate(group.reviewed_as_of))}</span></summary>
+      <ol>${items}</ol><p class="fineprint">Other share classes and preferred series remain separate. Values and quantities are reported for each filing date. Verified split and exchange adjustments put historical share trends on the latest displayed filing's share basis. Original CUSIPs remain available in the holding details.</p>
     </details></section>`;
 }
 
@@ -417,6 +547,8 @@ function securityProductNameForCusip(cusip) {
 function holdingDisplayKind(holding) {
   const instrumentType = holdingInstrumentType(holding);
   const mappedKind = securityKindForCusip(holding?.cusip);
+  const combinedGroup = holding?.identity_group && securityHistoryGroup(holding);
+  if (combinedGroup) return combinedGroup.kind;
   // A registry-confirmed bond is stronger structural evidence than a legacy
   // filer row that happened to be parsed as an option.
   if (mappedKind === "BOND") return "BOND";
@@ -568,6 +700,8 @@ function holdingDisplayCompany(holding) {
 }
 
 function formattedHoldingCompany(holding) {
+  const group = holding?.identity_group && securityHistoryGroup(holding);
+  if (group) return group.name;
   const name = holdingDisplayCompany(holding);
   const cusip = String(holding?.cusip || "").trim().toUpperCase();
   return securityInstrumentNames[cusip] ? name : displayIssuer(name);
@@ -638,38 +772,30 @@ function stockFilePath(stockId) {
 }
 
 function holdingHistoryKey(h) {
-  return stockLookupId(
+  const group = securityHistoryGroup(h);
+  return group ? securityGroupLookupId(group) : stockLookupId(
     h.cusip || h.ticker || "",
     holdingPublishedInstrumentType(h)
   );
 }
 
-function groupHoldingsByKey(holdings) {
+function groupHoldingsByKey(holdings, options = {}) {
   const grouped = new Map();
   for (const holding of (Array.isArray(holdings) ? holdings : [])) {
     const key = holdingHistoryKey(holding);
-    const shares = Number(holding?.shares) || 0;
-    const value = Number(holding?.value) || 0;
-    const existing = grouped.get(key);
-    if (!existing) {
-      grouped.set(key, { ...holding, shares, value });
-      continue;
-    }
-    existing.shares += shares;
-    existing.value += value;
-    // A grouped position is estimated if any contributing row is estimated.
-    // Dropping this marker would make a partly estimated sum look exact.
-    existing.shares_imputed = Boolean(
-      existing.shares_imputed || holding?.shares_imputed
-    );
-    existing.quantity_unknown = Boolean(
-      existing.quantity_unknown || holding?.quantity_unknown
-    );
-    for (const field of ["ticker", "issuer", "cusip", "holding_type", "option_type"]) {
-      if (!existing[field] && holding?.[field]) existing[field] = holding[field];
-    }
+    const rows = grouped.get(key) || [];
+    rows.push(holding);
+    grouped.set(key, rows);
   }
-  return [...grouped.values()];
+  return [...grouped.values()].map(rows => {
+    const metadata = canonicalHistoryHolding(rows[0]);
+    for (const row of rows) {
+      for (const field of ["ticker", "issuer", "cusip", "holding_type", "option_type"]) {
+        if (!metadata[field] && row?.[field]) metadata[field] = row[field];
+      }
+    }
+    return combineReportedPositions(rows, metadata, options.reportDate || null);
+  });
 }
 
 function cikKey(cik) {
@@ -883,7 +1009,7 @@ function looksLikeUnverifiedSplit(currentShares, previousShares) {
   return commonFactors.some(factor => Math.abs(ratio - factor) / factor <= 0.05);
 }
 
-function shareTrendIsComparable(records, adjustments) {
+function shareTrendIsComparable(records, adjustments, group = null) {
   if (!Array.isArray(records) || !records.length) return false;
   if (records.some(record =>
     !record ||
@@ -898,6 +1024,7 @@ function shareTrendIsComparable(records, adjustments) {
     const previous = records[i - 1];
     const current = records[i];
     if (
+      historyActionBetween(group, previous.date, current.date) ||
       provenSplitFactorForPeriod(
         adjustments,
         previous.date,
@@ -914,6 +1041,27 @@ function shareTrendIsComparable(records, adjustments) {
   return true;
 }
 
+function combinedShareTrend(records, adjustments, group) {
+  if (!group) return shareTrendIsComparable(records, adjustments)
+    ? records.map(record => record.shares) : [];
+  if (!Array.isArray(records) || !records.length || records.some(record =>
+    !record || record.shares_imputed || record.quantity_unknown
+      || typeof record.shares !== "number" || !Number.isFinite(record.shares)
+  )) return [];
+  const series = new Array(records.length);
+  let factor = 1;
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    if (i < records.length - 1) {
+      const adjustment = provenSplitFactorForPeriod(adjustments, records[i].date, records[i + 1].date);
+      if (adjustment == null && (historyActionBetween(group, records[i].date, records[i + 1].date)
+          || looksLikeUnverifiedSplit(records[i + 1].shares, records[i].shares))) return [];
+      factor *= adjustment == null ? 1 : adjustment;
+    }
+    series[i] = records[i].shares * factor;
+  }
+  return series;
+}
+
 function positionChange(current, previous, options = {}) {
   // An inferred share count cannot support a share-based filing-to-filing
   // change. Suppress NEW and EXIT too when the only side is estimated.
@@ -925,7 +1073,8 @@ function positionChange(current, previous, options = {}) {
   const rawPreviousShares = Number(previous.shares) || 0;
   const splitFactor = Number(options?.splitFactor);
   const hasProvenSplit = Number.isFinite(splitFactor) && splitFactor > 0;
-  if (!hasProvenSplit && looksLikeUnverifiedSplit(currentShares, rawPreviousShares)) {
+  if (!hasProvenSplit && (options?.unverifiedCorporateAction
+      || looksLikeUnverifiedSplit(currentShares, rawPreviousShares))) {
     // A near-integer jump could be a corporate action. Until a generated,
     // explicitly proven adjustment is present, showing a percentage would be
     // more misleading than showing no comparison.
@@ -1008,7 +1157,8 @@ function alignHolderHistory(history, fundIndexEntry, currentQuarter, options = {
   const comparableShareHistory = contiguousCalendar &&
     shareTrendIsComparable(
       chronologicalRecords,
-      options?.splitAdjustments
+      options?.splitAdjustments,
+      options?.historyGroup
     );
   const splitFactor = provenSplitFactorForPeriod(
     options?.splitAdjustments,
@@ -1023,14 +1173,15 @@ function alignHolderHistory(history, fundIndexEntry, currentQuarter, options = {
     reference: current || latestKnown,
     withheld: filingState.withheld,
     ch: state === "CURRENT" && hasAdjacentPrevious
-      ? positionChange(current, previous, { splitFactor })
+      ? positionChange(current, previous, { splitFactor, unverifiedCorporateAction:
+          historyActionBetween(options?.historyGroup, previous?.date, current?.date) })
       : null,
     // A missing reporting quarter is not an evenly-spaced 4Q trend.  Hide
     // both series instead of compressing a gap into a misleading sparkline.
     sparkQuarters: contiguousCalendar ? chronological : [],
-    sparkShares: comparableShareHistory
-      ? chronologicalRecords.map(record => record.shares)
-      : [],
+    sparkShares: options?.historyGroup && contiguousCalendar
+      ? combinedShareTrend(chronologicalRecords, options?.splitAdjustments, options.historyGroup)
+      : comparableShareHistory ? chronologicalRecords.map(record => record.shares) : [],
     sparkValues: contiguousCalendar
       ? chronological.map(code => Number(byQuarter.get(code)?.value) || 0)
       : [],
@@ -1642,6 +1793,15 @@ function statCard(kind, label, value, visual) {
           </div>`;
 }
 
+function reportedPositionsDetail(parts) {
+  if (!Array.isArray(parts) || !parts.length) return "";
+  const rows = parts.map(row => `<li><span class="mono">${esc(row.cusip)}</span>
+    ${row.date ? `<span>${esc(displayDate(row.date))}</span>` : ""}
+    <span>${row.quantity_unknown ? "Shares unavailable" : `${row.shares_imputed ? "~" : ""}${esc(Number(row.shares).toLocaleString("en-US", { maximumFractionDigits: 8 }))} reported shares`}</span>
+    <span>$${esc(Number(row.value).toLocaleString("en-US", { maximumFractionDigits: 2 }))} reported value</span></li>`).join("");
+  return `<details class="reported-identifiers"><summary>Filing details</summary><ul>${rows}</ul></details>`;
+}
+
 function holdingIdentityCells(h, rowBg = "") {
   const lookupId = stockLookupId(h.cusip || h.ticker, holdingPublishedInstrumentType(h));
   const displayLabel = fundTicker(h);
@@ -1651,12 +1811,12 @@ function holdingIdentityCells(h, rowBg = "") {
     ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" ><a class="security-link" href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}</a></td>`
     : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;${background}white-space:nowrap">${esc(displayLabel)}</td>`;
   return `${securityCell}
-      <td title="${esc(companyName)}" class="company-name">${companyNameButton(h)}</td>`;
+      <td title="${esc(companyName)}" class="company-name">${companyNameButton(h)}${h.identity_group ? reportedPositionsDetail(h.reported_positions) : ""}</td>`;
 }
 
 function holderFundCell(holder, rowBg = "") {
   const background = rowBg ? `;background:${rowBg}` : "";
-  return `<td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap${background}" ><a class="fund-link" href="#fund/${esc(cikKey(holder.cik))}">${esc(displayHolderName(holder.name || ""))}</a></td>`;
+  return `<td class="col-sticky" style="font-weight:600;cursor:pointer;color:var(--ac);max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap${background}" ><a class="fund-link" href="#fund/${esc(cikKey(holder.cik))}">${esc(displayHolderName(holder.name || ""))}</a>${reportedPositionsDetail(holder.reportedPositions)}</td>`;
 }
 
 
@@ -1723,6 +1883,7 @@ class LRUCache {
 }
 const fundCache = new LRUCache(50);
 const stockCache = new LRUCache(50);
+let detailLoadVersion = 0;
 
 // Sort state persists across navigations so users who like a particular
 // ordering keep it. Default: largest % holder first.
@@ -1805,18 +1966,19 @@ async function loadCachedJson({
   loadingMessage,
   errorTitle,
   logLabel,
+  isCurrent = () => true,
 }) {
   let data = cache.get(cacheKey);
   if (data) return data;
 
-  showLoadingMessage(loadingMessage);
+  if (isCurrent()) showLoadingMessage(loadingMessage);
   try {
     data = await fetchJson(url);
     cache.set(cacheKey, data);
     return data;
   } catch (e) {
     console.error(`${logLabel} fetch failed:`, e);
-    showLoadError(errorTitle, url);
+    if (isCurrent()) showLoadError(errorTitle, url);
     return null;
   }
 }
@@ -2367,6 +2529,7 @@ function globalSearch(q) {
 }
 
 function showEmpty() {
+  detailLoadVersion += 1;
   app().innerHTML = `
     <div class="empty">
       <h1>No data yet</h1>
@@ -2435,6 +2598,7 @@ function renderFundsHome() {
 
 // ---------- FUND: detail ----------
 async function loadFund(cik, opts = {}) {
+  const requestVersion = ++detailLoadVersion;
   if (!enterDetailView("fund", cik, opts)) return;
   const securityLabelsReady = ensureSecurityLabels();
   const fund = await loadCachedJson({
@@ -2444,13 +2608,14 @@ async function loadFund(cik, opts = {}) {
     loadingMessage: `Loading fund ${cik}...`,
     errorTitle: `Couldn't load fund ${cik}`,
     logLabel: "fund",
+    isCurrent: () => requestVersion === detailLoadVersion,
   });
   await securityLabelsReady;
   if (dataContractBlocked) {
     showDataMaintenance();
     return;
   }
-  if (!fund) return;
+  if (!fund || requestVersion !== detailLoadVersion) return;
   renderFund(fund);
 }
 
@@ -2507,7 +2672,7 @@ function renderFund(f) {
     .slice(0, 4)
     .map(q => ({
       ...q,
-      holdings: groupHoldingsByKey(q.holdings),
+      holdings: groupHoldingsByKey(q.holdings, { reportDate: q.report_date }),
     }));
 
   // Pipeline emits quarters newest-first; reverse for chart axis (oldest-first)
@@ -2563,23 +2728,20 @@ function renderFund(f) {
     // published on stock pages. The bootstrap map avoids one network request
     // per holding while keeping unproven corporate actions fail-closed.
     const splitFactor = provenSplitFactorForPeriod(
-      idx?.proven_split_adjustments?.[key],
+      historySplitAdjustments(h),
       prev?.report_date,
       cur.report_date
     );
     const ch = prev
-      ? positionChange(h, prevRec, { splitFactor })
+      ? positionChange(h, prevRec, { splitFactor, unverifiedCorporateAction:
+          historyActionBetween(securityHistoryGroup(h), prev?.report_date, cur.report_date) })
       : null;
 
     const shareHistory = quartersAsc.map(
       q => history[q.report_date] || null
     );
-    const sparkData = contiguousQuarterHistory &&
-      shareTrendIsComparable(
-        shareHistory,
-        idx?.proven_split_adjustments?.[key]
-      )
-      ? shareHistory.map(record => record.shares)
+    const sparkData = contiguousQuarterHistory
+      ? combinedShareTrend(shareHistory, historySplitAdjustments(h), securityHistoryGroup(h))
       : [];
     return { ...h, pct, prevPct, ch, sparkData };
   });
@@ -2604,12 +2766,8 @@ function renderFund(f) {
             pct: 0,
             prevPct,
             ch: positionChange(null, h),
-            sparkData: contiguousQuarterHistory &&
-              shareTrendIsComparable(
-                shareHistory,
-                idx?.proven_split_adjustments?.[key]
-              )
-              ? shareHistory.map(record => record.shares)
+            sparkData: contiguousQuarterHistory
+              ? combinedShareTrend(shareHistory, historySplitAdjustments(h), securityHistoryGroup(h))
               : [],
           };
         })
@@ -2768,7 +2926,7 @@ function renderFundTbody() {
   const needle = fundHoldingsFilter.trim().toUpperCase();
   const visibleRows = needle
     ? curFundRows.filter(h => {
-        const haystack = `${fundTicker(h)} ${h.ticker || ""} ${holdingDisplayCompany(h)} ${h.issuer || ""} ${h.class || ""} ${h.cusip || ""}`.toUpperCase();
+        const haystack = `${fundTicker(h)} ${h.ticker || ""} ${holdingDisplayCompany(h)} ${h.issuer || ""} ${h.class || ""} ${h.cusip || ""} ${(h.reported_cusips || []).join(" ")}`.toUpperCase();
         return haystack.includes(needle);
       })
     : curFundRows;
@@ -2798,55 +2956,73 @@ function renderFundTbody() {
 
 // ---------- STOCK: detail ----------
 async function loadStock(stockId, opts = {}) {
+  const requestVersion = ++detailLoadVersion;
   if (dataContractBlocked) {
     showDataMaintenance();
     return;
   }
-  const securityLabelsReady = ensureSecurityLabels();
-  if ((!Array.isArray(idx?.tickers) || idx.tickers.length === 0) && stockIdNeedsSearchIndex(stockId)) {
+  await ensureSecurityLabels();
+  if (requestVersion !== detailLoadVersion) return;
+  const canonicalId = canonicalStockLookupId(stockId);
+  const parsed = parseStockLookupId(canonicalId);
+  const requestedGroup = securityHistoryGroup({
+    cusip: parsed.id_base, instrument_type: parsed.instrument_type,
+  });
+  if ((!Array.isArray(idx?.tickers) || !idx.tickers.length)
+      && (stockIdNeedsSearchIndex(stockId) || requestedGroup)) {
     showLoadingMessage("Loading security...");
-    try {
-      await ensureSearchIndex();
-    } catch (error) {
-      if (handleDataContractError(error)) return;
-      console.error("ticker resolution index load failed:", error);
-    }
-  }
-  await securityLabelsReady;
-  const requested = parseStockLookupId(stockId);
-  if (securityHistoryGroup({cusip: requested.id_base, instrument_type: requested.instrument_type})
-      && (!Array.isArray(idx?.tickers) || !idx.tickers.length)) {
     try { await ensureSearchIndex(); }
     catch (error) {
       if (handleDataContractError(error)) return;
-      console.error("identifier history index load failed:", error);
+      if (requestVersion !== detailLoadVersion) return;
+      console.error("security index load failed:", error);
+      showLoadError("Couldn't load this security", "data/index.json");
+      return;
     }
   }
-  const canonicalId = canonicalStockLookupId(stockId);
-  const parsed = parseStockLookupId(canonicalId);
+  if (requestVersion !== detailLoadVersion) return;
   const stockEntry = resolveStockEntry(canonicalId);
-  const resolvedId = stockEntry ? stockEntry.stock_id : canonicalId;
-  if (!enterDetailView("stock", resolvedId, opts)) return;
-  const stockPath = stockFilePath(resolvedId);
-  const loadingSecurityLabel = holdingDisplayLabel({
-      ...stockEntry,
-      cusip: parsed.id_base,
-      instrument_type: parsed.instrument_type,
-    });
-  const stock = await loadCachedJson({
-    cache: stockCache,
-    cacheKey: resolvedId,
-    url: stockPath,
-    loadingMessage: `Loading ${loadingSecurityLabel}...`,
-    errorTitle: `Couldn't load ${loadingSecurityLabel}`,
-    logLabel: "stock",
-  });
-  if (dataContractBlocked) {
-    showDataMaintenance();
+  const group = requestedGroup || securityHistoryGroup(stockEntry);
+  if (group) {
+    const members = (idx.tickers || []).filter(entry =>
+      group.cusips.includes(entry.cusip) && holdingInstrumentType(entry) === group.instrument_type
+    );
+    const ids = [...new Set(members.map(entry => stockLookupId(entry.cusip, group.instrument_type)))];
+    if (!enterDetailView("stock", securityGroupLookupId(group), opts)) return;
+    showLoadingMessage(`Loading combined ${group.ticker} holdings...`);
+    try {
+      const stocks = await Promise.all(ids.map(async id => {
+        const cached = stockCache.get(id);
+        if (cached) return cached;
+        const stock = await fetchJson(stockFilePath(id));
+        stockCache.set(id, stock);
+        return stock;
+      }));
+      if (requestVersion !== detailLoadVersion) return;
+      if (dataContractBlocked) { showDataMaintenance(); return; }
+      const combined = combineSecurityHistoryStocks(group, stocks);
+      renderStock(combined, normalizeTickerEntry(combined));
+    } catch (error) {
+      if (handleDataContractError(error)) return;
+      if (requestVersion !== detailLoadVersion) return;
+      console.error("combined security load failed:", error);
+      showLoadError(`Couldn't load all ${group.ticker} holdings`, "data/index.json");
+    }
     return;
   }
-  if (!stock) return;
-  renderStock(stock, stockEntry);
+  const resolvedId = stockEntry ? stockEntry.stock_id : canonicalId;
+  if (!enterDetailView("stock", resolvedId, opts)) return;
+  const loadingSecurityLabel = holdingDisplayLabel({
+    ...stockEntry, cusip: parsed.id_base, instrument_type: parsed.instrument_type,
+  });
+  const stock = await loadCachedJson({
+    cache: stockCache, cacheKey: resolvedId, url: stockFilePath(resolvedId),
+    loadingMessage: `Loading ${loadingSecurityLabel}...`,
+    errorTitle: `Couldn't load ${loadingSecurityLabel}`, logLabel: "stock",
+    isCurrent: () => requestVersion === detailLoadVersion,
+  });
+  if (dataContractBlocked) { showDataMaintenance(); return; }
+  if (stock && requestVersion === detailLoadVersion) renderStock(stock, stockEntry);
 }
 
 function renderStock(sd, stockEntry = null) {
@@ -2871,7 +3047,7 @@ function renderStock(sd, stockEntry = null) {
       h.history,
       fundIndexByCik.get(cikKey(h.cik)),
       currentReportingQuarter,
-      { splitAdjustments: sd.split_adjustments }
+      { splitAdjustments: sd.split_adjustments, historyGroup: securityHistoryGroup(sd) }
     );
     const base = {
       cik: h.cik,
@@ -2895,6 +3071,7 @@ function renderStock(sd, stockEntry = null) {
         value: Number(record?.value) || 0,
         pctOfFund: Number(record?.pct_of_fund) || 0,
         asOfDate: record?.date || null,
+        reportedPositions: record?.reported_positions || [],
       };
     }
     if (aligned.state === "EXIT") {
@@ -2909,6 +3086,7 @@ function renderStock(sd, stockEntry = null) {
         priorQuantityUnknown: previous?.quantity_unknown === true,
         priorValue: Number(previous?.value) || 0,
         priorPctOfFund: Number(previous?.pct_of_fund) || 0,
+        reportedPositions: previous?.reported_positions || [],
       };
     }
     return base;
@@ -2975,7 +3153,7 @@ function renderStock(sd, stockEntry = null) {
     cusip: cusipText,
     instrument_type: instrumentType,
   };
-  const historicalIdentity = isHistoricalSecurity(securityHolding);
+  const historicalIdentity = !sd.identity_group && isHistoricalSecurity(securityHolding);
   const identifierHistory = securityHistoryPanel(securityHolding, idx.tickers || []);
   const issuerText = formattedHoldingCompany(securityHolding);
   const securityText = holdingDisplayLabel(securityHolding);
@@ -2988,7 +3166,7 @@ function renderStock(sd, stockEntry = null) {
   );
   // A CUSIP-level filer label can contain one contract's terms or even the
   // opposite option side. It cannot describe this aggregate option position.
-  const securityMetadataLabel = ["CALL", "PUT", "OPT"].includes(instrumentType) ? "" : mappedSecurityLabel || (
+  const securityMetadataLabel = sd.identity_group || ["CALL", "PUT", "OPT"].includes(instrumentType) ? "" : mappedSecurityLabel || (
     instrumentType !== "EQUITY" || !trustedTicker ? securityText : ""
   );
   const latestDateText = modeDate ? displayDate(modeDate) : "Most recent filings";
@@ -3105,16 +3283,13 @@ function renderStock(sd, stockEntry = null) {
             </div>
             <div class="stock-meta">
               ${securityMetadataLabel ? `<span>Security <span class="mono">${esc(securityMetadataLabel)}</span></span>` : ""}
-              <span>CUSIP <span class="mono">${esc(cusipText || "—")}</span></span>
+              ${sd.identity_group ? "" : `<span>CUSIP <span class="mono">${esc(cusipText || "—")}</span></span>`}
               <span>Institutional Holder View</span>
               <span>Latest 13F Positions</span>
             </div>
           </div>
         </div>
 
-        ${identifierHistory}
-        ${classificationWarning}
-        ${aggregateTrendNotice}
         <div class="stock-stat-grid">
           ${statCard("stock", historicalIdentity ? "Managers Reporting This Identifier" : "Current Institutional Holders", currentHolders.length.toLocaleString(), holdersIcon())}
           ${statCard("stock", "Total Held Value", fV(totV), miniLine(aggregateValues))}
@@ -3174,7 +3349,12 @@ function renderStock(sd, stockEntry = null) {
         </section>
 
       </aside>
-      <div class="fineprint stock-data-footer">Data note: 13F aggregates only include institutional managers that file Form 13F-HR; retail and smaller institutions are not captured. Current holders must have a valid, non-withheld filing calendar at least as recent as the modal site baseline (${esc(quarterCodeLabel(currentReportingQuarter))}). Source dates can still differ during filing season. Latest common current-holder date: ${esc(latestDateText)}.${historicalCount ? ` ${historicalCount.toLocaleString()} older former-holder ${historicalCount === 1 ? "record is" : "records are"} omitted.` : ""}</div>
+      <footer class="fineprint stock-data-footer data-footnotes" aria-label="Data notes">
+        ${identifierHistory}
+        ${classificationWarning}
+        ${aggregateTrendNotice}
+        <p>Data note: 13F aggregates only include institutional managers that file Form 13F-HR; retail and smaller institutions are not captured. Current holders must have a valid, non-withheld filing calendar at least as recent as the modal site baseline (${esc(quarterCodeLabel(currentReportingQuarter))}). Source dates can still differ during filing season. Latest common current-holder date: ${esc(latestDateText)}.${historicalCount ? ` ${historicalCount.toLocaleString()} older former-holder ${historicalCount === 1 ? "record is" : "records are"} omitted.` : ""}</p>
+      </footer>
     </div>`;
 
   app().innerHTML = html;

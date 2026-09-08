@@ -998,5 +998,5 @@
   },
   "reviewed_as_of": "2026-09-08",
   "schema_version": 1,
-  "scope": "Display continuity only. Preserve each original filing identity and quantity basis; never aggregate across these links. Dates describe the documented legal or trading change, not a rule for rewriting quarter-end filings."
+  "scope": "Verified continuity of the same security or share class. Investor views combine positions across these typed identifiers by manager and report date. Keep other share classes, preferred series and option contracts separate. Preserve original filing records and apply only verified share-basis adjustments to comparisons."
 }
