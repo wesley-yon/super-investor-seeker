@@ -7,12 +7,16 @@ search, holdings, security headings and the full-name dialog.
 The registry takes full names from exact SEC fund-series evidence first.
 `reviewed_fund_product_names.json` supplies issuer descriptions for reviewed
 gaps in that directory. Each record binds a full name to an exact CUSIP, ticker,
-retrieval date, issuer URL and downloaded-page SHA-256. Innovator's published
+retrieval date, issuer URL and source-artifact SHA-256. Most proofs are downloaded
+HTML; BondBloxx proofs are captured, normalized Fund Details HTML fragments,
+explicitly marked `rendered_html_fragment`. Innovator's published
 Series field is retained because its product title can omit the month or term.
 
 This review cannot resolve a ticker or change an instrument type. It only
-applies to an independently resolved EQUITY entry already classified as an ETF,
-with an exact matching CUSIP and symbol. Both registry and browser-metadata
+applies to an EQUITY entry already classified as an ETF, with an exact CUSIP.
+Resolved symbols must match the issuer proof. An unresolved entry can receive
+the description only if its published ticker remains null; neither its mapping
+status nor ticker changes. Both registry and browser-metadata
 validation reject a description copied onto a different security. Position
 amounts, quantities, filing text, options and notes are unaffected.
 
@@ -33,3 +37,11 @@ issuer pages, replace the approved JSON, update its pinned SHA-256, and run the
 fund-product-name tests and full regression suite. The next registry rebuild
 incorporates the approved descriptions, followed by normal snapshot validation
 and Pages publication.
+
+If ordinary HTTP access is unavailable, capture fresh issuer HTML or a Fund
+Details fragment in a normal browser and retain the exact name, ticker and
+CUSIP evidence. `--source-directory /path/to/captures` reads `TICKER.html` files
+instead of issuing HTTP requests. Every file must have been captured that UTC
+day and every identity must pass the same parser. Review each page's provenance
+and capture format before approving the resulting candidate; a file timestamp
+alone is not evidence that the issuer facts are current.

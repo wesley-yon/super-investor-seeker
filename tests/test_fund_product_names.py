@@ -30,6 +30,42 @@ class FundProductNameTests(unittest.TestCase):
         self.row = {"type": "EQUITY", "security_kind": "ETF",
                     "mapping_status": "resolved", "ticker": "NJUL"}
 
+    def test_unresolved_exact_etf_gets_name_without_symbol_or_status_changes(self):
+        row = {"type": "EQUITY", "security_kind": "ETF", "mapping_status": "unresolved", "ticker": None}
+        before = deepcopy(row)
+        self.assertEqual("Leverage Shares 2x Long AAOI Daily ETF", names.reviewed_product_name("88340C412", row))
+        self.assertEqual(before, row)
+        for change in ({"type": "NOTE"}, {"security_kind": "BOND"}, {"ticker": "AAOG"},
+                       {"mapping_status": "quarantined"}, {"mapping_status": "no_symbol"}):
+            self.assertIsNone(names.reviewed_product_name("88340C412", {**row, **change}))
+
+    def test_leverage_parser_requires_matching_provider_product_and_identifiers(self):
+        page = b'''<h1>2x Long AAOI Daily ETF</h1>
+        <div><span>Ticker</span><span>AAOG</span></div>
+        <div><span>CUSIP</span><span>88340C412</span></div>
+        <script type="application/ld+json">{"@type":"FinancialProduct","name":"2X Long AAOI Daily ETF",
+        "alternateName":"AAOG","provider":{"name":"Leverage Shares"}}</script>'''
+        args = dict(url="https://leverageshares.com/us/etfs/leverage-shares-2x-long-aaoi-daily-etf",
+                    cusip="88340C412", ticker="AAOG")
+        self.assertEqual("Leverage Shares 2x Long AAOI Daily ETF", parse_page(page, **args)["name"])
+        for bad in (page.replace(b"88340C412", b"88340F209"),
+                    page.replace(b'"alternateName":"AAOG"', b'"alternateName":"BEG"'),
+                    page.replace(b'"name":"Leverage Shares"', b'"name":"Other Provider"'),
+                    page.replace(b'"name":"2X Long AAOI Daily ETF"', b'"name":"2x Short AAOI Daily ETF"')):
+            with self.assertRaises(ValueError):
+                parse_page(bad, **args)
+
+    def test_bondbloxx_parser_scopes_identity_to_fund_not_benchmark(self):
+        page = b'''<table><tbody><tr><td>Product Name</td><td>BondBloxx IR+M Tax-Aware Intermediate Duration ETF</td></tr>
+        <tr><td>Ticker</td><td>TXXI</td></tr><tr><td>CUSIP</td><td>09789C663</td></tr></tbody></table>
+        <table><tr><td>Performance Benchmark</td><td>Bond Index</td></tr><tr><td>Ticker</td><td>LMBITR</td></tr></table>'''
+        args = dict(url="https://bondbloxxetf.com/bondbloxx-irm-tax-aware-intermediate-duration-etf/",
+                    cusip="09789C663", ticker="TXXI")
+        self.assertEqual("BondBloxx IR+M Tax-Aware Intermediate Duration ETF", parse_page(page, **args)["name"])
+        for bad in (page.replace(b"09789C663", b"09789C697"), page.replace(b"TXXI", b"TAXM"), page + page):
+            with self.assertRaises(ValueError):
+                parse_page(bad, **args)
+
     def test_exact_identity_and_series_are_preserved_without_mutation(self):
         before = deepcopy(self.row)
         result = names.reviewed_product_name(self.cusip, self.row)
@@ -37,7 +73,7 @@ class FundProductNameTests(unittest.TestCase):
         self.assertEqual(before, self.row)
         self.assertNotIn("ticker_source", self.row)
 
-    def test_no_guessing_for_debt_options_unresolved_or_different_symbols(self):
+    def test_no_names_for_debt_options_or_inconsistent_symbol_states(self):
         cases = [{"type": kind} for kind in ("NOTE", "PREF", "CALL", "PUT", "OPT")]
         cases += [{"security_kind": "BOND"}, {"security_kind": "COMMON"},
                   {"ticker": "OTHER"}, {"ticker": None}, {"mapping_status": "unresolved"}]
@@ -57,7 +93,7 @@ class FundProductNameTests(unittest.TestCase):
         raw = names.REVIEW_PATH.read_bytes()
         review = json.loads(raw)
         as_of = date.fromisoformat(review["as_of"])
-        self.assertEqual(171, len(names.validate_review_bytes(raw, as_of=as_of)))
+        self.assertEqual(185, len(names.validate_review_bytes(raw, as_of=as_of)))
         with self.assertRaisesRegex(ValueError, "checksum"):
             names.validate_review_bytes(raw + b" ", as_of=as_of)
         with self.assertRaisesRegex(ValueError, "revalidation"):

@@ -61,6 +61,38 @@ def parse_page(raw: bytes, *, url: str, cusip: str, ticker: str) -> dict:
         source_cusip = one('//*[@data-id="keyFundFacts-cusip-data"]')
         title = one('//title')
         source_ticker = title.rsplit("|", 1)[-1].strip()
+    elif host == "leverageshares.com":
+        source_cusip = one('//span[normalize-space(text())="CUSIP"]/following-sibling::span')
+        source_ticker = one('//span[normalize-space(text())="Ticker"]/following-sibling::span')
+        name = one('//h1')
+        products = [json.loads(value) for value in doc.xpath('//script[@type="application/ld+json"]/text()')]
+        products = [value for value in products if isinstance(value, dict) and value.get("@type") == "FinancialProduct"]
+        if len(products) != 1:
+            raise ValueError("missing or ambiguous issuer product identity")
+        product = products[0]
+        if (product.get("alternateName") != ticker
+                or product.get("provider", {}).get("name") != "Leverage Shares"
+                or " ".join(str(product.get("name", "")).split()).casefold() != name.casefold()):
+            raise ValueError("conflicting issuer product identity")
+        name = "Leverage Shares " + name
+    elif host == "bondbloxxetf.com":
+        # Scope to Fund Details, excluding the benchmark's own Ticker row.
+        tables = doc.xpath('//table[.//tr[1]/td[1][normalize-space(.)="Product Name"]]')
+        if len(tables) != 1:
+            raise ValueError("missing or ambiguous issuer fund-details table")
+        facts = {}
+        for row in tables[0].xpath('.//tr'):
+            cells = row.xpath('./td')
+            if len(cells) != 2:
+                continue
+            key, value = (" ".join(cell.text_content().split()) for cell in cells)
+            if key not in {"Product Name", "Ticker", "CUSIP"}:
+                continue
+            if key in facts:
+                raise ValueError("ambiguous issuer fund fact")
+            facts[key] = value
+        source_cusip, source_ticker = facts.get("CUSIP"), facts.get("Ticker")
+        name = facts.get("Product Name", "")
     else:
         source_cusip = one('//meta[@name="cusip"]/@content')
         source_ticker = one('//meta[@name="ticker"]/@content')
@@ -73,6 +105,8 @@ def parse_page(raw: bytes, *, url: str, cusip: str, ticker: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="New candidate JSON; must not exist")
+    parser.add_argument("--source-directory", type=Path,
+                        help="Use freshly captured TICKER.html evidence files instead of HTTP requests")
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError("candidate output already exists")
@@ -84,17 +118,29 @@ def main() -> None:
     def fetch(item):
         cusip, entry = item
         try:
-            response = requests.get(entry["url"], timeout=30)
-            response.raise_for_status()
-            parsed = parse_page(response.content, url=response.url, cusip=cusip, ticker=entry["ticker"])
-            result = {**entry, **parsed, "url": response.url,
-                      "sha256": hashlib.sha256(response.content).hexdigest(),
-                      "retrieved_at": datetime.now(timezone.utc).isoformat()}
+            if args.source_directory:
+                source = args.source_directory / f'{entry["ticker"]}.html'
+                captured_at = datetime.fromtimestamp(source.stat().st_mtime, timezone.utc)
+                if captured_at.date() != datetime.now(timezone.utc).date():
+                    raise ValueError("local evidence must be freshly captured today")
+                raw, url = source.read_bytes(), entry["url"]
+                source_format = entry.get("source_format", "html")
+            else:
+                response = requests.get(entry["url"], timeout=30)
+                response.raise_for_status()
+                raw, url = response.content, response.url
+                captured_at = datetime.now(timezone.utc)
+                source_format = "html"
+            parsed = parse_page(raw, url=url, cusip=cusip, ticker=entry["ticker"])
+            result = {**entry, **parsed, "url": url,
+                      "sha256": hashlib.sha256(raw).hexdigest(),
+                      "retrieved_at": captured_at.isoformat(), "source_format": source_format}
             return cusip, result, None
         except Exception as exc:
             return cusip, None, str(exc)
         finally:
-            time.sleep(1)
+            if not args.source_directory:
+                time.sleep(1)
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         results = list(pool.map(fetch, sorted(current["securities"].items())))

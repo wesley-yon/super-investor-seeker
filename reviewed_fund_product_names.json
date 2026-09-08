@@ -22,6 +22,30 @@
       "ticker": "BAI",
       "url": "https://www.blackrock.com/us/individual/products/339081/ishares-a-i-innovation-and-tech"
     },
+    "09789C663": {
+      "instrument_type": "EQUITY",
+      "locator": "Fund Details table: Product Name, Ticker, CUSIP; rendered identity rows, whitespace between tags normalized",
+      "name": "BondBloxx IR+M Tax-Aware Intermediate Duration ETF",
+      "retrieved_at": "2026-09-08T20:32:06.525045+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "83f98d2cc8bb9b99e80aeab9173323103731d617d4396fa61e408c3bd0fc5635",
+      "source_format": "rendered_html_fragment",
+      "ticker": "TXXI",
+      "url": "https://bondbloxxetf.com/bondbloxx-irm-tax-aware-intermediate-duration-etf/"
+    },
+    "09789C697": {
+      "instrument_type": "EQUITY",
+      "locator": "Fund Details table: Product Name, Ticker, CUSIP; rendered identity rows, whitespace between tags normalized",
+      "name": "BondBloxx IR+M Tax-Aware ETF for Massachusetts Residents",
+      "retrieved_at": "2026-09-08T20:32:06.525395+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "3677dbe7bf1a8adef26a66e8473c9dbd947ea30c25186b499fc9de0e5588ade9",
+      "source_format": "rendered_html_fragment",
+      "ticker": "TAXM",
+      "url": "https://bondbloxxetf.com/bondbloxx-irm-tax-aware-etf-for-ma-residents/"
+    },
     "45782C128": {
       "instrument_type": "EQUITY",
       "locator": "HTML title plus Series fund fact; exact CUSIP and Ticker fund facts",
@@ -1876,6 +1900,150 @@
       "sha256": "e997d3883938559e2847a4f09d1f5a869351899f808fa6b72491c4569f8187dd",
       "ticker": "BSJU",
       "url": "https://www.invesco.com/us/en/financial-products/etfs/invesco-bulletshares-2030-high-yield-corporate-bond-etf.html"
+    },
+    "88340C362": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long COHR Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:26.836117+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "45bfb62cdd375ab1bfa5517ff64df8623191c5c945e8d8161175346b12c0c6db",
+      "source_format": "html",
+      "ticker": "COHH",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-cohr-daily-etf"
+    },
+    "88340C412": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long AAOI Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:26.259565+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "399a7d444f07f7bc4c23fdf3bafa02c297c954ea9ea23bd87811dd3f9f770fc3",
+      "source_format": "html",
+      "ticker": "AAOG",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-aaoi-daily-etf"
+    },
+    "88340C446": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long CIEN Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:26.847116+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "6081cc22e90898523292d365e871c498d8cf3824ab8b77b88f3388ac71882119",
+      "source_format": "html",
+      "ticker": "CIEG",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-cien-daily-etf"
+    },
+    "88340C453": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long SNDK Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:27.433179+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "9c83af49fbff89e9d0584e16189ab3604f8342d79c9cfc22b3d648073cd5026f",
+      "source_format": "html",
+      "ticker": "SNDG",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-sndk-daily-etf"
+    },
+    "88340C693": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long TER Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:28.016533+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "e248c04362b196d71c22422de180d4e42a41aed97c8bf8100bb9f76cacee6b9d",
+      "source_format": "html",
+      "ticker": "TERG",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-ter-daily-etf"
+    },
+    "88340F209": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long BE Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:26.250537+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "45ab9a065f1053951c24f0b305571b7a662d9b7f07e06ff57d0f8816dbd4e448",
+      "source_format": "html",
+      "ticker": "BEG",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-be-daily-etf"
+    },
+    "88340F407": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long ECHO Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:26.858853+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "0185314d6524dd045a092eedb0c90ba4c2e64a299675d3fd82efc4f62403337c",
+      "source_format": "html",
+      "ticker": "ECHX",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-echo-daily-etf"
+    },
+    "88340W483": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long CBRS Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:26.261881+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "ff61fd249a5a61eab4ad5326f98f015bbfa31b5aa181057670a926dc91465916",
+      "source_format": "html",
+      "ticker": "CBRG",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-cbrs-daily-etf"
+    },
+    "88340W517": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Short SPCX Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:28.041630+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "4441de8733078d44e673a2daf39327f6d4b691412c8d57f8d25c663c6094c612",
+      "source_format": "html",
+      "ticker": "SSPC",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-short-spcx-daily-etf"
+    },
+    "88340W525": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long SPCX Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:28.055249+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "e52d2e582fd934f66853ef6831e3f7a165b9e4e6d7ee6d6a316be39a674bfcd7",
+      "source_format": "html",
+      "ticker": "SPCH",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-spcx-daily-etf"
+    },
+    "88340W681": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long GLW Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:27.433249+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "ac15a6d0d28987742114f226a9ce3f7cc0065ac477df726778d09b37b7f1b41d",
+      "source_format": "html",
+      "ticker": "GLWG",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-glw-daily-etf"
+    },
+    "88340W798": {
+      "instrument_type": "EQUITY",
+      "locator": "Trading Details Ticker and CUSIP; H1 confirmed by FinancialProduct name, alternateName and provider",
+      "name": "Leverage Shares 2x Long ONDS Daily ETF",
+      "retrieved_at": "2026-09-08T19:58:27.431201+00:00",
+      "security_kind": "ETF",
+      "series": "",
+      "sha256": "c5d18decbec9d119ede4faf79a03e95022f526d3c00ad288b138b308fdea6744",
+      "source_format": "html",
+      "ticker": "ONDG",
+      "url": "https://leverageshares.com/us/etfs/leverage-shares-2x-long-onds-daily-etf"
     }
   }
 }
