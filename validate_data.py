@@ -57,6 +57,7 @@ from reviewed_ticker_map import (
     apply_review, public_instrument_mappings, REVIEW_SOURCE, load_review,
     public_display_mappings, reviewed_display_ticker, assert_display_compatibility,
 )
+from fund_product_names import PRODUCT_NAME_SOURCE, valid_reviewed_product_name
 from sec_security_master import (
     MASTER_AUDIT_SCHEMA_VERSION,
     MASTER_SCHEMA_VERSION,
@@ -144,6 +145,7 @@ PUBLIC_REGISTRY_LABEL_SOURCES = frozenset({
     "synthetic_identifier",
 })
 PUBLIC_REGISTRY_EVIDENCE_SOURCES = frozenset({
+    PRODUCT_NAME_SOURCE,
     REVIEW_SOURCE,
     "sec_13f_list",
     "sec_13f_filer_consensus",
@@ -1361,6 +1363,8 @@ def validate_private_sec_security_state(
         elif entry.get("product_name_source") == "sec_fund_series" and (
             entry.get("product_name") != master_entry.get("fund_series_name")
         ):
+            mismatched.append(key)
+        if entry.get("product_name_source") == PRODUCT_NAME_SOURCE and not valid_reviewed_product_name(cusip, entry):
             mismatched.append(key)
 
         underlying_fields = (
@@ -3822,6 +3826,11 @@ def validate_security_labels(
                 "sec_title_class",
             }
             or valid_direct_etn_source
+            or (
+                provenance_source == PRODUCT_NAME_SOURCE
+                and PRODUCT_NAME_SOURCE in entry_sources
+                and valid_reviewed_product_name(cusip, registry_entry)
+            )
         ):
             bad_product_name_sources.append(cusip)
         if entry_kind not in _FUND_PRODUCT_NAME_KINDS:
