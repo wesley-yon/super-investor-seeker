@@ -81,11 +81,11 @@ def load_review(root: Path, *, required: bool = False) -> dict | None:
 def apply_review(master: dict, root: Path) -> dict:
     """Return a display-only projection, retaining the original SEC document."""
     review = load_review(root)
-    if review is None or not isinstance(master.get('records'), dict):
+    if not isinstance(master.get('records'), dict):
         return master
     records = dict(master['records'])
     conflicts = []
-    for key, accepted in review['mappings'].items():
+    for key, accepted in (review or {}).get('mappings', {}).items():
         original = records.get(key, {})
         ticker = accepted['ticker']
         if original.get('mapping_status') == 'resolved' and original.get('ticker') != ticker:
@@ -106,6 +106,12 @@ def apply_review(master: dict, root: Path) -> dict:
     if conflicts:
         raise SecurityMasterError('SEC/reviewed ticker conflict requires review: '
                                   + ', '.join(sorted(conflicts)[:20]))
+    from preferred_classification import classification_review as preferred_review
+    for cusip, entry in preferred_review().items():
+        key = f"{cusip}|{entry['to_type']}"
+        if entry.get('historical_retired') and key in records:
+            records[key] = {**records[key], 'price_lookup_allowed': False,
+                            'trading_status': 'historical_retired_identity'}
     return {**master, 'records': records}
 
 
@@ -159,6 +165,15 @@ def public_display_mappings(cusip: str, review: dict | None) -> dict:
         if target in result and result[target]["ticker"] != display["ticker"]:
             raise SecurityMasterError(f"corrected note-classification ticker conflict: {cusip}")
         result.setdefault(target, dict(display))
+    from preferred_classification import classification_review as preferred_review
+    preferred = preferred_review().get(cusip)
+    if preferred:
+        exact = [d for t, d in result.items() if t in preferred['from_types']]
+        for display in exact:
+            if display['ticker'] != preferred['ticker'] or display['match_kind'] != 'exact_cusip':
+                raise SecurityMasterError(f'preferred-classification display conflict: {cusip}')
+        if exact:
+            result.setdefault(preferred['to_type'], dict(exact[0]))
     return result
 
 

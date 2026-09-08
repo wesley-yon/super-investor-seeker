@@ -162,6 +162,12 @@ jobs:
           python scripts/repair_note_classifications.py --apply --rebuild
           --pending-only --workers 2 --report .cache/note-classification-repair.json
 
+      - name: Repair reviewed preferred classifications once per snapshot policy
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: >-
+          python scripts/repair_preferred_classifications.py --apply --rebuild
+          --pending-only --workers 2 --report .cache/preferred-classification-repair.json
+
       - name: Verify SEC_USER_AGENT secret is configured
         # Fail fast with a clear error if the repo secret wasn't set. Without
         # a valid contact email in the User-Agent, SEC returns 403 on every

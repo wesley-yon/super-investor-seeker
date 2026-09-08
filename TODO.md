@@ -6,8 +6,9 @@
   `NOTE-CLASSIFICATION-REPAIR.md`. Production publication still requires the
   merged code and a successful data workflow; the local repair is not live.
 
-- [ ] Fix preferred-share classification and display. Review preferred and
-  depositary-share positions currently labeled as common equity or notes,
-  verify the exact series and symbol against first-party evidence, and make
-  their labels consistent across holdings, search, and security pages. Preserve
-  original filing fields and distinguish each series from issuer common stock.
+- [x] Implement preferred-interest classification and display for 51 verified
+  identities, with historical repair, ingestion protection, series names,
+  search visibility, and old-link routing. See
+  `PREFERRED-CLASSIFICATION-REPAIR.md`. Unreviewed identities remain unchanged.
+  Production publication still requires merged code and a successful data
+  workflow; this local repair is not live.

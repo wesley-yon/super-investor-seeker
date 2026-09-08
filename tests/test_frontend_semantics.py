@@ -24,6 +24,26 @@ class FrontendSemanticsTests(unittest.TestCase):
         """)
         self.assertEqual(['921937827', '012653200|PREF', '921937827|CALL', '26210CAD6|NOTE'], result)
 
+    def test_reviewed_preferred_search_names_and_routes(self) -> None:
+        result = self.run_javascript("""
+            securityPreferredTypeCorrections = {'595017302|EQUITY':'PREF', '65339F655|PREF':'EQUITY'};
+            securityInstrumentNames = {'595017302':'Microchip Series A Preferred Depositary Shares',
+                                       '65339F655':'NextEra 7.375% Corporate Units'};
+            securityKinds = {'595017302':'PREFERRED', '65339F655':'UNIT'};
+            securityReviewedDisplays = {'595017302|PREF':{ticker:'MCHPP',match_kind:'exact_cusip'},
+                                        '65339F655|EQUITY':{ticker:'NEEPRV',match_kind:'exact_cusip'}};
+            const pref = {cusip:'595017302',instrument_type:'PREF',ticker:'MCHPP'};
+            console.log(JSON.stringify([
+              canonicalStockLookupId('595017302'), canonicalStockLookupId('595017302|CALL'),
+              canonicalStockLookupId('65339F655|PREF'), formattedHoldingCompany(pref),
+              holdingDisplayKindLabel(pref), isCommonStockSearchEntry(pref),
+              isCommonStockSearchEntry({...pref,instrument_type:'CALL'}),
+              isCommonStockSearchEntry({cusip:'65339F655',instrument_type:'EQUITY',ticker:'NEEPRV'})
+            ]));
+        """)
+        self.assertEqual(['595017302|PREF','595017302|CALL','65339F655',
+          'Microchip Series A Preferred Depositary Shares','Preferred',True,False,True], result)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = APPLICATION_JS.read_text()
@@ -841,7 +861,7 @@ class FrontendSemanticsTests(unittest.TestCase):
             '${esc(securityKindClass)}">${esc(securityKindText)}</span>',
             self.html,
         )
-        self.assertIn("holdingDisplayCompany(securityHolding)", self.html)
+        self.assertIn("formattedHoldingCompany(securityHolding)", self.html)
         self.assertNotIn("const displayTicker = h.ticker ?", self.html)
         self.assertIn(
             """href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}""",

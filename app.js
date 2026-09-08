@@ -109,6 +109,8 @@ let securityProductNames = Object.create(null);
 let securityReviewedDisplays = Object.create(null);
 let securityFundIdentities = new Set();
 let securityNoteTypeCorrections = Object.create(null);
+let securityPreferredTypeCorrections = Object.create(null);
+let securityInstrumentNames = Object.create(null);
 let securityLabelsPromise = null;
 const VALID_SECURITY_KINDS = new Set([
   "COMMON",
@@ -209,6 +211,12 @@ async function ensureSecurityLabels() {
             /^[A-Z0-9]{9}$/.test(cusip) && ["EQUITY", "PREF"].includes(type)
           )
         );
+        securityInstrumentNames = normalizeSecurityTextMap(data.instrument_names);
+        securityPreferredTypeCorrections = Object.fromEntries(
+          Object.entries(data.preferred_type_corrections || {}).filter(([key, type]) =>
+            /^[A-Z0-9]{9}\|(EQUITY|PREF|NOTE)$/.test(key) && ["EQUITY", "PREF"].includes(type)
+          )
+        );
         return securityLabels;
       })
       .catch(error => {
@@ -222,6 +230,8 @@ async function ensureSecurityLabels() {
         securityReviewedDisplays = Object.create(null);
         securityFundIdentities = new Set();
         securityNoteTypeCorrections = Object.create(null);
+        securityPreferredTypeCorrections = Object.create(null);
+        securityInstrumentNames = Object.create(null);
         throw (
           error instanceof DataContractMismatchError
           || error instanceof RequiredSiteDataError
@@ -435,6 +445,8 @@ function holdingDisplayLabel(holding) {
 function holdingDisplayCompany(holding) {
   if (!holding) return "";
   const cusip = String(holding.cusip || "").trim().toUpperCase();
+  const reviewedName = securityInstrumentNames[cusip];
+  if (reviewedName) return reviewedName;
   const mappedName = securityProductNameForCusip(cusip);
   if (
     mappedName
@@ -442,6 +454,12 @@ function holdingDisplayCompany(holding) {
   ) return mappedName;
   const issuer = String(holding.issuer || "").trim().replace(/\s+/g, " ");
   return issuer && (!cusip || issuer.toUpperCase() !== cusip) ? issuer : "";
+}
+
+function formattedHoldingCompany(holding) {
+  const name = holdingDisplayCompany(holding);
+  const cusip = String(holding?.cusip || "").trim().toUpperCase();
+  return securityInstrumentNames[cusip] ? name : displayIssuer(name);
 }
 
 function securityLabelNeedsWrap(label) {
@@ -477,6 +495,8 @@ function parseStockLookupId(stockId) {
 
 function canonicalStockLookupId(stockId) {
   const parsed = parseStockLookupId(stockId);
+  const preferredType = securityPreferredTypeCorrections[`${parsed.id_base}|${parsed.instrument_type}`];
+  if (preferredType) return stockLookupId(parsed.id_base, preferredType);
   const correctedType = securityNoteTypeCorrections[parsed.id_base];
   if (parsed.instrument_type === "NOTE" && correctedType) {
     return stockLookupId(parsed.id_base, correctedType);
@@ -1101,7 +1121,12 @@ function dedupeVisuallyIdenticalTickerMatches(matches) {
 }
 
 function isCommonStockSearchEntry(entry) {
-  if (normalizeInstrumentType(entry.instrument_type) !== "EQUITY") return false;
+  const kind = securityKindForCusip(entry.cusip);
+  const type = normalizeInstrumentType(entry.instrument_type);
+  if (securityInstrumentNames[entry.cusip] && holdingReviewedDisplay(entry)
+      && ((type === "PREF" && kind === "PREFERRED")
+          || (type === "EQUITY" && kind === "UNIT"))) return true;
+  if (type !== "EQUITY") return false;
   if (["PREFERRED", "RIGHT", "UNIT", "WARRANT", "BOND"].includes(
     securityKindForCusip(entry.cusip)
   )) return false;
@@ -1344,11 +1369,12 @@ function compactHoldingName(holding) {
   const cusip = String(holding?.cusip || "").trim().toUpperCase();
   const isFund = FUND_PRODUCT_NAME_KINDS.has(securityKindForCusip(cusip))
     || securityFundIdentities.has(cusip);
+  if (securityInstrumentNames[cusip]) return name || "—";
   return (isFund ? displayIssuer(name) : displayIssuer(stripLegalEntitySuffixes(name))) || "—";
 }
 
 function companyNameButton(holding) {
-  const fullName = displayIssuer(holdingDisplayCompany(holding)) || "—";
+  const fullName = formattedHoldingCompany(holding) || "—";
   return `<button type="button" class="company-name-button" data-action="show-company-name"
     data-company-name="${esc(fullName)}" title="${esc(fullName)}"
     aria-haspopup="dialog" aria-label="Show full name: ${esc(fullName)}">${esc(compactHoldingName(holding))}</button>`;
@@ -1450,7 +1476,7 @@ function statCard(kind, label, value, visual) {
 function holdingIdentityCells(h, rowBg = "") {
   const lookupId = stockLookupId(h.cusip || h.ticker, holdingPublishedInstrumentType(h));
   const displayLabel = fundTicker(h);
-  const companyName = displayIssuer(holdingDisplayCompany(h)) || "—";
+  const companyName = formattedHoldingCompany(h) || "—";
   const background = rowBg ? `background:${rowBg};` : "";
   const securityCell = lookupId
     ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" ><a class="security-link" href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}</a></td>`
@@ -2128,14 +2154,13 @@ function globalSearch(q) {
     return;
   }
 
-  // Tickers: surface common equities plus ticker-based funds and ETNs.
-  // Options and non-common capital-structure rows remain reachable from fund
-  // pages, but showing them here is noisy for the primary search workflow.
+  // Search also includes exact reviewed preferred series and corporate units.
   const tickerMatches = [];
   for (const entry of idx.tickers) {
     if (!isCommonStockSearchEntry(entry)) continue;
     const symbol = tickerSearchSymbol(entry).toUpperCase();
-    const productName = securityProductNameForCusip(entry.cusip).toUpperCase();
+    const productName = (securityInstrumentNames[entry.cusip]
+      || securityProductNameForCusip(entry.cusip)).toUpperCase();
     if (!symbol) continue;
     if (symbol === q) tickerMatches.push({ ...entry, _matchRank: 0 });
     else if (symbol.startsWith(q)) tickerMatches.push({ ...entry, _matchRank: 1 });
@@ -2160,7 +2185,7 @@ function globalSearch(q) {
         <span class="gsearch-tag ${esc(searchEntryTagClass(t))}">${esc(searchEntryTagLabel(t))}</span>
         <div style="min-width:0;display:flex;flex-direction:column">
           <span class="mono" style="font-weight:700;color:var(--ac)">${esc(tickerSearchSymbol(t))}</span>
-          <span title="${esc(displayIssuer(holdingDisplayCompany(t) || t.cusip || t.stock_id))}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name">${esc(compactHoldingName(t))}</span>
+          <span title="${esc(formattedHoldingCompany(t) || t.cusip || t.stock_id)}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name${securityInstrumentNames[t.cusip] ? " reviewed-instrument-name" : ""}">${esc(compactHoldingName(t))}</span>
         </div>
       </a>
     `).join("")}` : "";
@@ -2771,9 +2796,7 @@ function renderStock(sd, stockEntry = null) {
     cusip: cusipText,
     instrument_type: instrumentType,
   };
-  const issuerText = displayIssuer(
-    holdingDisplayCompany(securityHolding)
-  );
+  const issuerText = formattedHoldingCompany(securityHolding);
   const securityText = holdingDisplayLabel(securityHolding);
   const securityKindText = holdingDisplayKindLabel(securityHolding);
   const securityKindClass = holdingDisplayKindClass(securityHolding);
