@@ -2771,7 +2771,9 @@ function renderStock(sd, stockEntry = null) {
   const tickerMark = securityTickerMark(
     securityText || instrumentType
   );
-  const securityMetadataLabel = mappedSecurityLabel || (
+  // A CUSIP-level filer label can contain one contract's terms or even the
+  // opposite option side. It cannot describe this aggregate option position.
+  const securityMetadataLabel = ["CALL", "PUT", "OPT"].includes(instrumentType) ? "" : mappedSecurityLabel || (
     instrumentType !== "EQUITY" || !trustedTicker ? securityText : ""
   );
   const latestDateText = modeDate ? displayDate(modeDate) : "Most recent filings";
