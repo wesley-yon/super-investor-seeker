@@ -696,6 +696,20 @@ function holdingDisplayCompany(holding) {
     && FUND_PRODUCT_NAME_KINDS.has(securityKindForCusip(cusip))
   ) return mappedName;
   const issuer = String(holding.issuer || "").trim().replace(/\s+/g, " ");
+  const kind = securityKindForCusip(cusip);
+  const label = securityLabelForCusip(cusip);
+  const isFund = FUND_PRODUCT_NAME_KINDS.has(kind)
+    || securityHasEquityFundIdentity(cusip);
+  // Registrant names are shared by many products. Keep the exact SEC class
+  // description when a verified full product name is not available yet.
+  // Unknown finer kinds retain their existing label without being called ETFs.
+  if ((isFund || !kind) && label.includes(" — ")) return label;
+  if (isFund) {
+    const className = String(holding.class || "").trim().replace(/\s+/g, " ");
+    if (issuer && className && !issuer.toUpperCase().includes(className.toUpperCase())) {
+      return `${issuer} — ${className}`;
+    }
+  }
   return issuer && (!cusip || issuer.toUpperCase() !== cusip) ? issuer : "";
 }
 
@@ -2517,7 +2531,7 @@ function globalSearch(q) {
         <span class="gsearch-tag ${esc(searchEntryTagClass(t))}">${esc(searchEntryTagLabel(t))}</span>
         <div style="min-width:0;display:flex;flex-direction:column">
           <span class="mono" style="font-weight:700;color:var(--ac)">${esc(tickerSearchSymbol(t))}</span>
-          <span title="${esc(formattedHoldingCompany(t) || t.cusip || t.stock_id)}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name${securityInstrumentNames[t.cusip] ? " reviewed-instrument-name" : ""}">${esc(searchResultDescription(t))}</span>
+          <span title="${esc(formattedHoldingCompany(t) || t.cusip || t.stock_id)}" style="font-size:12px;color:var(--mt)" class="company-search-name${securityInstrumentNames[t.cusip] ? " reviewed-instrument-name" : ""}">${esc(searchResultDescription(t))}</span>
         </div>
       </a>
     `).join("")}` : "";
