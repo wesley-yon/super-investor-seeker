@@ -116,7 +116,8 @@ class FrontendSemanticsTests(unittest.TestCase):
             init_end = logic.index("// ---------- URL routing ----------")
             logic = logic[:init_start] + logic[init_end:]
         completed = subprocess.run(
-            ["node", "-e", f"{logic}\n{body}"],
+            ["node", "-"],
+            input=f"{logic}\n{body}",
             cwd=ROOT,
             check=True,
             capture_output=True,
