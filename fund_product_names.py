@@ -1,6 +1,6 @@
 """Exact-CUSIP descriptive names for gaps in the SEC fund-symbol directory.
 
-This reviewed issuer evidence can only name an already resolved ETF. It cannot
+This reviewed issuer evidence can only name an exactly identified ETF. It cannot
 resolve a symbol, classify an instrument, or change a position's identity.
 """
 from __future__ import annotations
@@ -16,10 +16,11 @@ from urllib.parse import urlparse
 from security_identity import normalize_security_label
 
 REVIEW_PATH = Path(__file__).with_name("reviewed_fund_product_names.json")
-REVIEW_SHA256 = "7f7b5fde09361720e6fcad6dab2b1cb5411c43f9e4bcbbdf336d3731d4a9fdfd"
+REVIEW_SHA256 = "7b22abae1b53c5d28d0a8d417209ccd3072e206df6df7264e2d9cafbb90f5687"
 PRODUCT_NAME_SOURCE = "reviewed_primary_product_name"
 ISSUER_HOSTS = frozenset({
     "www.innovatoretfs.com", "www.blackrock.com", "www.invesco.com",
+    "leverageshares.com", "bondbloxxetf.com",
 })
 
 
@@ -49,6 +50,7 @@ def validate_review_bytes(raw: bytes, *, as_of: date | None = None) -> dict:
             or url.username or url.password
             or not re.fullmatch(r"[a-f0-9]{64}", entry.get("sha256", ""))
             or not entry.get("locator")
+            or entry.get("source_format", "html") not in {"html", "rendered_html_fragment"}
             or not str(entry.get("retrieved_at", "")).startswith(review["as_of"] + "T")
         ):
             raise ValueError(f"invalid exact issuer product-name proof: {cusip}")
@@ -61,15 +63,24 @@ def load_review() -> dict:
 
 
 def reviewed_product_name(cusip: str, entry: dict) -> str | None:
-    """Return a description only when the independently resolved identity agrees."""
+    """Name an exact CUSIP without promoting an unresolved symbol mapping."""
     if (
         entry.get("type") != "EQUITY"
         or entry.get("security_kind") != "ETF"
-        or entry.get("mapping_status") != "resolved"
     ):
         return None
     proof = load_review().get(cusip)
-    if not proof or entry.get("ticker") != proof["ticker"]:
+    if not proof:
+        return None
+    resolved_match = (
+        entry.get("mapping_status") == "resolved"
+        and entry.get("ticker") == proof["ticker"]
+    )
+    unresolved_without_symbol = (
+        entry.get("mapping_status") == "unresolved"
+        and entry.get("ticker") is None
+    )
+    if not (resolved_match or unresolved_without_symbol):
         return None
     return proof["name"]
 

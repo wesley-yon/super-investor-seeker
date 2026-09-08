@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      reconcile_filings:
+        description: Replay broad filing indexes before refreshing the security master
+        required: false
+        default: true
+        type: boolean
 
 concurrency:
   group: data-maintenance
@@ -232,7 +237,8 @@ jobs:
       - name: Reconcile broad SEC filing indexes overnight
         if: >-
           steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
-          inputs.rebuild_security_master != true
+          inputs.rebuild_security_master != true &&
+          (github.event_name != 'workflow_dispatch' || inputs.reconcile_filings == true)
         timeout-minutes: 50
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
