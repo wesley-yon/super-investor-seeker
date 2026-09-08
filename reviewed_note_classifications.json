@@ -1,0 +1,1246 @@
+{
+  "reviewed_as_of": "2026-09-08",
+  "schema_version": 1,
+  "scope": "Exact NOTE classification repairs only; SEC CUSIP/symbol observations paired with Nasdaq exchange security descriptions. Preferred symbol spelling is retained from the existing reviewed display map. No quote eligibility is added.",
+  "securities": {
+    "012653200": {
+      "from_type": "NOTE",
+      "name": "Albemarle Corporation Depositary Shares each representing a 1/20th of 7.25% Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 54637: 012653200 | ALBPRA | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 231",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "ALBPRA",
+      "to_type": "PREF"
+    },
+    "14020Y870": {
+      "from_type": "NOTE",
+      "name": "Capital Group High Yield Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 55246: 14020Y870 | CGHY | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 1184",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "CGHY",
+      "to_type": "EQUITY"
+    },
+    "26922A602": {
+      "from_type": "NOTE",
+      "name": "Vident U.S. Bond Strategy ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 55829: 26922A602 | VBND | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 6995",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "VBND",
+      "to_type": "EQUITY"
+    },
+    "29287L874": {
+      "from_type": "NOTE",
+      "name": "TCW High Yield Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202605b.txt line 30060: 29287L874 | HYBX | 2026-05-22",
+          "retrieved_at": "2026-09-07T14:39:34.631156+00:00",
+          "sha256": "53f95c33fe5b1e427e02ea5a6c8206d06e9f781a25838b47cca6545f5c2b0364",
+          "url": "https://www.sec.gov/files/data/other/fails-deliver-data/cnsfails202605b.zip"
+        },
+        {
+          "locator": "line 3221",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "HYBX",
+      "to_type": "EQUITY"
+    },
+    "316188879": {
+      "from_type": "NOTE",
+      "name": "Fidelity Tactical Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 56109: 316188879 | FTBD | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2633",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "FTBD",
+      "to_type": "EQUITY"
+    },
+    "46435GAA0": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2026 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51334: 46435GAA0 | IBDR | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3267",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBDR",
+      "to_type": "EQUITY"
+    },
+    "46435U259": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2026 Term Muni Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 10077: 46435U259 | IBMO | 2026-08-04",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3298",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBMO",
+      "to_type": "EQUITY"
+    },
+    "46435U283": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2027 Term Muni Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 39708: 46435U283 | IBMP | 2026-08-11",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3299",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBMP",
+      "to_type": "EQUITY"
+    },
+    "46435U325": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2028 Term Muni Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57281: 46435U325 | IBMQ | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3300",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBMQ",
+      "to_type": "EQUITY"
+    },
+    "46436E130": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2033 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57288: 46436E130 | IBDY | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3274",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBDY",
+      "to_type": "EQUITY"
+    },
+    "46436E148": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2033 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51354: 46436E148 | IBTO | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2442",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTO",
+      "to_type": "EQUITY"
+    },
+    "46436E163": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2029 Term Muni Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57289: 46436E163 | IBMR | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3301",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBMR",
+      "to_type": "EQUITY"
+    },
+    "46436E205": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2029 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57291: 46436E205 | IBDU | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3270",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBDU",
+      "to_type": "EQUITY"
+    },
+    "46436E296": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2032 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57295: 46436E296 | IBTM | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2441",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTM",
+      "to_type": "EQUITY"
+    },
+    "46436E312": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2032 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57296: 46436E312 | IBDX | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3273",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBDX",
+      "to_type": "EQUITY"
+    },
+    "46436E379": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds 2029 Term High Yield and Income ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 28305: 46436E379 | IBHI | 2026-08-07",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3280",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBHI",
+      "to_type": "EQUITY"
+    },
+    "46436E387": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds 2028 Term High Yield and Income ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 33941: 46436E387 | IBHH | 2026-08-10",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3279",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBHH",
+      "to_type": "EQUITY"
+    },
+    "46436E460": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2031 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57297: 46436E460 | IBTL | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2440",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTL",
+      "to_type": "EQUITY"
+    },
+    "46436E486": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2031 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57298: 46436E486 | IBDW | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3272",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBDW",
+      "to_type": "EQUITY"
+    },
+    "46436E593": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2030 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57302: 46436E593 | IBTK | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2439",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTK",
+      "to_type": "EQUITY"
+    },
+    "46436E726": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2030 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51371: 46436E726 | IBDV | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3271",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBDV",
+      "to_type": "EQUITY"
+    },
+    "46436E825": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2029 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57308: 46436E825 | IBTJ | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2438",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTJ",
+      "to_type": "EQUITY"
+    },
+    "46436E833": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2028 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51374: 46436E833 | IBTI | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2437",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTI",
+      "to_type": "EQUITY"
+    },
+    "46436E841": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2027 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 45608: 46436E841 | IBTH | 2026-08-12",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2436",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTH",
+      "to_type": "EQUITY"
+    },
+    "46436E858": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2026 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 45609: 46436E858 | IBTG | 2026-08-12",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2435",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTG",
+      "to_type": "EQUITY"
+    },
+    "46438G158": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2036 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 33960: 46438G158 | IBTR | 2026-08-10",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2445",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTR",
+      "to_type": "EQUITY"
+    },
+    "46438G166": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2036 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57314: 46438G166 | IBCB | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3265",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBCB",
+      "to_type": "EQUITY"
+    },
+    "46438G216": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2032 Term Muni Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57318: 46438G216 | IBMU | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3304",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBMU",
+      "to_type": "EQUITY"
+    },
+    "46438G356": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2031 Term Muni Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57326: 46438G356 | IBMT | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3303",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBMT",
+      "to_type": "EQUITY"
+    },
+    "46438G372": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2035 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57327: 46438G372 | IBCA | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3264",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBCA",
+      "to_type": "EQUITY"
+    },
+    "46438G380": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2035 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 22408: 46438G380 | IBIL | 2026-08-06",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3294",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBIL",
+      "to_type": "EQUITY"
+    },
+    "46438G398": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2055 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 28345: 46438G398 | IBGL | 2026-08-07",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2427",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBGL",
+      "to_type": "EQUITY"
+    },
+    "46438G414": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2045 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51394: 46438G414 | IBGB | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2424",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBGB",
+      "to_type": "EQUITY"
+    },
+    "46438G422": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2035 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57328: 46438G422 | IBTQ | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2444",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTQ",
+      "to_type": "EQUITY"
+    },
+    "46438G505": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2026 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 28351: 46438G505 | IBIC | 2026-08-07",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3285",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBIC",
+      "to_type": "EQUITY"
+    },
+    "46438G513": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds 1-5 Year TIPS Ladder ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57334: 46438G513 | LDRI | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3995",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "LDRI",
+      "to_type": "EQUITY"
+    },
+    "46438G521": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds 1-5 Year Treasury Ladder ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57335: 46438G521 | LDRT | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3996",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "LDRT",
+      "to_type": "EQUITY"
+    },
+    "46438G604": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2027 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57338: 46438G604 | IBID | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3286",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBID",
+      "to_type": "EQUITY"
+    },
+    "46438G620": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2054 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51408: 46438G620 | IBGK | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2426",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBGK",
+      "to_type": "EQUITY"
+    },
+    "46438G638": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2044 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 22422: 46438G638 | IBGA | 2026-08-06",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2423",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBGA",
+      "to_type": "EQUITY"
+    },
+    "46438G646": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2034 Term Treasury ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51409: 46438G646 | IBTP | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2443",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBTP",
+      "to_type": "EQUITY"
+    },
+    "46438G653": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2034 Term Corporate ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 45643: 46438G653 | IBDZ | 2026-08-12",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3275",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBDZ",
+      "to_type": "EQUITY"
+    },
+    "46438G679": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2034 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 33983: 46438G679 | IBIK | 2026-08-10",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3293",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBIK",
+      "to_type": "EQUITY"
+    },
+    "46438G687": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Dec 2030 Term Muni Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57340: 46438G687 | IBMS | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3302",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBMS",
+      "to_type": "EQUITY"
+    },
+    "46438G703": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2028 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57341: 46438G703 | IBIE | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3287",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBIE",
+      "to_type": "EQUITY"
+    },
+    "46438G802": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2029 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51416: 46438G802 | IBIF | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3288",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBIF",
+      "to_type": "EQUITY"
+    },
+    "46438G851": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2033 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57347: 46438G851 | IBIJ | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3292",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBIJ",
+      "to_type": "EQUITY"
+    },
+    "46438G869": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2032 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57348: 46438G869 | IBII | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3291",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBII",
+      "to_type": "EQUITY"
+    },
+    "46438G877": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2031 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 51420: 46438G877 | IBIH | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3290",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBIH",
+      "to_type": "EQUITY"
+    },
+    "46438G885": {
+      "from_type": "NOTE",
+      "name": "iShares iBonds Oct 2030 Term TIPS ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57349: 46438G885 | IBIG | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3289",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "IBIG",
+      "to_type": "EQUITY"
+    },
+    "47804J685": {
+      "from_type": "NOTE",
+      "name": "John Hancock Core Plus Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57442: 47804J685 | JHCP | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3682",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "JHCP",
+      "to_type": "EQUITY"
+    },
+    "49446R687": {
+      "from_type": "NOTE",
+      "name": "Kimco Realty Corporation Depositary Shares, each representing 1/1,000th interest in a share of 7.25% Class N Cumulative Convertible Perpetual Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202607a.txt line 52779: 49446R687 | KIMPRN | 2026-07-14",
+          "retrieved_at": "2026-09-07T13:23:19.231946+00:00",
+          "sha256": "a0f4a8d3c88f8a81a3207a999008c656be251daac3df93acd04e71bb55b17f24",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202607a.zip"
+        },
+        {
+          "locator": "line 3855",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "KIMPRN",
+      "to_type": "PREF"
+    },
+    "64135A788": {
+      "from_type": "NOTE",
+      "name": "Neuberger Emerging Markets Debt Hard Currency ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 17012: 64135A788 | NEMD | 2026-08-05",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 4617",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "NEMD",
+      "to_type": "EQUITY"
+    },
+    "81589A874": {
+      "from_type": "NOTE",
+      "name": "SEI High Yield Bond & Alternative Credit ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58841: 81589A874 | LEND | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2881",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "LEND",
+      "to_type": "EQUITY"
+    },
+    "87191E105": {
+      "from_type": "NOTE",
+      "name": "TCW Core Plus Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59093: 87191E105 | FIXT | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2461",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "FIXT",
+      "to_type": "EQUITY"
+    },
+    "921937793": {
+      "from_type": "NOTE",
+      "name": "Vanguard Long-Term Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59674: 921937793 | BLV | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 839",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "BLV",
+      "to_type": "EQUITY"
+    },
+    "921937827": {
+      "from_type": "NOTE",
+      "name": "Vanguard Short-Term Bond ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59676: 921937827 | BSV | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 954",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "BSV",
+      "to_type": "EQUITY"
+    },
+    "97717X198": {
+      "from_type": "NOTE",
+      "name": "WisdomTree U.S. Corporate Bond Fund",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59880: 97717X198 | QIG | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5456",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "QIG",
+      "to_type": "EQUITY"
+    },
+    "97717X867": {
+      "from_type": "NOTE",
+      "name": "WisdomTree Emerging Markets Local Debt Fund",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59883: 97717X867 | ELD | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2043",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "ELD",
+      "to_type": "EQUITY"
+    }
+  }
+}

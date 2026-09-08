@@ -2697,6 +2697,10 @@ def validate_funds(
                 holding_context = (
                     f"fund file {fp.name} quarter {idx} holding {h_idx}"
                 )
+                from note_classification import reviewed_note_type
+                correction = reviewed_note_type(holding, published_holding_instrument_type(holding))
+                if correction:
+                    errors.append(f"{holding_context} retains a reviewed NOTE misclassification; expected {correction}")
                 if "reported_identity_evidence" in holding:
                     errors.append(
                         f"{holding_context} contains forbidden holding-local "
@@ -3515,6 +3519,9 @@ def validate_security_labels(
     }
     if payload.get('reviewed_displays', {}) != expected_displays:
         errors.append('security_labels.json reviewed displays differ from the verified registry')
+    from note_classification import public_note_type_corrections
+    if payload.get('note_type_corrections', {}) != public_note_type_corrections(registry):
+        errors.append('security_labels.json note corrections differ from the verified review')
     labels = payload.get("labels")
     if not isinstance(labels, dict):
         errors.append("security_labels.json must contain an object-valued labels map")
@@ -3695,9 +3702,18 @@ def validate_security_labels(
         source = str(
             registry_entry.get("security_kind_source") or ""
         ).strip()
+        from note_classification import classification_review, REVIEW_SOURCE
+        correction = classification_review().get(cusip)
+        reviewed_kind = (
+            source == REVIEW_SOURCE
+            and correction is not None
+            and registry_entry.get("type") == correction["to_type"]
+            and kind == correction["security_kind"]
+        )
         if not (
             source in SEC_METADATA_SOURCES
             or source == "filer_metadata"
+            or reviewed_kind
         ):
             bad_kind_sources.append(cusip)
         filer_text = " ".join(

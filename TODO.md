@@ -1,11 +1,10 @@
 # Next task
 
-- [ ] Fix note misclassification after the researched ticker release. Review the
-  59 first-party exact matches currently reported locally as NOTE (57 fund
-  shares and two preferred depositary shares). Keep genuine debt separate.
-  Preserve original filing fields and evidence; verify holdings, security-page
-  routing, search, totals, and historical comparisons before publishing any
-  classification correction. This release adds display tickers only.
+- [x] Implement the exact note classification repair for 59 reviewed securities
+  (57 ETF shares and two preferred depositary shares), with a staged historical
+  migration, ingestion protection, and old-link routing. See
+  `NOTE-CLASSIFICATION-REPAIR.md`. Production publication still requires the
+  merged code and a successful data workflow; the local repair is not live.
 
 - [ ] Fix preferred-share classification and display. Review preferred and
   depositary-share positions currently labeled as common equity or notes,

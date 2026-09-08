@@ -146,6 +146,19 @@ def public_display_mappings(cusip: str, review: dict | None) -> dict:
                 'ticker', 'match_kind', 'underlying_cusip',
                 'confidence_tier', 'reviewed_as_of', 'ticker_temporality',
             ) if entry.get(field) is not None}
+    # This explicit review changes the derived classification, not the CUSIP
+    # or symbol. Preserve the existing exact display proof at its corrected
+    # type; never infer a bridge from another row's aggregate registry type.
+    from note_classification import classification_review
+    correction = classification_review().get(cusip)
+    if correction and "NOTE" in result:
+        display = result["NOTE"]
+        if display["ticker"] != correction["ticker"] or display["match_kind"] != "exact_cusip":
+            raise SecurityMasterError(f"note-classification display conflict: {cusip}")
+        target = correction["to_type"]
+        if target in result and result[target]["ticker"] != display["ticker"]:
+            raise SecurityMasterError(f"corrected note-classification ticker conflict: {cusip}")
+        result.setdefault(target, dict(display))
     return result
 
 

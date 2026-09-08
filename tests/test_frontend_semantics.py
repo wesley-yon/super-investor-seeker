@@ -11,6 +11,19 @@ APPLICATION_JS = ROOT / "app.js"
 
 
 class FrontendSemanticsTests(unittest.TestCase):
+    def test_repaired_note_bookmarks_route_to_exact_fund_or_preferred(self) -> None:
+        result = self.run_javascript("""
+            securityNoteTypeCorrections = {'921937827': 'EQUITY', '012653200': 'PREF'};
+            securityReviewedDisplays = {'921937827|NOTE': {ticker:'BSV',match_kind:'exact_cusip'}};
+            console.log(JSON.stringify([
+              canonicalStockLookupId('921937827|NOTE'),
+              canonicalStockLookupId('012653200|NOTE'),
+              canonicalStockLookupId('921937827|CALL'),
+              canonicalStockLookupId('26210CAD6|NOTE'),
+            ]));
+        """)
+        self.assertEqual(['921937827', '012653200|PREF', '921937827|CALL', '26210CAD6|NOTE'], result)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = APPLICATION_JS.read_text()

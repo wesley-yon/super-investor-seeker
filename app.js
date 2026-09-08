@@ -108,6 +108,7 @@ let securityKinds = Object.create(null);
 let securityProductNames = Object.create(null);
 let securityReviewedDisplays = Object.create(null);
 let securityFundIdentities = new Set();
+let securityNoteTypeCorrections = Object.create(null);
 let securityLabelsPromise = null;
 const VALID_SECURITY_KINDS = new Set([
   "COMMON",
@@ -203,6 +204,11 @@ async function ensureSecurityLabels() {
         securityProductNames = normalizeSecurityTextMap(data.product_names);
         securityReviewedDisplays = normalizeReviewedDisplays(data.reviewed_displays);
         securityFundIdentities = normalizeSecurityFundIdentityPayload(data);
+        securityNoteTypeCorrections = Object.fromEntries(
+          Object.entries(data.note_type_corrections || {}).filter(([cusip, type]) =>
+            /^[A-Z0-9]{9}$/.test(cusip) && ["EQUITY", "PREF"].includes(type)
+          )
+        );
         return securityLabels;
       })
       .catch(error => {
@@ -215,6 +221,7 @@ async function ensureSecurityLabels() {
         securityProductNames = Object.create(null);
         securityReviewedDisplays = Object.create(null);
         securityFundIdentities = new Set();
+        securityNoteTypeCorrections = Object.create(null);
         throw (
           error instanceof DataContractMismatchError
           || error instanceof RequiredSiteDataError
@@ -470,6 +477,10 @@ function parseStockLookupId(stockId) {
 
 function canonicalStockLookupId(stockId) {
   const parsed = parseStockLookupId(stockId);
+  const correctedType = securityNoteTypeCorrections[parsed.id_base];
+  if (parsed.instrument_type === "NOTE" && correctedType) {
+    return stockLookupId(parsed.id_base, correctedType);
+  }
   if (holdingReviewedDisplay({cusip: parsed.id_base, instrument_type: parsed.instrument_type})) {
     return parsed.stock_id;
   }
