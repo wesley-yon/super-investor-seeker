@@ -934,6 +934,11 @@ gh_mutate_once() {
         update = read(".github/workflows/update-data.yml")
         refresh = read(".github/workflows/refresh-cusip-registry.yml")
         pages = read(".github/workflows/deploy-pages.yml")
+        for workflow in (update, refresh):
+            maintenance_queue = workflow.split("\nconcurrency:\n", 1)[1].split("\npermissions:", 1)[0]
+            self.assertIn("  group: data-maintenance\n", maintenance_queue)
+            self.assertIn("  cancel-in-progress: false\n", maintenance_queue)
+            self.assertIn("  queue: max\n", maintenance_queue)
         private_lock = (
             "concurrency:\n"
             "      group: private-release-publication\n"
