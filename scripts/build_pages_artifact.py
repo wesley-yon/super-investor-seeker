@@ -205,6 +205,16 @@ def build_artifact(
     if "const DATA_CONTRACT_VERSION" not in (source_root / "app.js").read_text(encoding="utf-8"):
         raise ValueError("app.js must contain the application data-contract guard")
 
+    # Never pair history-aware code with a pre-migration metadata snapshot.
+    if "const SECURITY_HISTORY_SCHEMA_VERSION" in (source_root / "app.js").read_text():
+        import sys
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from security_history import public_identity_history
+        labels = json.loads((source_root / "data/security_labels.json").read_text())
+        if labels.get("identity_history") != public_identity_history():
+            raise ValueError("security history is missing or stale; refresh the data snapshot before deployment")
+
     output_root.mkdir(parents=True, exist_ok=True)
     static_source_bytes = 0
     for relative in (*STATIC_FILES, *INDEX_FILES):

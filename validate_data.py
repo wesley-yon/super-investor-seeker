@@ -2701,6 +2701,10 @@ def validate_funds(
                 correction = reviewed_note_type(holding, published_holding_instrument_type(holding))
                 if correction:
                     errors.append(f"{holding_context} retains a reviewed NOTE misclassification; expected {correction}")
+                from preferred_classification import reviewed_preferred_type
+                preferred = reviewed_preferred_type(holding, published_holding_instrument_type(holding))
+                if preferred:
+                    errors.append(f"{holding_context} retains a reviewed preferred misclassification; expected {preferred}")
                 if "reported_identity_evidence" in holding:
                     errors.append(
                         f"{holding_context} contains forbidden holding-local "
@@ -3512,6 +3516,9 @@ def validate_security_labels(
     if not isinstance(payload, dict):
         return {}
     validate_data_contract(payload, "security_labels.json", errors)
+    from security_history import public_identity_history
+    if payload.get("identity_history") != public_identity_history():
+        errors.append("security_labels.json identity history differs from the reviewed graph")
     expected_displays = {
         f'{cusip}|{kind}': display
         for cusip, row in registry.items()
@@ -3522,6 +3529,10 @@ def validate_security_labels(
     from note_classification import public_note_type_corrections
     if payload.get('note_type_corrections', {}) != public_note_type_corrections(registry):
         errors.append('security_labels.json note corrections differ from the verified review')
+    from preferred_classification import public_preferred_metadata
+    for field, expected in public_preferred_metadata(registry).items():
+        if payload.get(field, {}) != expected:
+            errors.append(f"security_labels.json {field} differs from the preferred review")
     labels = payload.get("labels")
     if not isinstance(labels, dict):
         errors.append("security_labels.json must contain an object-valued labels map")
@@ -3703,7 +3714,8 @@ def validate_security_labels(
             registry_entry.get("security_kind_source") or ""
         ).strip()
         from note_classification import classification_review, REVIEW_SOURCE
-        correction = classification_review().get(cusip)
+        from preferred_classification import classification_review as preferred_review
+        correction = preferred_review().get(cusip) or classification_review().get(cusip)
         reviewed_kind = (
             source == REVIEW_SOURCE
             and correction is not None

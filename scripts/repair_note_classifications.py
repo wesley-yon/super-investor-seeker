@@ -33,8 +33,15 @@ def quarter_hash(quarter: dict) -> str:
     return calculate_quarter_composition_hash(quarter, current_hash_version=3)
 
 
-def repair_fund(fund: dict) -> tuple[dict, dict]:
-    """Return a copy with only verified NOTE types and their hashes changed."""
+def repair_fund(fund: dict, *, review: str = "note") -> tuple[dict, dict]:
+    """Return a copy with only the selected review types and hashes changed."""
+    if review == "preferred":
+        from preferred_classification import REVIEW_SHA256 as digest, reviewed_preferred_type as correct
+    elif review == "note":
+        digest, correct = REVIEW_SHA256, reviewed_note_type
+    else:
+        raise ValueError("unknown classification review")
+    repair_key = f"{review}_classification_repair"
     candidate = deepcopy(fund)
     counts: Counter[str] = Counter()
     changed_quarters = 0
@@ -42,7 +49,7 @@ def repair_fund(fund: dict) -> tuple[dict, dict]:
         changes = []
         for index, holding in enumerate(quarter.get("holdings", [])):
             kind = holding_instrument_type(holding)
-            corrected = reviewed_note_type(holding, kind)
+            corrected = correct(holding, kind)
             if not corrected:
                 continue
             # Explicit option class text also remains an option, even if a
@@ -78,10 +85,10 @@ def repair_fund(fund: dict) -> tuple[dict, dict]:
             restored["composition_hash"] = prior_hash
         if restored != before:
             raise ValueError("classification repair changed unrelated fields")
-        if "note_classification_repair" in quarter:
-            raise ValueError("repaired quarter acquired a new NOTE classification; review its provenance")
-        quarter["note_classification_repair"] = {
-            "review_sha256": REVIEW_SHA256,
+        if repair_key in quarter:
+            raise ValueError(f"repaired quarter acquired a new {review} classification; review its provenance")
+        quarter[repair_key] = {
+            "review_sha256": digest,
             "prior_composition_hash": prior_hash,
             "prior_composition_hash_version": before.get("composition_hash_version", 1),
             "changes": changes,
@@ -90,21 +97,28 @@ def repair_fund(fund: dict) -> tuple[dict, dict]:
     return candidate, {"quarters": changed_quarters, "rows": sum(counts.values()), "by_cusip": dict(counts)}
 
 
-def stage_fund(args: tuple[str, str]) -> dict:
-    source_path, staging = map(Path, args)
+def stage_fund(args: tuple[str, str, str]) -> dict:
+    source_path, staging = map(Path, args[:2])
+    review = args[2] if len(args) > 2 else "note"
     if source_path.is_symlink():
         raise ValueError(f"fund must not be a symlink: {source_path.name}")
     raw = source_path.read_bytes()
-    candidate, result = repair_fund(json.loads(raw))
+    candidate, result = repair_fund(json.loads(raw), review=review)
     result.update(name=source_path.name, before_sha256=hashlib.sha256(raw).hexdigest())
     if result["rows"]:
         (staging / source_path.name).write_text(json.dumps(candidate, separators=(",", ":")) + "\n")
     return result
 
 
-def repair_directory(funds_dir: Path, *, apply: bool, workers: int = 2) -> dict:
+def repair_directory(funds_dir: Path, *, apply: bool, workers: int = 2, review: str = "note") -> dict:
     """Stage and verify all files before mutation; retain originals on rollback."""
-    classification_review()  # Fail before any writes if review bytes changed.
+    if review == "preferred":
+        from preferred_classification import classification_review as load, REVIEW_SHA256 as digest
+    elif review == "note":
+        load, digest = classification_review, REVIEW_SHA256
+    else:
+        raise ValueError("unknown classification review")
+    load()  # Fail before any writes if review bytes changed.
     funds_dir = funds_dir.resolve()
     if not funds_dir.is_dir():
         raise ValueError("funds directory is missing")
@@ -113,7 +127,7 @@ def repair_directory(funds_dir: Path, *, apply: bool, workers: int = 2) -> dict:
         raise ValueError("funds directory is empty")
     with tempfile.TemporaryDirectory(prefix=".note-repair-", dir=funds_dir.parent) as temporary:
         staging = Path(temporary)
-        inputs = [(str(p), str(staging)) for p in paths]
+        inputs = [(str(p), str(staging), review) for p in paths]
         if workers == 1:
             results = list(map(stage_fund, inputs))
         else:
@@ -124,7 +138,7 @@ def repair_directory(funds_dir: Path, *, apply: bool, workers: int = 2) -> dict:
         for row in changed:
             counts.update(row["by_cusip"])
         report = {
-            "review_sha256": REVIEW_SHA256, "mode": "apply" if apply else "dry_run",
+            "review_sha256": digest, "mode": "apply" if apply else "dry_run",
             "funds": len(changed), "quarters": sum(r["quarters"] for r in changed),
             "rows": sum(counts.values()), "by_cusip": dict(sorted(counts.items())),
             "original_fields_preserved": True,

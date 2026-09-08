@@ -9,6 +9,7 @@ from unittest import mock
 import data_contract
 import pipeline
 import validate_data
+from security_history import public_identity_history
 from scripts import annotate_ticker_health
 
 
@@ -776,6 +777,7 @@ class GeneratedDataContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             labels_path = Path(tmpdir) / "security_labels.json"
             labels_path.write_text(json.dumps({
+                "identity_history": public_identity_history(),
                 "data_contract_version": data_contract.DATA_CONTRACT_VERSION,
                 "labels": {
                     cusip: entry["security_label"]
@@ -924,6 +926,7 @@ class GeneratedDataContractTests(unittest.TestCase):
                     },
                 }
                 payload = {
+                    "identity_history": public_identity_history(),
                     "data_contract_version": (
                         data_contract.DATA_CONTRACT_VERSION
                     ),
@@ -1311,14 +1314,14 @@ class GeneratedDataContractTests(unittest.TestCase):
                 f"async function {loader}(",
                 f"function {renderer}(",
             )
-            await_pos = detail_load.rindex("await ")
-            blocked_pos = detail_load.index(
-                "if (dataContractBlocked)",
-                await_pos,
-            )
-            render_pos = detail_load.index(f"{renderer}(")
-            self.assertLess(await_pos, blocked_pos)
-            self.assertLess(blocked_pos, render_pos)
+            # The stock loader has both combined-class and single-identifier
+            # paths. Each render must check maintenance after its own await.
+            for render in re.finditer(rf"{renderer}\(", detail_load):
+                render_pos = render.start()
+                await_pos = detail_load.rfind("await ", 0, render_pos)
+                blocked_pos = detail_load.index("if (dataContractBlocked)", await_pos)
+                self.assertLess(await_pos, blocked_pos)
+                self.assertLess(blocked_pos, render_pos)
 
     def test_update_workflow_publishes_private_snapshot_without_git_data(
         self,
