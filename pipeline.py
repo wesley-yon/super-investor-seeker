@@ -107,6 +107,9 @@ from reviewed_ticker_map import (
     apply_review, public_instrument_mappings, REVIEW_SOURCE, load_review,
     public_display_mappings, reviewed_display_ticker, assert_display_compatibility,
 )
+from fund_product_names import (
+    PRODUCT_NAME_SOURCE, reviewed_product_name, valid_reviewed_product_name,
+)
 from sec_security_master import (
     DEFAULT_MASTER_PATH as SEC_SECURITY_MASTER_PATH,
     DEFAULT_SOURCE_STATE_PATH as SEC_SOURCE_STATE_PATH,
@@ -3259,6 +3262,10 @@ def build_cusip_registry() -> CusipRegistry:
                 *(entry.get("sources") or []),
                 "sec_fund_series",
             })
+        elif product_name := reviewed_product_name(cusip, entry):
+            entry["product_name"] = product_name
+            entry["product_name_source"] = PRODUCT_NAME_SOURCE
+            entry["sources"] = sorted({*(entry.get("sources") or []), PRODUCT_NAME_SOURCE})
         typed = public_instrument_mappings(cusip, instrument_type, master.get("records", {}))
         if typed:
             entry["instrument_mappings"] = typed
@@ -3331,6 +3338,8 @@ def validate_cusip_registry(
         elif entry.get("product_name_source") == "sec_fund_series" and (
             entry.get("product_name") != master_entry.get("fund_series_name")
         ):
+            mismatched_master.append(key)
+        if entry.get("product_name_source") == PRODUCT_NAME_SOURCE and not valid_reviewed_product_name(cusip, entry):
             mismatched_master.append(key)
 
         if isinstance(master_entry, dict) and any(
