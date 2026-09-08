@@ -9,6 +9,7 @@ from unittest import mock
 import data_contract
 import pipeline
 import validate_data
+from security_history import public_identity_history
 from scripts import annotate_ticker_health
 
 
@@ -776,6 +777,7 @@ class GeneratedDataContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             labels_path = Path(tmpdir) / "security_labels.json"
             labels_path.write_text(json.dumps({
+                "identity_history": public_identity_history(),
                 "data_contract_version": data_contract.DATA_CONTRACT_VERSION,
                 "labels": {
                     cusip: entry["security_label"]
@@ -924,6 +926,7 @@ class GeneratedDataContractTests(unittest.TestCase):
                     },
                 }
                 payload = {
+                    "identity_history": public_identity_history(),
                     "data_contract_version": (
                         data_contract.DATA_CONTRACT_VERSION
                     ),

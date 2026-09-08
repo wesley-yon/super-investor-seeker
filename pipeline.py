@@ -6908,6 +6908,8 @@ def save_state(state: dict) -> None:
         out["note_classification_review_sha256"] = state["note_classification_review_sha256"]
     if state.get("preferred_classification_review_sha256") is not None:
         out["preferred_classification_review_sha256"] = state["preferred_classification_review_sha256"]
+    if state.get("security_history_review_sha256") is not None:
+        out["security_history_review_sha256"] = state["security_history_review_sha256"]
     previous_semantic = dict(previous or {})
     previous_last_run = previous_semantic.pop("last_run", None)
     if previous_semantic == out and _is_strict_utc_timestamp(
@@ -8704,6 +8706,7 @@ def write_security_labels(registry: dict[str, dict]) -> None:
 
     from note_classification import public_note_type_corrections
     from preferred_classification import public_preferred_metadata
+    from security_history import public_identity_history
 
     labels: dict[str, str] = {}
     kinds: dict[str, str] = {}
@@ -8758,6 +8761,7 @@ def write_security_labels(registry: dict[str, dict]) -> None:
             "reviewed_displays": displays,
             "note_type_corrections": public_note_type_corrections(registry),
             **public_preferred_metadata(registry),
+            "identity_history": public_identity_history(),
         },
         indent=None,
         sort_keys=True,

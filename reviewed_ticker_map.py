@@ -112,6 +112,11 @@ def apply_review(master: dict, root: Path) -> dict:
         if entry.get('historical_retired') and key in records:
             records[key] = {**records[key], 'price_lookup_allowed': False,
                             'trading_status': 'historical_retired_identity'}
+    from security_history import historical_security_keys
+    for key in historical_security_keys(review):
+        if key in records:
+            records[key] = {**records[key], 'price_lookup_allowed': False,
+                            'trading_status': 'historical_retired_identity'}
     return {**master, 'records': records}
 
 

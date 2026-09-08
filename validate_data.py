@@ -3516,6 +3516,9 @@ def validate_security_labels(
     if not isinstance(payload, dict):
         return {}
     validate_data_contract(payload, "security_labels.json", errors)
+    from security_history import public_identity_history
+    if payload.get("identity_history") != public_identity_history():
+        errors.append("security_labels.json identity history differs from the reviewed graph")
     expected_displays = {
         f'{cusip}|{kind}': display
         for cusip, row in registry.items()

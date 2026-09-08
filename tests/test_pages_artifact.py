@@ -58,6 +58,22 @@ class PagesArtifactTests(unittest.TestCase):
             max_archive_bytes=1_000_000,
         )
 
+    def test_history_aware_build_requires_matching_review_metadata(self):
+        from security_history import public_identity_history
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = self.make_source(root)
+            with (source / "app.js").open("a") as handle:
+                handle.write("const SECURITY_HISTORY_SCHEMA_VERSION = 1;\n")
+            with self.assertRaisesRegex(ValueError, "history is missing or stale"):
+                self.build(source, root / "rejected")
+            self.assertFalse((root / "rejected").exists())
+            labels = source / "data/security_labels.json"
+            payload = json.loads(labels.read_text())
+            payload["identity_history"] = public_identity_history()
+            labels.write_text(json.dumps(payload))
+            self.build(source, root / "accepted")
+
     def test_build_is_bounded_compressed_and_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

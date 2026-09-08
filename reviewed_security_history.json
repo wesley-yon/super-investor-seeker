@@ -1,0 +1,1002 @@
+{
+  "groups": {
+    "01626W101|EQUITY": {
+      "cusips": [
+        "01626W101",
+        "01626W200"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-01",
+          "from_cusip": "01626W101",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1809104/000162828026044110/alit-20260618xexx991.htm",
+            "https://www.sec.gov/Archives/edgar/data/1809104/000162828026052636/alit-20260630.htm"
+          ],
+          "to_cusip": "01626W200"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Alight",
+      "ticker": "ALIT"
+    },
+    "02462A104|EQUITY": {
+      "cusips": [
+        "02462A104",
+        "02462A203"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-06",
+          "from_cusip": "02462A104",
+          "sources": [
+            "https://m.nasdaqtrader.com/TraderNews.aspx?id=ECA2026-455"
+          ],
+          "to_cusip": "02462A203"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "American Bitcoin",
+      "ticker": "ABTC"
+    },
+    "040413106|EQUITY": {
+      "cusips": [
+        "040413106",
+        "040413205"
+      ],
+      "events": [
+        {
+          "description": "Stock split",
+          "effective_date": "2024-12-03",
+          "from_cusip": "040413106",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1596532/000159653224000402/anet-20241203.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "040413205"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Arista Networks",
+      "ticker": "ANET"
+    },
+    "04351P101|EQUITY": {
+      "cusips": [
+        "04351P101",
+        "K08588103"
+      ],
+      "events": [
+        {
+          "description": "ADS to ordinary shares",
+          "effective_date": "2026-04-20",
+          "from_cusip": "04351P101",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1612042/000119312526162766/d620541d6k.htm",
+            "https://www.sec.gov/Archives/edgar/data/1612042/000119312526165330/d139196d6k.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "K08588103"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Ascendis Pharma",
+      "ticker": "ASND"
+    },
+    "046353108|EQUITY": {
+      "cusips": [
+        "046353108",
+        "G0593M107"
+      ],
+      "events": [
+        {
+          "description": "ADR to ordinary shares",
+          "effective_date": "2026-02-02",
+          "from_cusip": "046353108",
+          "sources": [
+            "https://www.astrazeneca.com/investor-relations/faqs.html",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "G0593M107"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "AstraZeneca",
+      "ticker": "AZN"
+    },
+    "084670207|EQUITY": {
+      "cusips": [
+        "084670207",
+        "084670702"
+      ],
+      "events": [
+        {
+          "description": "Stock split",
+          "effective_date": "2010-01-21",
+          "from_cusip": "084670207",
+          "sources": [
+            "https://www.berkshirehathaway.com/2010ar/201010-k.pdf",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "084670702"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Berkshire Hathaway Class B",
+      "ticker": "BRK.B"
+    },
+    "08862L202|EQUITY": {
+      "cusips": [
+        "08862L202",
+        "08862L301"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-13",
+          "from_cusip": "08862L202",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1641631/000149315226032621/form8-k.htm",
+            "https://www.sec.gov/Archives/edgar/data/1641631/000149315226037781/form10-q.htm"
+          ],
+          "to_cusip": "08862L301"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Beyond Air",
+      "ticker": "XAIR"
+    },
+    "09247X101|EQUITY": {
+      "cusips": [
+        "09247X101",
+        "09290D101"
+      ],
+      "events": [
+        {
+          "description": "Holding-company reorganization",
+          "effective_date": "2024-10-01",
+          "from_cusip": "09247X101",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1364742/000119312525065568/d907502d424b5.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "09290D101"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "BlackRock",
+      "ticker": "BLK"
+    },
+    "125509109|EQUITY": {
+      "cusips": [
+        "125509109",
+        "125523100"
+      ],
+      "events": [
+        {
+          "description": "Holding-company merger",
+          "effective_date": "2018-12-20",
+          "from_cusip": "125509109",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/701221/000114036118045478/ex99_1.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "125523100"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Cigna",
+      "ticker": "CI"
+    },
+    "12626K203|EQUITY": {
+      "cusips": [
+        "12626K203",
+        "G25508105"
+      ],
+      "events": [
+        {
+          "description": "ADS to ordinary shares",
+          "effective_date": "2023-09-25",
+          "from_cusip": "12626K203",
+          "sources": [
+            "https://www.crh.com/investors/share-price/",
+            "https://www.sec.gov/Archives/edgar/data/849395/000165495423012182/a4349n.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "G25508105"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "CRH",
+      "ticker": "CRH"
+    },
+    "231269309|EQUITY": {
+      "cusips": [
+        "231269309",
+        "231269408"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-06",
+          "from_cusip": "231269309",
+          "sources": [
+            "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2026-454",
+            "https://www.sec.gov/Archives/edgar/data/1108205/000110820526000116/cris-prospectusaugust2026.htm",
+            "https://www.sec.gov/Archives/edgar/data/1108205/000110820526000118/cris-20260630.htm"
+          ],
+          "to_cusip": "231269408"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Curis",
+      "ticker": "CRIS"
+    },
+    "25401N507|EQUITY": {
+      "cusips": [
+        "25401N507",
+        "25401N606"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-24",
+          "from_cusip": "25401N507",
+          "sources": [
+            "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2026-518"
+          ],
+          "to_cusip": "25401N606"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Digital Brands Group",
+      "ticker": "DBGI"
+    },
+    "26614N102|EQUITY": {
+      "cusips": [
+        "26614N102",
+        "26614N201"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-06-24",
+          "from_cusip": "26614N102",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1666700/000166670026000046/dd-20260623.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "26614N201"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "DuPont",
+      "ticker": "DD"
+    },
+    "28059P501|EQUITY": {
+      "cusips": [
+        "28059P501",
+        "28059P600"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-13",
+          "from_cusip": "28059P501",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1809750/000147793226004225/edbl_8k.htm",
+            "https://www.sec.gov/Archives/edgar/data/1809750/000147793226005081/edbl_10q.htm"
+          ],
+          "to_cusip": "28059P600"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Edible Garden",
+      "ticker": "EDBL"
+    },
+    "30231G102|EQUITY": {
+      "cusips": [
+        "30231G102",
+        "30233Q108"
+      ],
+      "events": [
+        {
+          "description": "Holding-company redomiciliation",
+          "effective_date": "2026-07-01",
+          "from_cusip": "30231G102",
+          "sources": [
+            "https://investor.exxonmobil.com/sec-filings/all-sec-filings/content/0000876661-26-000593/ruleprovisionnotice.htm"
+          ],
+          "to_cusip": "30233Q108"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "ExxonMobil",
+      "ticker": "XOM"
+    },
+    "36117V402|EQUITY": {
+      "cusips": [
+        "36117V402",
+        "36117V501"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-13",
+          "from_cusip": "36117V402",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1066923/000121390026076459/ea0297411-8k_future.htm",
+            "https://www.sec.gov/Archives/edgar/data/1066923/000121390026090012/ea0301500-10q_future.htm"
+          ],
+          "to_cusip": "36117V501"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Future FinTech",
+      "ticker": "FTFT"
+    },
+    "369604103|EQUITY": {
+      "cusips": [
+        "369604103",
+        "369604301"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2021-08-02",
+          "from_cusip": "369604103",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/40545/000120677421001925/ge3936671-ex911.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "369604301"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "GE Aerospace",
+      "ticker": "GE"
+    },
+    "372446302|EQUITY": {
+      "cusips": [
+        "372446302",
+        "372446401"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-16",
+          "from_cusip": "372446302",
+          "sources": [
+            "https://m.nasdaqtrader.com/TraderNews.aspx?id=ECA2026-495"
+          ],
+          "to_cusip": "372446401"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Genprex",
+      "ticker": "GNPX"
+    },
+    "38259P508|EQUITY": {
+      "cusips": [
+        "38259P508",
+        "02079K305"
+      ],
+      "events": [
+        {
+          "description": "Google to Alphabet reorganization",
+          "effective_date": "2015-10-05",
+          "from_cusip": "38259P508",
+          "sources": [
+            "https://www.nasdaqtrader.com/TraderNews.aspx?id=ETA2015-156",
+            "https://www.sec.gov/Archives/edgar/data/1652044/000119312515336577/d82837d8k12b.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "02079K305"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Alphabet Class A",
+      "ticker": "GOOGL"
+    },
+    "415864107|EQUITY": {
+      "cusips": [
+        "415864107",
+        "29390K102"
+      ],
+      "events": [
+        {
+          "description": "Mandatory exchange; cash and shares",
+          "effective_date": "2026-06-01",
+          "from_cusip": "415864107",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/45876/000087666126000489/ruleprovisionnotice.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "29390K102"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Enviri",
+      "ticker": "NVRI"
+    },
+    "464285105|EQUITY": {
+      "cusips": [
+        "464285105",
+        "464285204"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2021-05-24",
+          "from_cusip": "464285105",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1278680/000143774922004899/iau20211231_10k.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "464285204"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "ETF",
+      "name": "iShares Gold Trust",
+      "ticker": "IAU"
+    },
+    "50540R409|EQUITY": {
+      "cusips": [
+        "50540R409",
+        "504922105"
+      ],
+      "events": [
+        {
+          "description": "Holding-company reorganization",
+          "effective_date": "2024-05-17",
+          "from_cusip": "50540R409",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/920148/000092014824000063/lh-20240517.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "504922105"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Labcorp",
+      "ticker": "LH"
+    },
+    "57142B104|EQUITY": {
+      "cusips": [
+        "57142B104",
+        "57142B203"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-01",
+          "from_cusip": "57142B104",
+          "sources": [
+            "https://www.nasdaqtrader.com/TraderNews.aspx?id=eca2026-447",
+            "https://www.sec.gov/Archives/edgar/data/1522540/000152254026000063/mq-20260630.htm"
+          ],
+          "to_cusip": "57142B203"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Marqeta",
+      "ticker": "MQ"
+    },
+    "585055106|EQUITY": {
+      "cusips": [
+        "585055106",
+        "G5960L103"
+      ],
+      "events": [
+        {
+          "description": "Holding-company merger",
+          "effective_date": "2015-01-26",
+          "from_cusip": "585055106",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1613103/000161310315000008/mdt-plcx2015q3x10q.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "G5960L103"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Medtronic",
+      "ticker": "MDT"
+    },
+    "67054R203|EQUITY": {
+      "cusips": [
+        "67054R203",
+        "67054R302"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-20",
+          "from_cusip": "67054R203",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1787518/000118518526003604/t3def10q063026.htm"
+          ],
+          "to_cusip": "67054R302"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "T3 Defense",
+      "ticker": "DFNS"
+    },
+    "693691107|EQUITY": {
+      "cusips": [
+        "693691107",
+        "693691206"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-13",
+          "from_cusip": "693691107",
+          "sources": [
+            "https://investors.publicsq.com/news/news-details/2026/PSQ-Holdings-Announces-1-For-15-Reverse-Stock-Split/default.aspx"
+          ],
+          "to_cusip": "693691206"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "PSQ Holdings",
+      "ticker": "PSQH"
+    },
+    "72346Q104|EQUITY": {
+      "cusips": [
+        "72346Q104",
+        "72348N109"
+      ],
+      "events": [
+        {
+          "description": "Holding-company merger",
+          "effective_date": "2026-01-02",
+          "from_cusip": "72346Q104",
+          "sources": [
+            "https://www.nasdaqtrader.com/TraderNews.aspx?id=eca2025-721",
+            "https://www.sec.gov/Archives/edgar/data/2082866/000114036126000050/ef20061822_8k12b.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "72348N109"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Pinnacle Financial Partners",
+      "ticker": "PNFP"
+    },
+    "74319X207|EQUITY": {
+      "cusips": [
+        "74319X207",
+        "74319X306",
+        "74319X405"
+      ],
+      "events": [
+        {
+          "description": "1-for-25 reverse split",
+          "effective_date": "2026-07-07",
+          "from_cusip": "74319X207",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1859807/000121390026075502/ea0297130-8k_profusa.htm",
+            "https://www.sec.gov/Archives/edgar/data/1859807/000121390026089362/ea030148402-8k_profusa.htm",
+            "https://www.sec.gov/Archives/edgar/data/1859807/000121390026091696/ea0300132-10q_profusa.htm"
+          ],
+          "to_cusip": "74319X306"
+        },
+        {
+          "description": "1-for-4 reverse split",
+          "effective_date": "2026-08-17",
+          "from_cusip": "74319X306",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1859807/000121390026089362/ea030148402-8k_profusa.htm",
+            "https://www.sec.gov/Archives/edgar/data/1859807/000121390026091696/ea0300132-10q_profusa.htm"
+          ],
+          "to_cusip": "74319X405"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Profusa",
+      "ticker": "PFSA"
+    },
+    "74640Y106|EQUITY": {
+      "cusips": [
+        "74640Y106",
+        "74640Y304"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-20",
+          "from_cusip": "74640Y106",
+          "sources": [
+            "https://www.nasdaqtrader.com/TraderNews.aspx?id=eca2026-502"
+          ],
+          "to_cusip": "74640Y304"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Purple Innovation",
+      "ticker": "PRPL"
+    },
+    "773122106|EQUITY": {
+      "cusips": [
+        "773122106",
+        "773121108"
+      ],
+      "events": [
+        {
+          "description": "Holding-company reorganization",
+          "effective_date": "2025-05-23",
+          "from_cusip": "773122106",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1819994/000162828025027473/rklb-20250523.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "773121108"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Rocket Lab",
+      "ticker": "RKLB"
+    },
+    "811916105|EQUITY": {
+      "cusips": [
+        "811916105",
+        "811927102"
+      ],
+      "events": [
+        {
+          "description": "Mandatory exchange and distribution",
+          "effective_date": "2026-06-05",
+          "from_cusip": "811916105",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/876661/000087666126000507/ruleprovisionnotice.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "811927102"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Seabridge Gold",
+      "ticker": "SA"
+    },
+    "81761L102|EQUITY": {
+      "cusips": [
+        "81761L102",
+        "81761L201"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-07",
+          "from_cusip": "81761L102",
+          "sources": [
+            "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2026-468"
+          ],
+          "to_cusip": "81761L201"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Service Properties Trust",
+      "ticker": "SVC"
+    },
+    "826165102|EQUITY": {
+      "cusips": [
+        "826165102",
+        "826165201"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2023-12-20",
+          "from_cusip": "826165102",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1879726/000149315223045419/form8-k.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "826165201"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Sidus Space",
+      "ticker": "SIDU"
+    },
+    "868927104|EQUITY": {
+      "cusips": [
+        "868927104",
+        "868927203"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2024-08-19",
+          "from_cusip": "868927104",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1936224/000095017024098593/srfm-20240816.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "868927203"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Surf Air Mobility",
+      "ticker": "SRFM"
+    },
+    "884903808|EQUITY": {
+      "cusips": [
+        "884903808",
+        "884903881"
+      ],
+      "events": [
+        {
+          "description": "Capital return and share consolidation",
+          "effective_date": "2026-05-04",
+          "from_cusip": "884903808",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1075124/000119312526205012/d116991dex991.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "884903881"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Thomson Reuters",
+      "ticker": "TRI"
+    },
+    "89151E109|EQUITY": {
+      "cusips": [
+        "89151E109",
+        "F92124100"
+      ],
+      "events": [
+        {
+          "description": "ADR to ordinary shares",
+          "effective_date": "2025-12-08",
+          "from_cusip": "89151E109",
+          "sources": [
+            "https://totalenergies.com/investors/shares-and-dividends/totalenergies-shares/totalenergies-shares-listed-on-the-nyse",
+            "https://totalenergies.com/sites/g/files/nytnzq121/files/documents/totalenergies_dr-market-announcement-jp-morgan_2025_en.pdf",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "F92124100"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "TotalEnergies",
+      "ticker": "TTE"
+    },
+    "G0250X107|EQUITY": {
+      "cusips": [
+        "G0250X107",
+        "G0250X149"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-01-15",
+          "from_cusip": "G0250X107",
+          "sources": [
+            "https://www.amcor.com/media/news/amcor-completes-one-for-five-reverse-stock-split",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "G0250X149"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Amcor",
+      "ticker": "AMCR"
+    },
+    "G39108108|EQUITY": {
+      "cusips": [
+        "G39108108",
+        "G39104107"
+      ],
+      "events": [
+        {
+          "description": "Redomiciliation",
+          "effective_date": "2026-07-20",
+          "from_cusip": "G39108108",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1718512/000162828026048761/gtes-20260720.htm"
+          ],
+          "to_cusip": "G39104107"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Gates Industrial",
+      "ticker": "GTES"
+    },
+    "G5494J103|EQUITY": {
+      "cusips": [
+        "G5494J103",
+        "G54950103"
+      ],
+      "events": [
+        {
+          "description": "Holding-company reorganization",
+          "effective_date": "2023-03-01",
+          "from_cusip": "G5494J103",
+          "sources": [
+            "https://www.linde.com/investors/stock-and-dividend-information",
+            "https://www.sec.gov/Archives/edgar/data/1707925/000162828023013457/lin-20230331.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "G54950103"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Linde",
+      "ticker": "LIN"
+    },
+    "G5S37H101|EQUITY": {
+      "cusips": [
+        "G5S37H101",
+        "G5T40M104"
+      ],
+      "events": [
+        {
+          "description": "Holding-company redomiciliation",
+          "effective_date": "2026-07-01",
+          "from_cusip": "G5S37H101",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1997464/000119312526291648/d100552d6k.htm"
+          ],
+          "to_cusip": "G5T40M104"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Marex",
+      "ticker": "MRX"
+    },
+    "G87264100|EQUITY": {
+      "cusips": [
+        "G87264100",
+        "87877F103"
+      ],
+      "events": [
+        {
+          "description": "Redomiciliation",
+          "effective_date": "2026-07-07",
+          "from_cusip": "G87264100",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1534675/000149315226032342/form8-k.htm"
+          ],
+          "to_cusip": "87877F103"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Tecnoglass",
+      "ticker": "TGLS"
+    },
+    "H84989104|EQUITY": {
+      "cusips": [
+        "H84989104",
+        "G87052109"
+      ],
+      "events": [
+        {
+          "description": "Redomiciliation",
+          "effective_date": "2024-09-30",
+          "from_cusip": "H84989104",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/1385157/000155837024015227/tel-20240927x10k.htm",
+            "https://www.sec.gov/files/investment/13flist2026q2-txt.txt"
+          ],
+          "to_cusip": "G87052109"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "TE Connectivity",
+      "ticker": "TEL"
+    },
+    "N3144W105|EQUITY": {
+      "cusips": [
+        "N3144W105",
+        "G3314M109"
+      ],
+      "events": [
+        {
+          "description": "Redomiciliation",
+          "effective_date": "2026-07-14",
+          "from_cusip": "N3144W105",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/2126198/000143774926024670/xprol20260630_10q.htm"
+          ],
+          "to_cusip": "G3314M109"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Expro",
+      "ticker": "XPRO"
+    },
+    "Y73118112|EQUITY": {
+      "cusips": [
+        "Y73118112",
+        "Y73118120"
+      ],
+      "events": [
+        {
+          "description": "Reverse split",
+          "effective_date": "2026-07-09",
+          "from_cusip": "Y73118112",
+          "sources": [
+            "https://www.sec.gov/Archives/edgar/data/2039060/000114036126028178/ef20077616_6k.htm"
+          ],
+          "to_cusip": "Y73118120"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Robin Energy",
+      "ticker": "RBNE"
+    },
+    "Y95308105|EQUITY": {
+      "cusips": [
+        "Y95308105",
+        "94352A104"
+      ],
+      "events": [
+        {
+          "description": "Redomiciliation",
+          "effective_date": "2026-08-10",
+          "from_cusip": "Y95308105",
+          "sources": [
+            "https://ir.wavelifesciences.com/news-releases/news-release-details/wave-life-sciences-announces-completion-redomiciliation-delaware"
+          ],
+          "to_cusip": "94352A104"
+        }
+      ],
+      "instrument_type": "EQUITY",
+      "kind": "COMMON",
+      "name": "Wave Life Sciences",
+      "ticker": "WVE"
+    }
+  },
+  "reviewed_as_of": "2026-09-08",
+  "schema_version": 1,
+  "scope": "Display continuity only. Preserve each original filing identity and quantity basis; never aggregate across these links. Dates describe the documented legal or trading change, not a rule for rewriting quarter-end filings."
+}

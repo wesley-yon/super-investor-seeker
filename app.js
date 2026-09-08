@@ -104,6 +104,8 @@ function normalizeInstrumentType(type) {
 }
 
 let securityLabels = Object.create(null);
+const SECURITY_HISTORY_SCHEMA_VERSION = 1;
+let securityIdentityHistory = { groups: Object.create(null), byKey: Object.create(null) };
 let securityKinds = Object.create(null);
 let securityProductNames = Object.create(null);
 let securityReviewedDisplays = Object.create(null);
@@ -164,6 +166,113 @@ function holdingReviewedDisplay(holding) {
   return securityReviewedDisplays[`${cusip}|${holdingInstrumentType(holding)}`];
 }
 
+function normalizeIdentityHistory(payload) {
+  const validDate = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+  if (payload?.schema_version !== SECURITY_HISTORY_SCHEMA_VERSION
+      || !validDate(payload.reviewed_as_of)
+      || !payload.groups || typeof payload.groups !== "object" || Array.isArray(payload.groups)) {
+    throw new Error("Missing or unsupported reviewed identifier history");
+  }
+  const groups = Object.create(null), byKey = Object.create(null);
+  for (const [id, source] of Object.entries(payload.groups)) {
+    if (!source || !["EQUITY", "PREF", "WARRANT"].includes(source.instrument_type)
+        || typeof source.name !== "string" || !source.name.trim()
+        || !/^[A-Z0-9][A-Z0-9.\-/]{0,19}$/.test(source.ticker || "")
+        || !["COMMON", "ETF", "PREFERRED", "WARRANT"].includes(source.kind)
+        || !Array.isArray(source.cusips) || source.cusips.length < 2
+        || !Array.isArray(source.events) || source.events.length !== source.cusips.length - 1
+        || id !== `${source.cusips[0]}|${source.instrument_type}`) {
+      throw new Error("Invalid reviewed identifier group");
+    }
+    let previousDate = "";
+    for (let i = 0; i < source.events.length; i++) {
+      const event = source.events[i];
+      if (!event || event.from_cusip !== source.cusips[i] || event.to_cusip !== source.cusips[i + 1]
+          || !validDate(event.effective_date) || event.effective_date <= previousDate
+          || event.effective_date > payload.reviewed_as_of
+          || typeof event.description !== "string" || !event.description.trim()
+          || !Array.isArray(event.sources) || !event.sources.length
+          || event.sources.some(url => typeof url !== "string"
+            || !/^https:\/\/[a-z0-9.-]+(?::443)?\//i.test(url) || /[\s<>"']/.test(url))) {
+        throw new Error("Invalid reviewed identifier transition");
+      }
+      previousDate = event.effective_date;
+    }
+    const group = { ...source, id, reviewed_as_of: payload.reviewed_as_of };
+    for (const cusip of source.cusips) {
+      const key = `${cusip}|${source.instrument_type}`;
+      if (!/^[A-Z0-9]{9}$/.test(cusip) || byKey[key]) throw new Error("Overlapping reviewed identifiers");
+      byKey[key] = group;
+    }
+    groups[id] = group;
+  }
+  return { groups, byKey, reviewed_as_of: payload.reviewed_as_of };
+}
+
+function securityHistoryGroup(holding) {
+  const cusip = String(holding?.cusip || "").trim().toUpperCase();
+  return securityIdentityHistory.byKey[`${cusip}|${holdingInstrumentType(holding)}`] || null;
+}
+
+function searchHistoryGroup(entry) {
+  const group = securityHistoryGroup(entry);
+  // A shared symbol alone never proves a shared share class. Conversely, a
+  // conflicting indexed symbol must not be silently reassigned by this graph.
+  return group && tickerSearchSymbol(entry).toUpperCase() === group.ticker ? group : null;
+}
+
+function isHistoricalSecurity(holding) {
+  const group = securityHistoryGroup(holding);
+  if (group && holding.cusip !== group.cusips[group.cusips.length - 1]) return true;
+  return holdingReviewedDisplay(holding)?.ticker_temporality === "historical_only"
+    || holding?.trading_status === "historical_retired_identity";
+}
+
+function searchResultDescription(entry) {
+  const group = searchHistoryGroup(entry);
+  if (group) {
+    return `${group.name} · ${isHistoricalSecurity(entry) ? "Historical holdings" : "Identifier history"}`;
+  }
+  if (isHistoricalSecurity(entry)) return `Historical identifier · ${entry.cusip}`;
+  return preferredSearchDescription(entry) || compactHoldingName(entry);
+}
+
+function securityHistoryPanel(holding, entries = []) {
+  const group = securityHistoryGroup(holding);
+  const historical = isHistoricalSecurity(holding);
+  if (!group) return historical ? `<div class="info-note identity-history-notice"><strong>Historical identifier.</strong>
+    These filing records use ${esc(holding.cusip)}. The historical symbol does not establish a currently traded security.</div>` : "";
+  const latest = group.cusips[group.cusips.length - 1];
+  const available = new Set(entries.filter(entry =>
+    holdingInstrumentType(entry) === group.instrument_type).map(entry => entry.cusip));
+  available.add(holding.cusip);
+  const items = group.cusips.map((cusip, i) => {
+    const start = i ? group.events[i - 1].effective_date : null;
+    const end = group.events[i]?.effective_date;
+    const period = start && end ? `${displayDate(start)} – ${displayDate(end)}`
+      : start ? `From ${displayDate(start)}` : `Before ${displayDate(end)}`;
+    const selected = holding.cusip === cusip;
+    const stockId = stockLookupId(cusip, group.instrument_type);
+    const link = available.has(cusip)
+      ? `<a class="mono" href="#stock/${esc(encodeURIComponent(stockId))}"${selected ? ' aria-current="page"' : ""}>${esc(cusip)}</a>`
+      : `<span class="mono">${esc(cusip)}</span>`;
+    const event = group.events[i - 1];
+    const source = event ? `<a href="${esc(event.sources[0])}" target="_blank" rel="noopener noreferrer">${esc(event.description)}</a>` : "";
+    return `<li>${link}<span class="identity-period">${esc(period)}</span>
+      <span>${cusip === latest ? "Latest reviewed identifier" : "Historical identifier"}${selected ? " · Viewing filings" : ""}</span>
+      ${available.has(cusip) ? "" : '<span>No holdings data in this snapshot</span>'}${source}</li>`;
+  }).join("");
+  return `<section class="identity-history" aria-label="Identifier history">
+    <div class="identity-history-notice">${historical
+      ? `<strong>Viewing a historical identifier.</strong> Latest reviewed CUSIP: <span class="mono">${esc(latest)}</span>.`
+      : "<strong>Dated identifier history.</strong>"}
+      Holdings below belong only to <span class="mono">${esc(holding.cusip)}</span>; amounts are not combined across identifiers.</div>
+    <details open><summary>Identifier history <span>Reviewed ${esc(displayDate(group.reviewed_as_of))}</span></summary>
+      <ol>${items}</ol><p class="fineprint">Dates describe the documented legal or trading change. Original filing identifiers and share quantities are preserved.</p>
+    </details></section>`;
+}
+
 function normalizeSecurityKindPayload(data) {
   const source = data?.kinds;
   if (!source || typeof source !== "object" || Array.isArray(source)) {
@@ -201,6 +310,7 @@ async function ensureSecurityLabels() {
       .then(data => {
         assertCompatibleDataContract(data, "data/security_labels.json");
         assertRequiredSecurityMetadata(data, "data/security_labels.json");
+        securityIdentityHistory = normalizeIdentityHistory(data.identity_history);
         securityLabels = normalizeSecurityTextMap(data.labels);
         securityKinds = normalizeSecurityKindPayload(data);
         securityProductNames = normalizeSecurityTextMap(data.product_names);
@@ -224,6 +334,7 @@ async function ensureSecurityLabels() {
         // this versioned metadata could link a filing row to a removed legacy
         // option artifact, so a partial or failed load must fail closed.
         console.error("required security metadata load failed:", error);
+        securityIdentityHistory = { groups: Object.create(null), byKey: Object.create(null) };
         securityLabels = Object.create(null);
         securityKinds = Object.create(null);
         securityProductNames = Object.create(null);
@@ -1095,11 +1206,10 @@ function tickerSearchSymbol(entry) {
 }
 
 function tickerSearchVisualKey(entry) {
-  return JSON.stringify([
-    searchEntryTagClass(entry),
-    searchEntryTagLabel(entry),
-    tickerSearchSymbol(entry).toUpperCase(),
-  ]);
+  const group = searchHistoryGroup(entry);
+  if (group) return `reviewed-history:${group.id}`;
+  // Unreviewed ticker collisions remain separate, even when their badges match.
+  return JSON.stringify([entry.stock_id || entry.cusip, holdingInstrumentType(entry), tickerSearchSymbol(entry).toUpperCase()]);
 }
 
 function tickerSearchHolderCount(entry) {
@@ -1130,6 +1240,13 @@ function tickerSearchIsActive(entry) {
 }
 
 function compareTickerAliasRepresentative(a, b) {
+  const group = searchHistoryGroup(a);
+  if (group && group.id === searchHistoryGroup(b)?.id) {
+    const dated = group.cusips.indexOf(b.cusip) - group.cusips.indexOf(a.cusip);
+    if (dated) return dated;
+  }
+  const historical = Number(isHistoricalSecurity(a)) - Number(isHistoricalSecurity(b));
+  if (historical) return historical;
   const activeCmp =
     Number(tickerSearchIsActive(b)) - Number(tickerSearchIsActive(a));
   if (activeCmp !== 0) return activeCmp;
@@ -1145,7 +1262,7 @@ function compareTickerAliasRepresentative(a, b) {
   );
 }
 
-function dedupeVisuallyIdenticalTickerMatches(matches) {
+function dedupeVisuallyIdenticalTickerMatches(matches, universe = matches) {
   const orderedKeys = [];
   const winners = new Map();
   for (const entry of matches) {
@@ -1156,6 +1273,16 @@ function dedupeVisuallyIdenticalTickerMatches(matches) {
       winners.set(key, entry);
     } else if (compareTickerAliasRepresentative(entry, incumbent) < 0) {
       winners.set(key, entry);
+    }
+  }
+  // A company-name or predecessor-CUSIP match must still choose the latest
+  // available member of its reviewed group, even if that member did not match.
+  for (const entry of universe) {
+    if (!searchHistoryGroup(entry) || !isCommonStockSearchEntry(entry)) continue;
+    const key = tickerSearchVisualKey(entry);
+    const incumbent = winners.get(key);
+    if (incumbent && compareTickerAliasRepresentative(entry, incumbent) < 0) {
+      winners.set(key, { ...entry, _matchRank: incumbent._matchRank });
     }
   }
   return orderedKeys.map(key => winners.get(key));
@@ -1235,8 +1362,9 @@ function resolveStockEntry(stockId) {
     normalizeInstrumentType(entry.instrument_type) === legacy.instrument_type
   );
   if (!matches.length) return null;
-  matches.sort(compareTickerAliasRepresentative);
-  return matches[0];
+  const representatives = dedupeVisuallyIdenticalTickerMatches(matches, idx.tickers || []);
+  // An unreviewed ticker shared by distinct identities is ambiguous.
+  return representatives.length === 1 ? representatives[0] : null;
 }
 
 // ---------- sparkline + badge helpers ----------
@@ -2204,14 +2332,14 @@ function globalSearch(q) {
       || securityProductNameForCusip(entry.cusip)
       || holdingDisplayCompany(entry)).toUpperCase();
     if (!symbol) continue;
-    if (symbol === q) tickerMatches.push({ ...entry, _matchRank: 0 });
+    if (symbol === q || entry.cusip === q) tickerMatches.push({ ...entry, _matchRank: 0 });
     else if (symbol.startsWith(q)) tickerMatches.push({ ...entry, _matchRank: 1 });
     else if (symbol.includes(q)) tickerMatches.push({ ...entry, _matchRank: 2 });
-    else if (productName.includes(q)) tickerMatches.push({ ...entry, _matchRank: 3 });
+    else if (productName.includes(q) || searchHistoryGroup(entry)?.name.toUpperCase().includes(q)) tickerMatches.push({ ...entry, _matchRank: 3 });
   }
   tickerMatches.sort(compareTickerMatch);
   const topTickerMatches = dedupeVisuallyIdenticalTickerMatches(
-    tickerMatches
+    tickerMatches, idx.tickers
   ).slice(0, 8);
 
   if (!topTickerMatches.length && !fundMatches.length) {
@@ -2227,7 +2355,7 @@ function globalSearch(q) {
         <span class="gsearch-tag ${esc(searchEntryTagClass(t))}">${esc(searchEntryTagLabel(t))}</span>
         <div style="min-width:0;display:flex;flex-direction:column">
           <span class="mono" style="font-weight:700;color:var(--ac)">${esc(tickerSearchSymbol(t))}</span>
-          <span title="${esc(formattedHoldingCompany(t) || t.cusip || t.stock_id)}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name${securityInstrumentNames[t.cusip] ? " reviewed-instrument-name" : ""}">${esc(preferredSearchDescription(t) || compactHoldingName(t))}</span>
+          <span title="${esc(formattedHoldingCompany(t) || t.cusip || t.stock_id)}" style="font-size:12px;color:var(--mt);white-space:nowrap" class="company-search-name${securityInstrumentNames[t.cusip] ? " reviewed-instrument-name" : ""}">${esc(searchResultDescription(t))}</span>
         </div>
       </a>
     `).join("")}` : "";
@@ -2685,6 +2813,15 @@ async function loadStock(stockId, opts = {}) {
     }
   }
   await securityLabelsReady;
+  const requested = parseStockLookupId(stockId);
+  if (securityHistoryGroup({cusip: requested.id_base, instrument_type: requested.instrument_type})
+      && (!Array.isArray(idx?.tickers) || !idx.tickers.length)) {
+    try { await ensureSearchIndex(); }
+    catch (error) {
+      if (handleDataContractError(error)) return;
+      console.error("identifier history index load failed:", error);
+    }
+  }
   const canonicalId = canonicalStockLookupId(stockId);
   const parsed = parseStockLookupId(canonicalId);
   const stockEntry = resolveStockEntry(canonicalId);
@@ -2838,6 +2975,8 @@ function renderStock(sd, stockEntry = null) {
     cusip: cusipText,
     instrument_type: instrumentType,
   };
+  const historicalIdentity = isHistoricalSecurity(securityHolding);
+  const identifierHistory = securityHistoryPanel(securityHolding, idx.tickers || []);
   const issuerText = formattedHoldingCompany(securityHolding);
   const securityText = holdingDisplayLabel(securityHolding);
   const securityKindText = holdingDisplayKindLabel(securityHolding);
@@ -2973,10 +3112,11 @@ function renderStock(sd, stockEntry = null) {
           </div>
         </div>
 
+        ${identifierHistory}
         ${classificationWarning}
         ${aggregateTrendNotice}
         <div class="stock-stat-grid">
-          ${statCard("stock", "Current Institutional Holders", currentHolders.length.toLocaleString(), holdersIcon())}
+          ${statCard("stock", historicalIdentity ? "Managers Reporting This Identifier" : "Current Institutional Holders", currentHolders.length.toLocaleString(), holdersIcon())}
           ${statCard("stock", "Total Held Value", fV(totV), miniLine(aggregateValues))}
           ${statCard("stock", "Total Exact Shares", fS(totS), miniBars(aggregateShares))}
           <div class="stock-stat">
@@ -2996,7 +3136,7 @@ function renderStock(sd, stockEntry = null) {
 
   html += `<section class="fund-panel stock-panel" id="stockPanel">
           <div class="fund-panel-head">
-            <div class="fund-panel-title">Current Holders<span class="panel-count">${currentHolders.length.toLocaleString()}</span></div>
+            <div class="fund-panel-title">${historicalIdentity ? "Reported Holdings" : "Current Holders"}<span class="panel-count">${currentHolders.length.toLocaleString()}</span></div>
             <div class="holdings-tools">
               <input id="stockHoldersSearch" class="holdings-search" aria-label="Search holders" placeholder="Search holders..." autocomplete="off" spellcheck="false"/>
               <button class="icon-btn" title="Clear holder search" aria-label="Clear holder search"

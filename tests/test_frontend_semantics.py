@@ -64,6 +64,42 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual(['Series A · 7.5% · Mandatory convertible',
           'Series A · 6.25% · Mandatory convertible',['MCHP','MCHPP'],'','Preferred shares'], result)
 
+
+    def test_reviewed_history_selects_latest_available_and_preserves_exact_routes(self):
+        result = self.run_javascript(
+            "securityIdentityHistory = normalizeIdentityHistory(" +
+            (ROOT / "reviewed_security_history.json").read_text() + ");" + """
+            const groups = Object.values(securityIdentityHistory.groups);
+            const failures = [];
+            for (const group of groups) {
+              const entries = group.cusips.map((cusip, i) => ({
+                cusip, stock_id:stockLookupId(cusip,group.instrument_type),
+                instrument_type:group.instrument_type, ticker:group.ticker,
+                holder_count:10000-i*100, current_holder_count:10000-i*100, _matchRank:0
+              }));
+              idx = {tickers:entries};
+              const winner = dedupeVisuallyIdenticalTickerMatches(entries)[0];
+              if(winner.cusip !== group.cusips.at(-1)) failures.push(group.ticker);
+              if(resolveStockEntry(entries[0].stock_id).cusip !== entries[0].cusip) failures.push('route');
+              if(securityHistoryGroup({...entries[0],instrument_type:'CALL'})) failures.push('option');
+            }
+            const pfsa = groups.find(g=>g.ticker==='PFSA');
+            const available = pfsa.cusips.slice(0,-1).map(cusip=>({
+              cusip,stock_id:cusip,instrument_type:'EQUITY',ticker:'PFSA',_matchRank:0
+            }));
+            const selected = dedupeVisuallyIdenticalTickerMatches([available[0]],available)[0];
+            idx={tickers:[
+              {ticker:'UNKNOWN',cusip:'123456789',stock_id:'123456789',instrument_type:'EQUITY'},
+              {ticker:'UNKNOWN',cusip:'987654321',stock_id:'987654321',instrument_type:'EQUITY'}
+            ]};
+            console.log(JSON.stringify({failures,selected:selected.cusip,
+              historical:isHistoricalSecurity(selected), ambiguous:resolveStockEntry('UNKNOWN')}));
+            """)
+        self.assertEqual([], result['failures'])
+        self.assertEqual('74319X306', result['selected'])
+        self.assertTrue(result['historical'])
+        self.assertIsNone(result['ambiguous'])
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = APPLICATION_JS.read_text()
@@ -939,7 +975,7 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertIn("searchEntryTagLabel(t)", search_logic)
         self.assertIn(
             "dedupeVisuallyIdenticalTickerMatches(\n"
-            "    tickerMatches\n"
+            "    tickerMatches, idx.tickers\n"
             "  ).slice(0, 8)",
             search_logic,
         )
@@ -1029,7 +1065,7 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertFalse(result["right"])
         self.assertFalse(result["warrant"])
 
-    def test_ticker_search_chooses_highest_coverage_alias_per_display_kind(
+    def test_unreviewed_ticker_collisions_keep_separate_identities(
         self,
     ) -> None:
         result = self.run_javascript(
@@ -1100,12 +1136,12 @@ class FrontendSemanticsTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["46090E103", "99999Q999"],
+            ["046090E10", "46090E103", "46090E903", "99999Q999"],
             result["stockIds"],
         )
-        self.assertEqual(result["firstKey"], result["aliasKey"])
+        self.assertNotEqual(result["firstKey"], result["aliasKey"])
 
-    def test_ticker_alias_ties_use_stable_stock_id_fallback(self) -> None:
+    def test_unreviewed_ticker_ties_remain_separate(self) -> None:
         result = self.run_javascript(
             """
             securityKinds = normalizeSecurityKindPayload({
@@ -1163,7 +1199,7 @@ class FrontendSemanticsTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(["46090E103"], result["stockIds"])
+        self.assertEqual(["46090E903", "46090E103"], result["stockIds"])
         self.assertEqual(-1, result["missingCount"])
         self.assertEqual(-1, result["nullCount"])
         self.assertEqual(-1, result["malformedCount"])
@@ -1223,10 +1259,11 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual("88688T209", result["currentWinner"])
         self.assertEqual("88688T209", result["duringTransition"])
 
-    def test_ticker_routes_choose_current_cusips_but_keep_exact_old_routes(
+    def test_unreviewed_ticker_routes_are_ambiguous_but_exact_routes_work(
         self,
     ) -> None:
         result = self.run_javascript(
+            "securityIdentityHistory = normalizeIdentityHistory(" + (ROOT / "reviewed_security_history.json").read_text() + ");" +
             """
             idx = {
               tickers: [
@@ -1270,16 +1307,16 @@ class FrontendSemanticsTests(unittest.TestCase):
             };
             currentReportingQuarter = 20261;
             console.log(JSON.stringify({
-              tlry: resolveStockEntry("TLRY").stock_id,
-              fubo: resolveStockEntry("FUBO").stock_id,
+              tlry: resolveStockEntry("TLRY"),
+              fubo: resolveStockEntry("FUBO"),
               exactOldTlry: resolveStockEntry("88688T100").stock_id,
               exactOldFubo: resolveStockEntry("35953D104").stock_id,
             }));
             """
         )
 
-        self.assertEqual("88688T209", result["tlry"])
-        self.assertEqual("35953D401", result["fubo"])
+        self.assertIsNone(result["tlry"])
+        self.assertIsNone(result["fubo"])
         self.assertEqual("88688T100", result["exactOldTlry"])
         self.assertEqual("35953D104", result["exactOldFubo"])
 

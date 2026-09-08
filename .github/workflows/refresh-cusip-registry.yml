@@ -128,6 +128,10 @@ jobs:
           python scripts/repair_preferred_classifications.py --apply --rebuild
           --pending-only --workers 2 --report .cache/preferred-classification-repair.json
 
+      - name: Refresh reviewed identifier history once per snapshot policy
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: python scripts/refresh_security_history.py --pending-only
+
       - name: Verify SEC_USER_AGENT secret is configured
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
