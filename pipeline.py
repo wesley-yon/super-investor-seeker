@@ -2454,6 +2454,15 @@ def compose_quarter_filings(components: list[dict]) -> dict:
 
 
 def _classify_holding(h: dict) -> str:
+    from note_classification import reviewed_note_type
+
+    parsed = _classify_holding_unreviewed(h)
+    from preferred_classification import reviewed_preferred_type
+
+    return reviewed_preferred_type(h, parsed) or reviewed_note_type(h, parsed) or parsed
+
+
+def _classify_holding_unreviewed(h: dict) -> str:
     """Classify a holding into EQUITY, CALL, PUT, OPT, PREF, NOTE, or WARRANT
     based on the 13F titleOfClass field and putCall XML field."""
     cls = (h.get("class") or "").upper().strip()
@@ -2570,6 +2579,11 @@ def classify_saved_holding(
         and old_type in {"NOTE", "PREF", "WARRANT"}
         and not _has_explicit_equity_class(h)
     ):
+        from note_classification import reviewed_note_type
+        from preferred_classification import reviewed_preferred_type
+        corrected = reviewed_preferred_type(h, old_type) or reviewed_note_type(h, old_type)
+        if corrected:
+            return corrected
         return old_type
     return new_type
 
@@ -2933,6 +2947,7 @@ def _registry_instrument_type_from_master(
     return _classify_holding({
         "class": official_class,
         "issuer": resolution.get("issuer") or "",
+        "cusip": resolution.get("cusip") or "",
         "put_call": "",
     })
 
@@ -3197,6 +3212,18 @@ def build_cusip_registry() -> CusipRegistry:
                 kind_source = "sec_company_tickers"
             else:
                 kind_source = "filer_metadata" if kind else None
+        from note_classification import classification_review, REVIEW_SOURCE
+        correction = classification_review().get(cusip)
+        if correction and instrument_type == correction["to_type"]:
+            kind = correction["security_kind"]
+            kind_source = REVIEW_SOURCE
+        from preferred_classification import classification_review as preferred_review
+        preferred = preferred_review().get(cusip)
+        if preferred and instrument_type == preferred["to_type"]:
+            kind = preferred["security_kind"]
+            kind_source = REVIEW_SOURCE
+            if preferred.get("historical_retired"):
+                entry.update(price_lookup_allowed=False, trading_status="historical_retired_identity")
         if kind:
             entry["security_kind"] = kind
             entry["security_kind_source"] = kind_source
@@ -6877,6 +6904,12 @@ def save_state(state: dict) -> None:
         ),
     }
     previous = _read_json_object(STATE_PATH)
+    if state.get("note_classification_review_sha256") is not None:
+        out["note_classification_review_sha256"] = state["note_classification_review_sha256"]
+    if state.get("preferred_classification_review_sha256") is not None:
+        out["preferred_classification_review_sha256"] = state["preferred_classification_review_sha256"]
+    if state.get("security_history_review_sha256") is not None:
+        out["security_history_review_sha256"] = state["security_history_review_sha256"]
     previous_semantic = dict(previous or {})
     previous_last_run = previous_semantic.pop("last_run", None)
     if previous_semantic == out and _is_strict_utc_timestamp(
@@ -8671,6 +8704,10 @@ def _filer_security_kind(entry: dict | None) -> str | None:
 def write_security_labels(registry: dict[str, dict]) -> None:
     """Write compact browser metadata without changing public identities."""
 
+    from note_classification import public_note_type_corrections
+    from preferred_classification import public_preferred_metadata
+    from security_history import public_identity_history
+
     labels: dict[str, str] = {}
     kinds: dict[str, str] = {}
     product_names: dict[str, str] = {}
@@ -8722,6 +8759,9 @@ def write_security_labels(registry: dict[str, dict]) -> None:
             "labels": labels,
             "product_names": product_names,
             "reviewed_displays": displays,
+            "note_type_corrections": public_note_type_corrections(registry),
+            **public_preferred_metadata(registry),
+            "identity_history": public_identity_history(),
         },
         indent=None,
         sort_keys=True,
