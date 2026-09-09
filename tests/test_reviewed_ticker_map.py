@@ -327,3 +327,55 @@ class ReviewedFundNameTests(unittest.TestCase):
             with self.assertRaisesRegex(r.SecurityMasterError, 'bound SEC'):
                 self.apply(root)
             r._cached_fund_names.cache_clear()
+
+    def test_refresh_targets_include_approved_fund_registrant(self):
+        import pipeline
+        self.assertEqual(set(), pipeline._sec_fund_series_target_ciks(self.master, self.state))
+        self.assertEqual({'0001000000'}, pipeline._sec_fund_series_target_ciks(
+            self.master, self.state, review=self.review))
+        self.accepted['price_lookup_allowed'] = False
+        self.assertEqual(set(), pipeline._sec_fund_series_target_ciks(
+            self.master, self.state, review=self.review))
+        self.accepted.pop('price_lookup_allowed')
+        self.accepted['assertion']['instrument'] = 'COMMON_SHARE'
+        self.assertEqual(set(), pipeline._sec_fund_series_target_ciks(
+            self.master, self.state, review=self.review))
+
+    def test_exact_review_bridge_can_use_sec_name_for_explicit_etf_class(self):
+        self.accepted.pop('assertion')
+        self.master['records'][self.key]['reported_classes'] = ['DEEP BUFFER ETF']
+        self.assertIn('fund_series_name', self.apply(source_state=self.state))
+        self.master['records'][self.key]['reported_classes'] = ['COM']
+        self.assertNotIn('fund_series_name', self.apply(source_state=self.state))
+
+    def test_exact_display_name_keeps_ambiguous_ticker_and_option_types(self):
+        import pipeline
+        self.master['records'][self.key]['reported_classes'] = ['DEEP BUFFER ETF']
+        self.review = {'display_mappings': {self.key: {
+            'ticker':'DAPR', 'match_kind':'exact_cusip', 'confidence_tier':'A'}}}
+        row = self.apply(source_state=self.state)
+        self.assertIn('fund_series_name', row)
+        self.assertEqual('ambiguous', row['mapping_status'])
+        self.assertIsNone(row['ticker'])
+        self.assertEqual('EQUITY', row['instrument_type'])
+        self.assertEqual({'0001000000'}, pipeline._sec_fund_series_target_ciks(
+            self.master, self.state, review=self.review))
+        option_key = self.key.replace('|EQUITY', '|CALL')
+        self.master['records'][option_key] = {**self.master['records'][self.key],
+                                             'instrument_type':'CALL'}
+        self.review['display_mappings'][option_key] = self.review['display_mappings'][self.key]
+        self.assertNotIn(option_key, r.approved_fund_name_symbols(self.master, self.review))
+
+    def test_weak_historical_or_nonfund_display_cannot_borrow_sec_name(self):
+        self.master['records'][self.key]['reported_classes'] = ['DEEP BUFFER ETF']
+        display = {'ticker':'DAPR','match_kind':'exact_cusip','confidence_tier':'A'}
+        self.review = {'display_mappings': {self.key: display}}
+        for field, value in [('confidence_tier','B'), ('match_kind','underlying_only'),
+                             ('ticker_temporality','historical_only')]:
+            with self.subTest(field=field):
+                changed = {**display, field:value}
+                self.review['display_mappings'][self.key] = changed
+                self.assertNotIn('fund_series_name', self.apply(source_state=self.state))
+        self.review['display_mappings'][self.key] = display
+        self.master['records'][self.key]['reported_classes'] = ['COM']
+        self.assertNotIn('fund_series_name', self.apply(source_state=self.state))
