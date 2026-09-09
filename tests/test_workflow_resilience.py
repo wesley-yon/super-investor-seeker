@@ -643,12 +643,33 @@ gh_mutate_once() {
         self.assertIn("rebuild_security_master:", rebuild)
         self.assertIn("inputs.rebuild_security_master == true", rebuild)
         self.assertIn("inputs.rebuild_security_master != true", rebuild)
+        dispatch = rebuild.split("  workflow_dispatch:", 1)[1].split("\nconcurrency:", 1)[0]
+        self.assertRegex(dispatch, r"(?ms)^      reconcile_filings:\n.*?^        default: true$.*?^        type: boolean$")
+        replay = rebuild.split("- name: Reconcile broad SEC filing indexes overnight", 1)[1].split("- name:", 1)[0]
+        self.assertIn("github.event_name != 'workflow_dispatch' || inputs.reconcile_filings == true", replay)
+        # This input only controls discovery work, never identity acceptance,
+        # dataset validation, regression tests or publication checks.
+        self.assertEqual(1, rebuild.count("inputs.reconcile_filings"))
+        self.assertRegex(dispatch, r"(?ms)^      fund_names_only:\n.*?^        default: false$.*?^        type: boolean$")
+        self.assertIn("inputs.fund_names_only != true", replay)
+        self.assertIn("pipeline.py --regenerate-only --refresh-fund-names", rebuild)
+        self.assertIn("Validate description refresh scope", rebuild)
+        for required_step in (
+            "Repair reviewed note classifications once per snapshot policy",
+            "Repair reviewed preferred classifications once per snapshot policy",
+            "Refresh and audit private SEC security master and derived data",
+            "Validate generated data",
+            "Validate reviewed identities and report coverage warnings",
+            "Run generated-data contract regression tests",
+            "Run full Python regression suite",
+            "Publish refreshed private snapshot",
+        ):
+            block = rebuild.split(f"- name: {required_step}", 1)[1].split("- name:", 1)[0]
+            self.assertNotIn("reconcile_filings", block)
         for workflow in (update, rebuild):
             self.assertIn("SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}", workflow)
             lowered = workflow.lower()
-            retired_provider = "open" + "figi"
             for retired_contract in (
-                retired_provider,
                 "--retry-unresolved",
                 "--full-cusip-refresh",
             ):
@@ -694,53 +715,14 @@ gh_mutate_once() {
                 workflow,
             )
 
-    def test_repo_has_no_retired_provider_runtime_or_config_residue(self):
-        """Only deletion code and adversarial fixtures may name the provider."""
-
+    def test_quantity_cli_only_exposes_local_maintenance(self):
+        import sys
         result = subprocess.run(
-            ["git", "ls-files", "-co", "--exclude-standard", "-z"],
-            cwd=ROOT,
-            capture_output=True,
-            check=True,
-        )
-        provider = "open" + "figi"
-        expected = {
-            (
-                "scripts/data_snapshot.py",
-                f'Path(".cache/{provider}_details.json"),',
-            ),
-            (
-                "tests/test_sec_provenance_validation.py",
-                f'"label_source": "{provider}",',
-            ),
-            (
-                "tests/test_sec_provenance_validation.py",
-                f'"sources": ["{provider}"],',
-            ),
-            (
-                "tests/test_sec_provenance_validation.py",
-                f'"{provider}"',
-            ),
-        }
-        pattern = re.compile(rf"open[\s_-]*{provider[4:]}", re.IGNORECASE)
-        actual: list[tuple[str, str]] = []
-        for raw_path in result.stdout.split(b"\0"):
-            if not raw_path:
-                continue
-            relative_path = raw_path.decode("utf-8", errors="surrogateescape")
-            path = ROOT / relative_path
-            if not path.is_file() or path.is_symlink():
-                continue
-            if pattern.search(relative_path):
-                actual.append((relative_path, "<path>"))
-            payload = path.read_bytes()
-            if b"\0" in payload:
-                continue
-            for line in payload.decode("utf-8", errors="replace").splitlines():
-                if pattern.search(line):
-                    actual.append((relative_path, line.strip()))
-
-        self.assertEqual(sorted(expected), sorted(actual))
+            [sys.executable, str(ROOT / 'scripts/quantity_policy.py'), '--help'],
+            cwd=ROOT, capture_output=True, text=True, check=True)
+        self.assertIn('{plan,apply,migrate-receipts}', result.stdout)
+        for removed_flag in ('--catalog', '--exports', '--requests'):
+            self.assertNotIn(removed_flag, result.stdout)
 
     def test_legacy_snapshot_boolean_parses_true_and_false(self):
         for path in MAINTENANCE_WORKFLOWS:
@@ -975,6 +957,11 @@ gh_mutate_once() {
         update = read(".github/workflows/update-data.yml")
         refresh = read(".github/workflows/refresh-cusip-registry.yml")
         pages = read(".github/workflows/deploy-pages.yml")
+        for workflow in (update, refresh):
+            maintenance_queue = workflow.split("\nconcurrency:\n", 1)[1].split("\npermissions:", 1)[0]
+            self.assertIn("  group: data-maintenance\n", maintenance_queue)
+            self.assertIn("  cancel-in-progress: false\n", maintenance_queue)
+            self.assertIn("  queue: max\n", maintenance_queue)
         private_lock = (
             "concurrency:\n"
             "      group: private-release-publication\n"

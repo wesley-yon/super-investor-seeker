@@ -56,7 +56,7 @@ jobs:
           fi
 
       - name: Test compressed site loader
-        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs
+        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs tests/test_etf_description_audit.mjs
 
       - name: Run data-integrity regression tests
         run: python -m unittest discover -s tests -v

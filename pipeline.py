@@ -103,6 +103,14 @@ from sec_edgar_evidence import (
     merge_sec_edgar_evidence_caches,
     refresh_sec_edgar_evidence,
 )
+from reviewed_ticker_map import (
+    apply_review, public_instrument_mappings, REVIEW_SOURCE, load_review,
+    public_display_mappings, reviewed_display_ticker, assert_display_compatibility,
+    approved_fund_name_symbols,
+)
+from fund_product_names import (
+    PRODUCT_NAME_SOURCE, reviewed_product_name, valid_reviewed_product_name,
+)
 from sec_security_master import (
     DEFAULT_MASTER_PATH as SEC_SECURITY_MASTER_PATH,
     DEFAULT_SOURCE_STATE_PATH as SEC_SOURCE_STATE_PATH,
@@ -112,6 +120,7 @@ from sec_security_master import (
     PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO,
     RefreshResult as SecSecurityMasterRefreshResult,
     SecurityMasterAcceptanceError,
+    SecurityMasterError,
     SourceParseError,
     SourceSchemaChangeError,
     SourceSchemaError,
@@ -125,6 +134,7 @@ from sec_security_master import (
     rebuild_security_master as rebuild_sec_security_master,
     recover_security_master_pair,
     refresh_security_master,
+    refresh_fund_series_names,
     resolve_security,
     save_security_master,  # noqa: F401 - retained for test/caller compatibility
     save_security_master_pair,
@@ -2449,6 +2459,15 @@ def compose_quarter_filings(components: list[dict]) -> dict:
 
 
 def _classify_holding(h: dict) -> str:
+    from note_classification import reviewed_note_type
+
+    parsed = _classify_holding_unreviewed(h)
+    from preferred_classification import reviewed_preferred_type
+
+    return reviewed_preferred_type(h, parsed) or reviewed_note_type(h, parsed) or parsed
+
+
+def _classify_holding_unreviewed(h: dict) -> str:
     """Classify a holding into EQUITY, CALL, PUT, OPT, PREF, NOTE, or WARRANT
     based on the 13F titleOfClass field and putCall XML field."""
     cls = (h.get("class") or "").upper().strip()
@@ -2565,6 +2584,11 @@ def classify_saved_holding(
         and old_type in {"NOTE", "PREF", "WARRANT"}
         and not _has_explicit_equity_class(h)
     ):
+        from note_classification import reviewed_note_type
+        from preferred_classification import reviewed_preferred_type
+        corrected = reviewed_preferred_type(h, old_type) or reviewed_note_type(h, old_type)
+        if corrected:
+            return corrected
         return old_type
     return new_type
 
@@ -2774,6 +2798,7 @@ _SEC_REGISTRY_MAPPING_STATUSES = frozenset({
     "malformed_as_filed",
 })
 _SEC_REGISTRY_TICKER_SOURCES = frozenset({
+    REVIEW_SOURCE,
     "sec_ftd",
     "sec_ixbrl",
 })
@@ -2793,6 +2818,7 @@ _PRIVATE_MASTER_FIELDS = frozenset({
     "symbol_evidence",
     "symbol_intervals",
     "symbol_validation_exchanges",
+    "symbol_validation_alias",
     "symbol_validation_sources",
     "symbol_validation_titles",
 })
@@ -2926,6 +2952,7 @@ def _registry_instrument_type_from_master(
     return _classify_holding({
         "class": official_class,
         "issuer": resolution.get("issuer") or "",
+        "cusip": resolution.get("cusip") or "",
         "put_call": "",
     })
 
@@ -2958,6 +2985,8 @@ def _registry_position_ticker(entry: dict | None, instrument_type: str) -> str |
     normalized_type = normalize_instrument_type(instrument_type)
     if normalized_type in {"CALL", "PUT", "OPT"}:
         ticker = entry.get("underlying_ticker")
+    elif normalized_type in (entry.get("instrument_mappings") or {}):
+        ticker = entry["instrument_mappings"][normalized_type].get("ticker")
     else:
         raw_entry_type = entry.get("type")
         if (
@@ -2970,6 +2999,19 @@ def _registry_position_ticker(entry: dict | None, instrument_type: str) -> str |
             return None
         ticker = entry.get("ticker")
     return display_ticker_for_holding_type(ticker, normalized_type)
+
+
+
+def _registry_search_ticker(entry: dict | None, instrument_type: str) -> str | None:
+    """Keep historical row labels without advertising a fund as preferred debt."""
+    display = reviewed_display_ticker(entry, normalize_instrument_type(instrument_type))
+    if display:
+        return display
+    if (_registry_entry_has_equity_fund_identity(entry)
+            and normalize_instrument_type(instrument_type)
+            not in {"EQUITY", "CALL", "PUT", "OPT"}):
+        return None
+    return _registry_position_ticker(entry, instrument_type)
 
 
 def _resolve_loaded_security(
@@ -3009,15 +3051,17 @@ def _resolve_loaded_security(
 
 
 def build_cusip_registry() -> CusipRegistry:
-    """Build the public registry exclusively from exact SEC-master evidence."""
+    """Build the public registry from exact SEC and pinned reviewed identities."""
 
-    log.info("Building SEC-only CUSIP registry...")
+    log.info("Building SEC and reviewed CUSIP registry...")
     if not FUNDS_DIR.exists():
         log.info("  no funds directory; skipping registry build")
         return CusipRegistry()
 
     evidence = _aggregate_cusip_evidence()
-    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
+                          SEC_SECURITY_MASTER_PATH.parent.parent)
+    review = load_review(SEC_SECURITY_MASTER_PATH.parent.parent)
     registry: dict[str, dict] = {}
 
     for cusip, rec in sorted(evidence.items()):
@@ -3139,6 +3183,10 @@ def build_cusip_registry() -> CusipRegistry:
             "sources": sorted(set(sources)),
         }
 
+        if resolution.get("price_lookup_allowed") is False:
+            entry["price_lookup_allowed"] = False
+            entry["trading_status"] = "historical_retired_identity"
+
         official_class = _official_master_class(resolution)
         kind = {
             "NOTE": "BOND",
@@ -3158,9 +3206,18 @@ def build_cusip_registry() -> CusipRegistry:
                 if official_class
                 else entry
             )
-            kind = _filer_security_kind(classification_entry)
+            # Full SEC series/class names can identify an ETF even when the
+            # 13F issuer is truncated and its class only says creation units.
+            # This name comes from the bound private source projection above.
+            if resolution.get("fund_series_name"):
+                classification_entry = {**classification_entry,
+                                        "name": resolution["fund_series_name"]}
+            # A fund investing in closed-end funds or ETNs is still an ETF
+            # when its verified SEC product name explicitly identifies one.
+            kind = ("ETF" if re.search(r"\bETFs?\b", str(resolution.get("fund_series_name") or ""),
+                                     re.IGNORECASE) else _filer_security_kind(classification_entry))
             if kind in {"ETF", "MUTUAL FUND", "CLOSED-END FUND"} and (
-                "sec_fund_series" in sources
+                "sec_fund_series" in sources or resolution.get("fund_series_name")
             ):
                 kind_source = "sec_fund_series"
             elif kind and official_class:
@@ -3169,6 +3226,18 @@ def build_cusip_registry() -> CusipRegistry:
                 kind_source = "sec_company_tickers"
             else:
                 kind_source = "filer_metadata" if kind else None
+        from note_classification import classification_review, REVIEW_SOURCE
+        correction = classification_review().get(cusip)
+        if correction and instrument_type == correction["to_type"]:
+            kind = correction["security_kind"]
+            kind_source = REVIEW_SOURCE
+        from preferred_classification import classification_review as preferred_review
+        preferred = preferred_review().get(cusip)
+        if preferred and instrument_type == preferred["to_type"]:
+            kind = preferred["security_kind"]
+            kind_source = REVIEW_SOURCE
+            if preferred.get("historical_retired"):
+                entry.update(price_lookup_allowed=False, trading_status="historical_retired_identity")
         if kind:
             entry["security_kind"] = kind
             entry["security_kind_source"] = kind_source
@@ -3204,12 +3273,23 @@ def build_cusip_registry() -> CusipRegistry:
                 *(entry.get("sources") or []),
                 "sec_fund_series",
             })
+        elif product_name := reviewed_product_name(cusip, entry):
+            entry["product_name"] = product_name
+            entry["product_name_source"] = PRODUCT_NAME_SOURCE
+            entry["sources"] = sorted({*(entry.get("sources") or []), PRODUCT_NAME_SOURCE})
+        typed = public_instrument_mappings(cusip, instrument_type, master.get("records", {}))
+        if typed:
+            entry["instrument_mappings"] = typed
+        displays = public_display_mappings(cusip, review)
+        if displays:
+            entry['display_mappings'] = displays
+            assert_display_compatibility(entry)
         registry[cusip] = entry
 
     save_cusip_registry(registry)
     resolved = sum(entry["mapping_status"] == "resolved" for entry in registry.values())
     log.info(
-        "  wrote %s SEC-only entries (%s resolved, %s tickerless)",
+        "  wrote %s evidence-backed entries (%s resolved, %s tickerless)",
         len(registry),
         resolved,
         len(registry) - resolved,
@@ -3227,8 +3307,10 @@ def validate_cusip_registry(
     registry = load_cusip_registry()
     if not registry:
         issues.append("registry is empty")
-    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
+                          SEC_SECURITY_MASTER_PATH.parent.parent)
     master_records = master.get("records") or {}
+    review = load_review(SEC_SECURITY_MASTER_PATH.parent.parent)
 
     if not LEGACY_CUSIP_REGISTRY_PATH.exists():
         issues.append(
@@ -3268,6 +3350,25 @@ def validate_cusip_registry(
             entry.get("product_name") != master_entry.get("fund_series_name")
         ):
             mismatched_master.append(key)
+        if entry.get("product_name_source") == PRODUCT_NAME_SOURCE and not valid_reviewed_product_name(cusip, entry):
+            mismatched_master.append(key)
+
+        if isinstance(master_entry, dict) and any(
+            entry.get(field) != master_entry.get(field)
+            for field in ("price_lookup_allowed", "trading_status")
+        ):
+            unsafe_entries.append(cusip)
+
+        if entry.get("instrument_mappings", {}) != public_instrument_mappings(
+            cusip, entry.get("type"), master_records
+        ):
+            unsafe_entries.append(cusip)
+        if entry.get('display_mappings', {}) != public_display_mappings(cusip, review):
+            unsafe_entries.append(cusip)
+        try:
+            assert_display_compatibility(entry)
+        except SecurityMasterError:
+            unsafe_entries.append(cusip)
 
         status = entry.get("mapping_status")
         ticker = entry.get("ticker")
@@ -3366,6 +3467,9 @@ def repair_zero_share_holdings_in_place() -> int:
 
     if not FUNDS_DIR.exists():
         return 0
+    from saved_price_migration import migrate_saved_prices
+
+    migrate_saved_prices(FUNDS_DIR.parent.parent)
     cache = cache_dir_for_funds(FUNDS_DIR)
     evidence_path = cache / "quantity_estimation_evidence.json"
     plan = build_plan(
@@ -3377,7 +3481,6 @@ def repair_zero_share_holdings_in_place() -> int:
         plan,
         FUNDS_DIR,
         evidence_path=evidence_path,
-        request_path=cache / "quarter_close_price_requests.json",
     )
     log.info("Quantity policy: %s", result)
     return result["estimated_rows"]
@@ -3682,6 +3785,7 @@ def _parse_sec_fund_series_page(
     conflicts: set[str] = set()
     recognized_identifiers: set[str] = set()
     parsed_identifiers: set[str] = set()
+    missing_class_names: set[str] = set()
 
     def expanded_cells(row: etree._Element) -> list[etree._Element]:
         cells: list[etree._Element] = []
@@ -3738,10 +3842,23 @@ def _parse_sec_fund_series_page(
             cells = expanded_cells(rows[0])
             if name_column >= len(cells):
                 continue
-            name = normalize_security_label(
-                " ".join(cells[name_column].text_content().split())
-            )
+            raw_name = " ".join(cells[name_column].text_content().split())
+            # EDGAR lists classes with literal placeholder names in an intact
+            # Name column. Recognize these rows, but never use their ticker or
+            # borrow the parent series name as a class identity. Unknown empty
+            # layouts still fail the completeness gate below.
+            if identifier.startswith("C") and raw_name.casefold() in {"n/a", "none", "na"}:
+                parsed_identifiers.add(identifier)
+                missing_class_names.add(identifier)
+                if identifier in class_names:
+                    conflicts.add(identifier)
+                    class_names.pop(identifier)
+                continue
+            name = normalize_security_label(raw_name)
             if not name:
+                continue
+            if identifier in missing_class_names:
+                conflicts.add(identifier)
                 continue
             parsed_identifiers.add(identifier)
             target = (
@@ -4104,7 +4221,7 @@ def _load_json_dict_with_fallback(
 
 
 def load_cusip_registry() -> dict:
-    """Load one registry copy without merging stale provider-era metadata."""
+    """Load one registry copy without merging stale legacy metadata."""
 
     return _load_json_dict_with_fallback(
         LEGACY_CUSIP_REGISTRY_PATH,
@@ -4144,6 +4261,7 @@ _FILER_ABBREVIATED_SPONSOR_TR_RE = re.compile(
 _FILER_EXCLUSIVE_ETF_ISSUER_RE = re.compile(
     r"(?:"
     r"ISHARES\s+TR|"
+    r"INVESCO\s+QQQ\s+TR(?:UST)?|"
     r"ETFIS\s+SER(?:IES)?\s+TR(?:UST)?(?:\s+I)?|"
     r"JANUS\s+DETROIT\s+STR\s+TR|"
     r"(?:SELECT\s+SECTOR\s+)?SPDR\s+"
@@ -5194,7 +5312,9 @@ def _sec_edgar_candidate_priority(
     return min(priorities) if priorities else None
 
 
-def _sec_fund_series_target_ciks(master: dict, source_state: dict) -> set[str]:
+def _sec_fund_series_target_ciks(
+    master: dict, source_state: dict, *, review: dict | None = None
+) -> set[str]:
     """Return registrants needed by exact resolved fund-symbol records."""
 
     resolved_symbols = {
@@ -5204,6 +5324,7 @@ def _sec_fund_series_target_ciks(master: dict, source_state: dict) -> set[str]:
         and record.get("mapping_status") == "resolved"
         and str(record.get("ticker") or "").strip()
     }
+    resolved_symbols.update(approved_fund_name_symbols(master, review).values())
     symbol_records: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     for source in source_state.get("sources", {}).values():
         if not isinstance(source, dict) or source.get("kind") != "sec_fund_tickers":
@@ -5251,6 +5372,7 @@ def _refresh_sec_fund_series_evidence(
     *,
     refreshed_at: datetime | None = None,
     fetcher=None,
+    preserve_mappings: bool = False,
     master_path: Path = SEC_SECURITY_MASTER_PATH,
     source_state_path: Path = SEC_SOURCE_STATE_PATH,
 ):
@@ -5265,7 +5387,9 @@ def _refresh_sec_fund_series_evidence(
     sources = candidate_state.get("sources")
     if not isinstance(sources, dict):
         return result
-    target_ciks = _sec_fund_series_target_ciks(result.master, candidate_state)
+    target_ciks = _sec_fund_series_target_ciks(
+        result.master, candidate_state, review=load_review(Path(master_path).parent.parent)
+    )
     due_urls = [
         sec_fund_series_url(cik)
         for cik in sorted(target_ciks)
@@ -5346,18 +5470,21 @@ def _refresh_sec_fund_series_evidence(
         return replace(result, errors=tuple(errors))
     candidate_state["updated_at"] = checked_at
     policy = result.master.get("policy", {})
-    rebuilt = rebuild_sec_security_master(
-        candidate_state,
-        universe,
-        recent_window_days=int(policy.get("recent_window_days", 31)),
-        max_evidence_age_days=int(policy.get("max_evidence_age_days", 395)),
-        min_confirmation_dates=int(policy.get("min_confirmation_dates", 2)),
-    )
+    if preserve_mappings:
+        rebuilt = refresh_fund_series_names(result.master, result.state, candidate_state)
+    else:
+        rebuilt = rebuild_sec_security_master(
+            candidate_state,
+            universe,
+            recent_window_days=int(policy.get("recent_window_days", 31)),
+            max_evidence_age_days=int(policy.get("max_evidence_age_days", 395)),
+            min_confirmation_dates=int(policy.get("min_confirmation_dates", 2)),
+        )
     acceptance = audit_security_master(
         rebuilt,
         prior_master=result.master,
         as_of=current,
-        enforce_sec_ixbrl_freshness=False,
+        enforce_sec_ixbrl_freshness=preserve_mappings,
     )
     if not acceptance["ok"]:
         raise SecurityMasterRefreshError(
@@ -5380,6 +5507,30 @@ def _refresh_sec_fund_series_evidence(
         errors=tuple(errors),
         acceptance=acceptance,
     )
+
+
+def refresh_sec_fund_names_only() -> None:
+    """Refresh SEC fund descriptions against the existing verified mappings."""
+    master, source = load_security_master_pair(
+        master_path=SEC_SECURITY_MASTER_PATH,
+        source_state_path=SEC_SOURCE_STATE_PATH,
+    )
+    log.info("Refreshing SEC fund descriptions for %s registrants; preserving all %s mapping decisions",
+             len(_sec_fund_series_target_ciks(
+                 master, source, review=load_review(SEC_SECURITY_MASTER_PATH.parent.parent))),
+             len(master.get("records", {})))
+    result = SecSecurityMasterRefreshResult(
+        master=master, state=source, changed=False, refreshed_urls=(),
+        retained_urls=(), errors=(), acceptance={},
+    )
+    result = _refresh_sec_fund_series_evidence(result, [], preserve_mappings=True)
+    if result.errors:
+        raise SecurityMasterRefreshError("SEC fund descriptions incomplete: " + "; ".join(result.errors))
+    acceptance = result.acceptance or audit_security_master(result.master, as_of=datetime.now(timezone.utc))
+    if not acceptance["ok"]:
+        raise SecurityMasterRefreshError("SEC fund descriptions failed the publication gate: " + "; ".join(acceptance["issues"]))
+    log.info("SEC fund descriptions refreshed: %s pages, %s named records",
+             len(result.refreshed_urls), sum(bool(r.get("fund_series_name")) for r in result.master.get("records", {}).values()))
 
 
 def _sec_edgar_discovery_candidates(
@@ -6673,7 +6824,8 @@ def update_holding_tickers(
 ) -> None:
     """Apply exact SEC-master mappings; unsupported identities fail closed."""
 
-    master = load_security_master(SEC_SECURITY_MASTER_PATH)
+    master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
+                          SEC_SECURITY_MASTER_PATH.parent.parent)
 
     for holding in holdings:
         cusip = normalize_security_identifier(
@@ -6806,6 +6958,12 @@ def save_state(state: dict) -> None:
         ),
     }
     previous = _read_json_object(STATE_PATH)
+    if state.get("note_classification_review_sha256") is not None:
+        out["note_classification_review_sha256"] = state["note_classification_review_sha256"]
+    if state.get("preferred_classification_review_sha256") is not None:
+        out["preferred_classification_review_sha256"] = state["preferred_classification_review_sha256"]
+    if state.get("security_history_review_sha256") is not None:
+        out["security_history_review_sha256"] = state["security_history_review_sha256"]
     previous_semantic = dict(previous or {})
     previous_last_run = previous_semantic.pop("last_run", None)
     if previous_semantic == out and _is_strict_utc_timestamp(
@@ -6971,8 +7129,8 @@ def rebuild_tickers_in_place(
     """Rewrite only ticker metadata from the exact SEC security master.
 
     A security-master refresh is not an identity migration.  In particular,
-    it must not opportunistically reclassify a retained row while replacing a
-    vendor ticker: the cutover invariant is keyed by ``CUSIP | instrument
+    it must not opportunistically reclassify a retained row while replacing an
+    unverified ticker: the cutover invariant is keyed by ``CUSIP | instrument
     type``.  Dedicated filing replay/canonicalization paths own any proven
     identity repair.
     """
@@ -6994,6 +7152,8 @@ def rebuild_tickers_in_place(
         if result is not None
         else load_security_master(SEC_SECURITY_MASTER_PATH)
     )
+
+    master = apply_review(master, SEC_SECURITY_MASTER_PATH.parent.parent)
 
     fund_paths = sorted(FUNDS_DIR.glob("*.json"))
     updated = 0
@@ -7049,7 +7209,7 @@ def rebuild_tickers_in_place(
 
     log.info(
         "  updated %s/%s fund files (%s holding ticker changes) from "
-        "SEC-only evidence",
+        "SEC and reviewed evidence",
         updated,
         len(fund_paths),
         reassigned,
@@ -7812,7 +7972,7 @@ def regenerate_stock_files_and_index(
                     "cusip": cusip,
                     "ticker": display_ticker,
                     "issuer": display_issuer,
-                    "search_ticker": registry_ticker,
+                    "search_ticker": _registry_search_ticker(reg_entry, holding_type),
                     "instrument_type": holding_type,
                     "holders": {},
                     "_meta_key": ("", -1),
@@ -7828,7 +7988,7 @@ def regenerate_stock_files_and_index(
                     s["cusip"] = cusip
                     s["ticker"] = display_ticker
                     s["issuer"] = display_issuer
-                    s["search_ticker"] = registry_ticker
+                    s["search_ticker"] = _registry_search_ticker(reg_entry, holding_type)
                 holder = s["holders"].setdefault(cik, {
                     "cik": cik,
                     "name": name,
@@ -7961,6 +8121,9 @@ def regenerate_stock_files_and_index(
                 "instrument_type": s.get("instrument_type", "EQUITY"),
                 "holders": holders_list,
             }
+            if registry.get(s["cusip"], {}).get("price_lookup_allowed") is False:
+                out["price_lookup_allowed"] = False
+                out["trading_status"] = "historical_retired_identity"
             if s.get("instrument_type", "EQUITY") == "EQUITY":
                 split_adjustments = infer_proven_split_adjustments(holders_list)
                 if split_adjustments:
@@ -8595,11 +8758,18 @@ def _filer_security_kind(entry: dict | None) -> str | None:
 def write_security_labels(registry: dict[str, dict]) -> None:
     """Write compact browser metadata without changing public identities."""
 
+    from note_classification import public_note_type_corrections
+    from preferred_classification import public_preferred_metadata
+    from security_history import public_identity_history
+
     labels: dict[str, str] = {}
     kinds: dict[str, str] = {}
     product_names: dict[str, str] = {}
     fund_identities: list[str] = []
+    displays: dict[str, dict] = {}
     for identifier, entry in sorted(registry.items()):
+        for kind, display in entry.get('display_mappings', {}).items():
+            displays[f'{identifier}|{kind}'] = display
         label = normalize_security_label(
             entry.get("security_label"),
             identifier=identifier,
@@ -8642,6 +8812,10 @@ def write_security_labels(registry: dict[str, dict]) -> None:
             "kinds": kinds,
             "labels": labels,
             "product_names": product_names,
+            "reviewed_displays": displays,
+            "note_type_corrections": public_note_type_corrections(registry),
+            **public_preferred_metadata(registry),
+            "identity_history": public_identity_history(),
         },
         indent=None,
         sort_keys=True,
@@ -10722,6 +10896,12 @@ def main() -> int:
              "master, and regenerate derived data",
     )
     parser.add_argument(
+        "--refresh-fund-names",
+        action="store_true",
+        help="with --regenerate-only, refresh SEC fund-series descriptions while "
+             "preserving existing ticker decisions and position economics",
+    )
+    parser.add_argument(
         "--rebuild-security-master",
         action="store_true",
         help="with --regenerate-only, reconstruct immutable filing identity "
@@ -10761,6 +10941,12 @@ def main() -> int:
     if args.refresh_security_master and not args.regenerate_only:
         log.error("--refresh-security-master requires --regenerate-only")
         return 2
+    if args.refresh_fund_names and (
+        not args.regenerate_only or args.refresh_security_master
+        or args.rebuild_security_master or args.apply_quantity_policy
+    ):
+        log.error("--refresh-fund-names requires --regenerate-only and cannot be combined with other refresh/quantity modes")
+        return 2
     if args.apply_quantity_policy and not args.regenerate_only:
         log.error("--apply-quantity-policy requires --regenerate-only")
         return 2
@@ -10777,13 +10963,13 @@ def main() -> int:
         log.error("--defer-regeneration cannot be used with --regenerate-only")
         return 2
 
-    # Plain --regenerate-only is offline. The two explicit security-master
+    # Plain --regenerate-only is offline. The explicit SEC refresh
     # modes fetch only official SEC-hosted sources and therefore require the
     # declared SEC user agent.
     if args.regenerate_only:
         log.info("=== Regenerate-only mode ===")
         network_refresh = (
-            args.refresh_security_master or args.rebuild_security_master
+            args.refresh_security_master or args.rebuild_security_master or args.refresh_fund_names
         )
         if network_refresh and (
             USER_AGENT == DEFAULT_USER_AGENT
@@ -10805,10 +10991,13 @@ def main() -> int:
         )
         # First pass: refresh exact SEC security evidence when requested and
         # rewrite stored fund files from the resulting master.
-        rebuild_tickers_in_place(
-            full_refresh=args.rebuild_security_master,
-            refresh_master=network_refresh,
-        )
+        if args.refresh_fund_names:
+            refresh_sec_fund_names_only()
+        else:
+            rebuild_tickers_in_place(
+                full_refresh=args.rebuild_security_master,
+                refresh_master=network_refresh,
+            )
         rebuild_registry_backed_outputs(
             preserve_position_economics=network_refresh,
             apply_quantity_policy=args.refresh_security_master or args.apply_quantity_policy,

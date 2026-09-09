@@ -36,6 +36,7 @@ from composition_integrity import (
     calculate_quarter_composition_hash as _calculate_quarter_composition_hash,
 )
 from data_contract import DATA_CONTRACT_VERSION
+from parallel_validation import audit_phase
 from quantity_estimation import (
     cache_dir_for_funds,
     load_book as load_quantity_evidence,
@@ -52,6 +53,11 @@ from sec_13f_bulk_backfill import (
     Sec13FBulkError,
     normalize_sec_identity_source_url,
 )
+from reviewed_ticker_map import (
+    apply_review, public_instrument_mappings, REVIEW_SOURCE, load_review,
+    public_display_mappings, reviewed_display_ticker, assert_display_compatibility,
+)
+from fund_product_names import PRODUCT_NAME_SOURCE, valid_reviewed_product_name
 from sec_security_master import (
     MASTER_AUDIT_SCHEMA_VERSION,
     MASTER_SCHEMA_VERSION,
@@ -60,6 +66,7 @@ from sec_security_master import (
     PRODUCTION_MIN_CURRENT_SYMBOL_TITLE_RATIO,
     SOURCE_STATE_SCHEMA_VERSION,
     SecurityMasterError,
+    _validate_symbol_alias_source_state,
     audit_security_master,
     load_security_master,
     load_source_state,
@@ -114,6 +121,7 @@ STATE_PATH = DATA_DIR / "pipeline_state.json"
 SEC_SECURITY_MASTER_PATH = ROOT / ".cache" / "sec_security_master.json"
 SEC_SOURCE_STATE_PATH = ROOT / ".cache" / "sec_source_state.json"
 SEC_TICKER_SOURCES = frozenset({
+    REVIEW_SOURCE,
     "sec_ftd",
     "sec_ixbrl",
 })
@@ -128,7 +136,7 @@ SEC_METADATA_SOURCES = frozenset({
 # Public registry provenance is intentionally narrower than the private
 # security-master evidence vocabulary.  These are the only values emitted by
 # the SEC-only registry builder.  Keeping the allowlists explicit makes a
-# restored vendor-era registry fail publication even when its ticker happens to
+# restored unverified-era registry fail publication even when its ticker happens to
 # match the SEC master.
 PUBLIC_REGISTRY_LABEL_SOURCES = frozenset({
     "sec_13f_list",
@@ -137,6 +145,8 @@ PUBLIC_REGISTRY_LABEL_SOURCES = frozenset({
     "synthetic_identifier",
 })
 PUBLIC_REGISTRY_EVIDENCE_SOURCES = frozenset({
+    PRODUCT_NAME_SOURCE,
+    REVIEW_SOURCE,
     "sec_13f_list",
     "sec_13f_filer_consensus",
     "sec_company_tickers",
@@ -181,6 +191,7 @@ PRIVATE_SEC_EVIDENCE_FIELDS = frozenset({
     "symbol_evidence",
     "symbol_intervals",
     "symbol_validation_exchanges",
+    "symbol_validation_alias",
     "symbol_validation_sources",
     "symbol_validation_titles",
     "ticker_evidence_cusips",
@@ -195,6 +206,7 @@ _SECURITY_IDENTITY_VERSION = 1
 _EXCLUSIVE_ETF_ISSUER_RE = re.compile(
     r"(?:"
     r"ISHARES\s+TR|"
+    r"INVESCO\s+QQQ\s+TR(?:UST)?|"
     r"ETFIS\s+SER(?:IES)?\s+TR(?:UST)?(?:\s+I)?|"
     r"JANUS\s+DETROIT\s+STR\s+TR|"
     r"(?:SELECT\s+SECTOR\s+)?SPDR\s+"
@@ -378,6 +390,11 @@ def expected_registry_position_ticker(
         raw_ticker = entry.get("underlying_ticker")
         source = entry.get("underlying_ticker_source")
         as_of = entry.get("underlying_ticker_as_of")
+    elif normalized_type in (entry.get("instrument_mappings") or {}):
+        typed = entry["instrument_mappings"][normalized_type]
+        raw_ticker = typed.get("ticker")
+        source = typed.get("ticker_source")
+        as_of = typed.get("ticker_as_of")
     else:
         raw_entry_type = entry.get("type")
         if (
@@ -889,6 +906,7 @@ def validate_private_sec_security_state(
         )
         master = load_security_master(resolved_master_path)
         source_state = load_source_state(resolved_source_path)
+        _validate_symbol_alias_source_state(master, source_state)
         projected_audit = (
             project_master_audit(master, source_state)
             if enforce_production_source_gates
@@ -1165,6 +1183,9 @@ def validate_private_sec_security_state(
         ):
             ftd_interval_mismatches.append(key)
         candidate = master_entry.get("candidate_ticker")
+        alias = master_entry.get("symbol_validation_alias")
+        if isinstance(alias, dict):
+            candidate = alias.get("sec_symbol")
         if (
             not candidate
             and master_entry.get("mapping_status") == "resolved"
@@ -1302,6 +1323,16 @@ def validate_private_sec_security_state(
             + ", ".join(sorted(edgar_content_mismatches)[:10])
         )
 
+    try:
+        master = apply_review(master, resolved_master_path.parent.parent,
+                              source_state=source_state)
+    except SecurityMasterError as error:
+        errors.append(f"invalid reviewed identity layer: {error}")
+        return
+    records = master["records"]
+
+    review = load_review(resolved_master_path.parent.parent)
+
     missing: list[str] = []
     mismatched: list[str] = []
     underlying_mismatched: list[str] = []
@@ -1317,12 +1348,25 @@ def validate_private_sec_security_state(
         if not isinstance(master_entry, dict):
             missing.append(key)
             continue
-        fields = ("mapping_status", "ticker", "ticker_source", "ticker_as_of")
+        if entry.get("instrument_mappings", {}) != public_instrument_mappings(
+            cusip, entry.get("type"), records
+        ):
+            mismatched.append(key)
+        if entry.get('display_mappings', {}) != public_display_mappings(cusip, review):
+            mismatched.append(key)
+        try:
+            assert_display_compatibility(entry)
+        except SecurityMasterError:
+            mismatched.append(key)
+        fields = ("mapping_status", "ticker", "ticker_source", "ticker_as_of",
+                  "price_lookup_allowed", "trading_status")
         if any(entry.get(field) != master_entry.get(field) for field in fields):
             mismatched.append(key)
         elif entry.get("product_name_source") == "sec_fund_series" and (
             entry.get("product_name") != master_entry.get("fund_series_name")
         ):
+            mismatched.append(key)
+        if entry.get("product_name_source") == PRODUCT_NAME_SOURCE and not valid_reviewed_product_name(cusip, entry):
             mismatched.append(key)
 
         underlying_fields = (
@@ -2659,6 +2703,14 @@ def validate_funds(
                 holding_context = (
                     f"fund file {fp.name} quarter {idx} holding {h_idx}"
                 )
+                from note_classification import reviewed_note_type
+                correction = reviewed_note_type(holding, published_holding_instrument_type(holding))
+                if correction:
+                    errors.append(f"{holding_context} retains a reviewed NOTE misclassification; expected {correction}")
+                from preferred_classification import reviewed_preferred_type
+                preferred = reviewed_preferred_type(holding, published_holding_instrument_type(holding))
+                if preferred:
+                    errors.append(f"{holding_context} retains a reviewed preferred misclassification; expected {preferred}")
                 if "reported_identity_evidence" in holding:
                     errors.append(
                         f"{holding_context} contains forbidden holding-local "
@@ -3368,6 +3420,10 @@ def expected_filer_fund_kind(entry: dict) -> str | None:
         return None
     if _exact_registry_issuer_matches(entry, _EXCLUSIVE_ETF_ISSUER_RE):
         return "ETF"
+    if (entry.get("product_name_source") == "sec_fund_series"
+            and "sec_fund_series" in entry.get("sources", [])
+            and re.search(r"\bETFs?\b", str(entry.get("product_name") or ""), re.IGNORECASE)):
+        return "ETF"
     return None
 
 
@@ -3470,6 +3526,23 @@ def validate_security_labels(
     if not isinstance(payload, dict):
         return {}
     validate_data_contract(payload, "security_labels.json", errors)
+    from security_history import public_identity_history
+    if payload.get("identity_history") != public_identity_history():
+        errors.append("security_labels.json identity history differs from the reviewed graph")
+    expected_displays = {
+        f'{cusip}|{kind}': display
+        for cusip, row in registry.items()
+        for kind, display in row.get('display_mappings', {}).items()
+    }
+    if payload.get('reviewed_displays', {}) != expected_displays:
+        errors.append('security_labels.json reviewed displays differ from the verified registry')
+    from note_classification import public_note_type_corrections
+    if payload.get('note_type_corrections', {}) != public_note_type_corrections(registry):
+        errors.append('security_labels.json note corrections differ from the verified review')
+    from preferred_classification import public_preferred_metadata
+    for field, expected in public_preferred_metadata(registry).items():
+        if payload.get(field, {}) != expected:
+            errors.append(f"security_labels.json {field} differs from the preferred review")
     labels = payload.get("labels")
     if not isinstance(labels, dict):
         errors.append("security_labels.json must contain an object-valued labels map")
@@ -3650,9 +3723,19 @@ def validate_security_labels(
         source = str(
             registry_entry.get("security_kind_source") or ""
         ).strip()
+        from note_classification import classification_review, REVIEW_SOURCE
+        from preferred_classification import classification_review as preferred_review
+        correction = preferred_review().get(cusip) or classification_review().get(cusip)
+        reviewed_kind = (
+            source == REVIEW_SOURCE
+            and correction is not None
+            and registry_entry.get("type") == correction["to_type"]
+            and kind == correction["security_kind"]
+        )
         if not (
             source in SEC_METADATA_SOURCES
             or source == "filer_metadata"
+            or reviewed_kind
         ):
             bad_kind_sources.append(cusip)
         filer_text = " ".join(
@@ -3749,6 +3832,11 @@ def validate_security_labels(
                 "sec_title_class",
             }
             or valid_direct_etn_source
+            or (
+                provenance_source == PRODUCT_NAME_SOURCE
+                and PRODUCT_NAME_SOURCE in entry_sources
+                and valid_reviewed_product_name(cusip, registry_entry)
+            )
         ):
             bad_product_name_sources.append(cusip)
         if entry_kind not in _FUND_PRODUCT_NAME_KINDS:
@@ -4539,7 +4627,8 @@ def validate_index(
                 )
 
             normalized_note_label = normalize_note_security_label(ticker)
-            if instrument_type == "NOTE" and ticker:
+            if (instrument_type == "NOTE" and ticker
+                    and ticker != reviewed_display_ticker(registry.get(cusip), instrument_type)):
                 if normalized_note_label != ticker:
                     errors.append(
                         f"index.json ticker entry for "
@@ -4590,7 +4679,7 @@ def validate_index(
         indexed_entries_by_stock_id[lookup_id] = entry
         registry_entry = registry.get(cusip) or {}
         if registry_entry:
-            expected_search_ticker = expected_registry_position_ticker(
+            expected_search_ticker = reviewed_display_ticker(registry_entry, instrument_type) or expected_registry_position_ticker(
                 registry_entry,
                 instrument_type,
             )
@@ -4629,6 +4718,9 @@ def validate_index(
                 errors,
             )
             if recomputed is not None:
+                display_ticker = reviewed_display_ticker(registry_entry, instrument_type)
+                if display_ticker:
+                    recomputed['ticker'] = display_ticker
                 for field in (
                     "stock_id",
                     "cusip",
@@ -4807,11 +4899,11 @@ def validate_funds_index(
         )
 
 
-def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_cache: bool = False) -> int:
+def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_cache: bool = False, workers: int | None = None) -> int:
     cache = None
     if incremental:
         from incremental_validation import ValidationCache
-        cache = ValidationCache(sys.modules[__name__], cache_path, reuse=not refresh_cache)
+        cache = ValidationCache(sys.modules[__name__], cache_path, reuse=not refresh_cache, workers=workers)
     errors: list[str] = []
     warnings: list[str] = []
     quality_summary: dict[str, object] = {
@@ -4886,7 +4978,8 @@ def main(*, incremental: bool = False, cache_path: Path | None = None, refresh_c
     )
     if registry_is_valid:
         registry = validate_registry(fund_cusips, errors, registry)
-        validate_private_sec_security_state(registry, errors)
+        with audit_phase('private SEC provenance'):
+            validate_private_sec_security_state(registry, errors)
         validate_security_labels(registry, errors)
 
     index = load_json(INDEX_PATH, errors)
@@ -5000,7 +5093,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--incremental", action="store_true", help="Reuse content-bound successful checks; all global gates still run")
     parser.add_argument("--refresh-cache", action="store_true", help="Run every file check and replace cached results (requires --incremental)")
+    parser.add_argument("--workers", type=int, help="File-check processes for --incremental (default: up to 4, bounded by CPUs and memory; 1 forces serial)")
     args = parser.parse_args()
     if args.refresh_cache and not args.incremental:
         parser.error("--refresh-cache requires --incremental")
-    sys.exit(main(incremental=args.incremental, refresh_cache=args.refresh_cache))
+    if args.workers is not None and (args.workers < 1 or not args.incremental):
+        parser.error("--workers requires --incremental and a positive integer")
+    sys.exit(main(incremental=args.incremental, refresh_cache=args.refresh_cache, workers=args.workers))

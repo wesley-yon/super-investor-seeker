@@ -9,6 +9,7 @@ from unittest import mock
 import data_contract
 import pipeline
 import validate_data
+from security_history import public_identity_history
 from scripts import annotate_ticker_health
 
 
@@ -258,6 +259,54 @@ class GeneratedDataContractTests(unittest.TestCase):
                 pipeline.write_security_labels(registry)
                 validate_data.validate_security_labels(registry, errors)
                 self.assertTrue(any("fund_identities differ" in error for error in errors))
+
+    def test_bound_sec_name_classifies_truncated_fund_and_creation_units(self) -> None:
+        cusip = "14020W106"
+        evidence = {cusip: {"issuer_value": {"CAPITAL GROUP DIVIDEND VALUE": 1},
+            "class_value": {"SHS CREATION UNI": 1},
+            "instrument_type_count": {"EQUITY": 1},
+            "instrument_type_value": {"EQUITY": 1}}}
+        record = {"cusip": cusip, "instrument_type": "EQUITY",
+            "mapping_status": "resolved", "ticker": "CGDV", "ticker_source": "sec_ftd",
+            "ticker_as_of": "2026-08-13", "reported_issuers": ["CAPITAL GROUP DIVIDEND VALUE"],
+            "reported_classes": ["SHS CREATION UNI"],
+            "official_13f": {"status": "active", "records": [{"description": "SHS CREATION UNIT"}]}}
+        def generate():
+            with tempfile.TemporaryDirectory() as temporary:
+                with (mock.patch.object(pipeline, "FUNDS_DIR", Path(temporary)),
+                      mock.patch.object(pipeline, "_aggregate_cusip_evidence", return_value=evidence),
+                      mock.patch.object(pipeline, "load_security_master",
+                          return_value={"records": {cusip + "|EQUITY": record}}),
+                      mock.patch.object(pipeline, "apply_review", side_effect=lambda m, root: m),
+                      mock.patch.object(pipeline, "save_cusip_registry")):
+                    return pipeline.build_cusip_registry()[cusip]
+        self.assertEqual("UNIT", generate()["security_kind"])
+        record["fund_series_name"] = "Capital Group Dividend Value ETF"
+        row = generate()
+        self.assertEqual("ETF", row["security_kind"])
+        self.assertEqual("sec_fund_series", row["security_kind_source"])
+        self.assertEqual(record["fund_series_name"], row["product_name"])
+        self.assertEqual("ETF", validate_data.expected_filer_fund_kind(row))
+        self.assertEqual("CAPITAL GROUP DIVIDEND VALUE", row["name"])
+        self.assertIsNone(validate_data.expected_filer_fund_kind({**row, "type": "NOTE"}))
+        record["fund_series_name"] = "Saba Opportunistically Hedged Closed-End Funds ETF"
+        self.assertEqual("ETF", generate()["security_kind"])
+        record["fund_series_name"] = "Example ETN Strategy ETF"
+        self.assertEqual("ETF", generate()["security_kind"])
+
+    def test_qqq_abbreviated_trust_units_are_fund_shares(self) -> None:
+        for issuer in ("INVESCO QQQ TR", "INVESCO QQQ TRUST"):
+            entry = {"name": issuer, "dominant_issuer": issuer,
+                     "dominant_class": "UNIT SER 1", "type": "EQUITY"}
+            self.assertEqual("ETF", pipeline._filer_security_kind(entry))
+            self.assertEqual("ETF", validate_data.expected_filer_fund_kind(entry))
+            for kind in ("NOTE", "PREF", "WARRANT"):
+                self.assertIsNone(validate_data.expected_filer_fund_kind({**entry, "type": kind}))
+        for issuer in ("EXAMPLE ACQUISITION CORP", "INVESCO MORTGAGE CAPITAL",
+                       "INVESCO QQQ TR HOLDINGS CORP"):
+            entry = {"name": issuer, "dominant_class": "UNIT SER 1", "type": "EQUITY"}
+            self.assertEqual("UNIT", pipeline._filer_security_kind(entry))
+            self.assertIsNone(validate_data.expected_filer_fund_kind(entry))
 
     def test_filer_fund_kind_does_not_reclassify_saved_debt_from_issuer_alone(self) -> None:
         entry = {"name": "ISHARES TR", "dominant_class": "IBONDS DEC 2029",
@@ -520,7 +569,7 @@ class GeneratedDataContractTests(unittest.TestCase):
                     "holdings": [{
                         "cusip": "037833100",
                         "ticker": "UNPROVEN",
-                        "issuer": "Unproven Vendor Label",
+                        "issuer": "Unproven Unverified Label",
                         "reported_issuer": "APPLE INC",
                         "class": "COM",
                         "value": 100,
@@ -776,6 +825,7 @@ class GeneratedDataContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             labels_path = Path(tmpdir) / "security_labels.json"
             labels_path.write_text(json.dumps({
+                "identity_history": public_identity_history(),
                 "data_contract_version": data_contract.DATA_CONTRACT_VERSION,
                 "labels": {
                     cusip: entry["security_label"]
@@ -924,6 +974,7 @@ class GeneratedDataContractTests(unittest.TestCase):
                     },
                 }
                 payload = {
+                    "identity_history": public_identity_history(),
                     "data_contract_version": (
                         data_contract.DATA_CONTRACT_VERSION
                     ),
@@ -1026,11 +1077,12 @@ class GeneratedDataContractTests(unittest.TestCase):
             (ROOT / "data/cusip_registry.json").read_text()
         )
         if any("mapping_status" in entry for entry in registry.values()):
-            # The legacy snapshot below used manual/vendor-era display
-            # overrides. An SEC cutover must instead reconcile every public
-            # identity and mapping to its exact provenance-bearing master.
-            master = pipeline.load_security_master(
-                pipeline.SEC_SECURITY_MASTER_PATH
+            # The legacy snapshot below used manual/unverified-era display
+            # overrides. Reconcile each public identity to the validated SEC
+            # master plus the independently checksum-pinned reviewed projection.
+            master = pipeline.apply_review(
+                pipeline.load_security_master(pipeline.SEC_SECURITY_MASTER_PATH),
+                pipeline.SEC_SECURITY_MASTER_PATH.parent.parent,
             )
             errors: list[str] = []
             validate_data.validate_sec_mapping_provenance(registry, errors)
@@ -1044,9 +1096,14 @@ class GeneratedDataContractTests(unittest.TestCase):
                     self.assertIn(key, master["records"])
                     exact = master["records"][key]
                     for field in (
-                        "mapping_status", "ticker", "ticker_source", "ticker_as_of"
+                        "mapping_status", "ticker", "ticker_source", "ticker_as_of",
+                        "price_lookup_allowed", "trading_status",
                     ):
                         self.assertEqual(exact.get(field), entry.get(field))
+                    self.assertEqual(
+                        pipeline.public_instrument_mappings(cusip, entry['type'], master['records']),
+                        entry.get('instrument_mappings', {}),
+                    )
                     self.assertEqual(
                         entry["security_label"], labels["labels"][cusip]
                     )
@@ -1305,14 +1362,14 @@ class GeneratedDataContractTests(unittest.TestCase):
                 f"async function {loader}(",
                 f"function {renderer}(",
             )
-            await_pos = detail_load.rindex("await ")
-            blocked_pos = detail_load.index(
-                "if (dataContractBlocked)",
-                await_pos,
-            )
-            render_pos = detail_load.index(f"{renderer}(")
-            self.assertLess(await_pos, blocked_pos)
-            self.assertLess(blocked_pos, render_pos)
+            # The stock loader has both combined-class and single-identifier
+            # paths. Each render must check maintenance after its own await.
+            for render in re.finditer(rf"{renderer}\(", detail_load):
+                render_pos = render.start()
+                await_pos = detail_load.rfind("await ", 0, render_pos)
+                blocked_pos = detail_load.index("if (dataContractBlocked)", await_pos)
+                self.assertLess(await_pos, blocked_pos)
+                self.assertLess(blocked_pos, render_pos)
 
     def test_update_workflow_publishes_private_snapshot_without_git_data(
         self,
