@@ -1907,6 +1907,9 @@ class RebuildAndResolutionTests(unittest.TestCase):
         )
 
     def test_rebuild_embeds_checksummed_unique_fund_series_name(self) -> None:
+        from tests.test_sec_edgar_evidence import refreshed_cache
+        import validate_data
+
         cusip = "78462F103"
         cik = "0000884394"
         fund_page_url = master.sec_fund_series_url(cik)
@@ -1962,6 +1965,7 @@ class RebuildAndResolutionTests(unittest.TestCase):
             "class_names": {"C000007635": "SPDR S&P 500 ETF Trust"},
         }
 
+        state["edgar_evidence"] = refreshed_cache()
         rebuilt = master.rebuild_security_master(
             state,
             [
@@ -1993,6 +1997,32 @@ class RebuildAndResolutionTests(unittest.TestCase):
         original = copy.deepcopy(before_master)
         enriched = master.refresh_fund_series_names(before_master, before_state, state)
         self.assertEqual(rebuilt, enriched)
+        self.assertTrue(state["edgar_evidence"]["sources"])
+        with tempfile.TemporaryDirectory() as tmp:
+            master_path, state_path = Path(tmp) / "master.json", Path(tmp) / "state.json"
+            master.save_security_master_pair(enriched, state, master_path=master_path, source_state_path=state_path)
+            errors = []
+            # The small fixture lacks production coverage thresholds. Exercise
+            # the real source-reference reconciliation independently of those.
+            with mock.patch.object(validate_data, "audit_security_master", return_value={"ok": True, "issues": []}):
+                validate_data.validate_private_sec_security_state(
+                    {}, errors, master_path=master_path, source_state_path=state_path,
+                    enforce_production_source_gates=False,
+                )
+            self.assertEqual([], errors)
+            broken = copy.deepcopy(enriched)
+            edgar_urls = {source["url"] for source in state["edgar_evidence"]["sources"]}
+            broken["sources"] = [source for source in broken["sources"] if source["url"] not in edgar_urls]
+            master_path.write_text(json.dumps(broken), encoding="utf-8")
+            with mock.patch.object(validate_data, "audit_security_master", return_value={"ok": True, "issues": []}):
+                validate_data.validate_private_sec_security_state(
+                    {}, errors, master_path=master_path, source_state_path=state_path,
+                    enforce_production_source_gates=False,
+                )
+            self.assertIn(
+                "private SEC security master source checksums do not match the current source state",
+                errors,
+            )
         self.assertEqual(original, before_master)
         for key, prior in before_master["records"].items():
             self.assertEqual(prior, {k: v for k, v in enriched["records"][key].items()
