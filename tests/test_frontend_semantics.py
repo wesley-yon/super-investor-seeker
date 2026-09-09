@@ -11,6 +11,34 @@ APPLICATION_JS = ROOT / "app.js"
 
 
 class FrontendSemanticsTests(unittest.TestCase):
+    def test_header_descriptions_preserve_instrument_terms_and_option_identity(self):
+        result = self.run_javascript("""
+            securityKinds = {'10806XAB8':'BOND', '123456AB1':'PREFERRED', '78462F103':'ETF'};
+            const bond = {cusip:'10806XAB8',instrument_type:'NOTE',issuer:'BRIDGEBIO PHARMA INC'};
+            const preferred = {cusip:'123456AB1',instrument_type:'PREF',issuer:'EXAMPLE INC'};
+            const etf = {cusip:'78462F103',instrument_type:'EQUITY',issuer:'EXAMPLE TRUST'};
+            console.log(JSON.stringify({
+              bond:securityHeaderDescription(bond, 'BRIDGEBIO PHARMA INC — NOTE 2.500% 3/1'),
+              preferred:securityHeaderDescription(preferred, 'EXAMPLE INC — PFD SER A — DEPOSITARY SHS'),
+              unknown:securityHeaderDescription(bond, 'OTHER ISSUER — NOTE 3% 2030'),
+              incomplete:securityHeaderDescription(bond, 'BRIDGEBIO PHARMA INC — '),
+              etf:securityHeaderDescription(etf, ''),
+              call:securityHeaderDescription({...etf,instrument_type:'CALL'}, 'EXAMPLE TRUST — PUT'),
+              put:securityHeaderDescription({...etf,instrument_type:'PUT'}, 'EXAMPLE TRUST — CALL'),
+              option:securityHeaderDescription({...etf,instrument_type:'OPT'}, 'EXAMPLE TRUST — CALL'),
+              bondKey:stockLookupId(bond.cusip, bond.instrument_type),
+            }));
+        """, application=True)
+        self.assertEqual('NOTE 2.500% 3/1', result['bond'])
+        self.assertEqual('PFD SER A — DEPOSITARY SHS', result['preferred'])
+        self.assertEqual('OTHER ISSUER — NOTE 3% 2030', result['unknown'])
+        self.assertEqual('BRIDGEBIO PHARMA INC —', result['incomplete'])
+        self.assertEqual('Exchange-traded fund', result['etf'])
+        self.assertEqual('Call option', result['call'])
+        self.assertEqual('Put option', result['put'])
+        self.assertEqual('Option type unspecified', result['option'])
+        self.assertEqual('10806XAB8|NOTE', result['bondKey'])
+
     def test_compact_instruments_and_company_links(self):
         result = self.run_javascript("""
             securityIssuerSymbols = {'10806XAB8':'BBIO','04280AAC4':'ARWR', '123456AB1':'EXM'};
@@ -779,7 +807,7 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual("76954AAD5|NOTE", result["lookup"])
         self.assertNotIn('h.ticker.split(" ")[0]', self.html)
         self.assertIn(
-            'Security <span class="mono">${esc(securityMetadataLabel)}</span>',
+            '<div class="stock-description">${esc(securityHeaderDescription(securityHolding, securityMetadataLabel))}</div>',
             self.html,
         )
         self.assertIn(
@@ -1163,7 +1191,7 @@ class FrontendSemanticsTests(unittest.TestCase):
             self.html,
         )
         self.assertIn(
-            '${esc(securityKindClass)}">${esc(securityKindText)}</span>',
+            '${esc(securityKindClass)}" data-security-kind="${esc(holdingDisplayKind(securityHolding))}">${esc(securityKindText)}</span>',
             self.html,
         )
         self.assertIn("formattedHoldingCompany(securityHolding)", self.html)

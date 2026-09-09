@@ -742,6 +742,41 @@ function securityLabelNeedsWrap(label) {
   return value.length > 12 || /\s/.test(value);
 }
 
+// Keep contract terms intact while moving the repeated issuer out of the
+// description. Unknown labels remain verbatim; option descriptions never
+// borrow contract terms from the underlying security's CUSIP metadata.
+function securityHeaderDescription(holding, metadataLabel) {
+  const kind = holdingDisplayKind(holding);
+  const fallback = {
+    COMMON: "Common stock",
+    EQUITY: "Equity security",
+    PREFERRED: "Preferred security",
+    ETF: "Exchange-traded fund",
+    ETN: "Exchange-traded note",
+    "MUTUAL FUND": "Mutual fund shares",
+    "CLOSED-END FUND": "Closed-end fund shares",
+    BOND: "Bond security",
+    NOTE: "Note security",
+    WARRANT: "Warrant",
+    RIGHT: "Subscription right",
+    UNIT: "Unit",
+    CALL: "Call option",
+    PUT: "Put option",
+    OPTION: "Option type unspecified",
+  }[kind] || "Security";
+  if (["CALL", "PUT", "OPTION"].includes(kind)) return fallback;
+  const label = String(metadataLabel || "").trim();
+  if (!label) return fallback;
+  const separator = " — ";
+  const boundary = label.indexOf(separator);
+  if (boundary < 0) return label;
+  const normalize = value => String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+  const prefix = normalize(label.slice(0, boundary));
+  const issuerNames = [holding?.issuer, holdingDisplayCompany(holding), formattedHoldingCompany(holding)];
+  const details = label.slice(boundary + separator.length).trim();
+  return details && issuerNames.some(name => normalize(name) === prefix) ? details : label;
+}
+
 function securityTickerMark(ticker) {
   return String(ticker || "").trim().split(/\s+/)[0].slice(0, 6);
 }
@@ -3301,21 +3336,19 @@ function renderStock(sd, stockEntry = null) {
   let html = `
     <div class="stock-page">
       <main class="stock-main">
-        <div class="stock-title">
-          <div class="ticker-mark">${esc(tickerMark)}</div>
-          <div>
-            <div class="stock-title-line">
-              <h1>${esc(issuerText || securityText)}</h1>
-              <span class="ht-tag ${esc(securityKindClass)}">${esc(securityKindText)}</span>
-            </div>
-            <div class="stock-meta">
-              ${securityMetadataLabel ? `<span>Security <span class="mono">${esc(securityMetadataLabel)}</span></span>` : ""}
-              ${sd.identity_group ? "" : `<span>CUSIP <span class="mono">${esc(cusipText || "—")}</span></span>`}
-              <span>Institutional Holder View</span>
-              <span>Latest 13F Positions</span>
-            </div>
+        <header class="stock-title">
+          <div class="stock-title-line">
+            <div class="ticker-mark">${esc(tickerMark)}</div>
+            <span class="ht-tag ${esc(securityKindClass)}" data-security-kind="${esc(holdingDisplayKind(securityHolding))}">${esc(securityKindText)}</span>
           </div>
-        </div>
+          <h1>${esc(issuerText || securityText)}</h1>
+          <div class="stock-description">${esc(securityHeaderDescription(securityHolding, securityMetadataLabel))}</div>
+          <div class="stock-meta">
+            ${sd.identity_group ? "" : `<span>CUSIP <span class="mono">${esc(cusipText || "—")}</span></span>`}
+            <span>Institutional Holder View</span>
+            <span>Latest 13F Positions</span>
+          </div>
+        </header>
 
         <div class="stock-stat-grid">
           ${statCard("stock", historicalIdentity ? "Managers Reporting This Identifier" : "Current Institutional Holders", currentHolders.length.toLocaleString(), holdersIcon())}

@@ -477,10 +477,21 @@ th.sort.active,th.sort.active .arr{color:var(--ac)}
 .fund-data-footer,.stock-data-footer{margin-top:10px;padding-top:16px;border-color:var(--bd)}
 .fund-sidebar,.stock-sidebar{align-self:start}
 
-.stock-title{gap:22px;margin-bottom:25px;align-items:center}
-.ticker-mark{font-family:var(--serif);font-size:clamp(50px,5.2vw,72px);font-weight:600;letter-spacing:-.055em;color:var(--ac)}
-.stock-title h1{font-size:clamp(30px,3vw,44px);line-height:1.02;letter-spacing:-.035em}
-.stock-title-line{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:7px}
+/* Refined security identity: compact type badge, readable instrument terms. */
+.stock-title{display:block;margin:8px 0 28px;padding-bottom:25px;border-bottom:1px solid var(--bd)}
+.stock-title-line{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-bottom:13px}
+.ticker-mark{font-family:var(--sans);font-size:30px;font-weight:600;letter-spacing:-.035em;line-height:1.15;color:var(--ac);overflow-wrap:anywhere;min-width:0}
+.stock-title h1{font-size:34px;line-height:1.16;font-weight:500;letter-spacing:-.025em;margin:0 0 9px}
+.stock-description{font-size:17px;line-height:1.5;color:var(--tx);font-weight:400;margin-bottom:13px;overflow-wrap:anywhere}
+.stock-title .stock-meta{font-size:12px;gap:8px 18px;line-height:1.6}
+.stock-title .ht-tag{font-size:11px;font-weight:600;letter-spacing:.055em;line-height:1.3;padding:7px 11px;border-radius:6px;border:1px solid #bdd0c2;background:#e5ece2;color:#195340;white-space:normal;max-width:100%}
+.stock-title .ht-tag:is([data-security-kind="BOND"],[data-security-kind="NOTE"],[data-security-kind="ETN"]){background:#633c60;border-color:#633c60;color:#fff}
+.stock-title .ht-tag:is([data-security-kind="ETF"],[data-security-kind="MUTUAL FUND"],[data-security-kind="CLOSED-END FUND"]){background:#e1eaf0;border-color:#b9cbd5;color:#245365}
+.stock-title .ht-tag[data-security-kind="PREFERRED"]{background:#eae5f1;border-color:#c9bfd9;color:#42375d}
+.stock-title .ht-tag:is([data-security-kind="WARRANT"],[data-security-kind="RIGHT"]){background:#f0e8da;border-color:#d6c4a6;color:#704a1d}
+.stock-title .ht-tag[data-security-kind="CALL"]{background:#e1eaf2;border-color:#b4c9db;color:#234d70}
+.stock-title .ht-tag[data-security-kind="PUT"]{background:#f0e1e4;border-color:#d9b6be;color:#773c4c}
+.stock-title .ht-tag:is([data-security-kind="UNIT"],[data-security-kind="OPTION"]){background:#e8e8e6;border-color:#c7cac8;color:#444c49}
 .stock-largest-name{color:var(--tx);font-size:15px;font-weight:600}
 .stock-largest-meta{color:var(--mt);font-size:12px}
 .stock-icon{color:var(--ac)}
@@ -557,9 +568,13 @@ th.sort.active,th.sort.active .arr{color:var(--ac)}
   .fund-panel-title{font-size:20px}
   .side-panel{padding:20px}
   .side-title{font-size:21px}
-  .stock-title{grid-template-columns:1fr;gap:6px;margin-bottom:20px}
-  .ticker-mark{font-size:54px}
-  .stock-title h1{font-size:32px}
+  .stock-title{margin-top:3px;margin-bottom:23px;padding-bottom:21px}
+  .ticker-mark{font-size:28px}
+  .stock-title h1{font-size:27px;line-height:1.18}
+  .stock-title-line{margin-bottom:12px}
+  .stock-description{font-size:16px;margin-bottom:12px}
+  .stock-title .stock-meta{font-size:11px;gap:5px 13px}
+  .stock-title .stock-meta>span:first-child{flex-basis:100%}
   .stock-stat:last-child{grid-column:auto}
   .stock-table-footer{grid-template-columns:1fr;justify-items:start}
   .rows-control{justify-self:start}
@@ -573,7 +588,7 @@ th.sort.active,th.sort.active .arr{color:var(--ac)}
   .fund-stat-grid,.stock-stat-grid{grid-template-columns:1fr}
   .fund-stat,.stock-stat{border-right:0;border-bottom:1px solid var(--bd)!important;min-height:82px}
   .fund-stat:last-child,.stock-stat:last-child{border-bottom:0!important}
-  .stock-title-line{align-items:flex-start}
+  .stock-title-line{align-items:center}
 }
 @media(prefers-reduced-motion:reduce){
   *,*:before,*:after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}
