@@ -918,7 +918,7 @@ gh_mutate_once() {
             "- name: Checkout trusted GitHub retry helper", 1
         )[1].split("\n      - name:", 1)[0]
         self.assertIn(
-            "uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0",
+            "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
             trusted_helper_checkout,
         )
         self.assertIn("repository: ${{ job.workflow_repository }}", trusted_helper_checkout)
@@ -996,7 +996,7 @@ gh_mutate_once() {
         )
         self.assertIn("Refusing stale rollback", finalization)
         self.assertIn(
-            "uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0",
+            "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
             finalization,
         )
         self.assertIn("repository: ${{ job.workflow_repository }}", finalization)
