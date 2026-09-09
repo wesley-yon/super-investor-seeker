@@ -303,7 +303,10 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Test compressed site loader
-        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs
+        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs tests/test_etf_description_audit.mjs
+
+      - name: Audit ETF search descriptions
+        run: node scripts/audit_etf_descriptions.mjs
 
       - name: Annotate ticker health report
         # Non-fatal notices keep terminal no-symbol and quarantined identifiers

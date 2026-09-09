@@ -289,6 +289,10 @@ class GeneratedDataContractTests(unittest.TestCase):
         self.assertEqual("ETF", validate_data.expected_filer_fund_kind(row))
         self.assertEqual("CAPITAL GROUP DIVIDEND VALUE", row["name"])
         self.assertIsNone(validate_data.expected_filer_fund_kind({**row, "type": "NOTE"}))
+        record["fund_series_name"] = "Saba Opportunistically Hedged Closed-End Funds ETF"
+        self.assertEqual("ETF", generate()["security_kind"])
+        record["fund_series_name"] = "Example ETN Strategy ETF"
+        self.assertEqual("ETF", generate()["security_kind"])
 
     def test_qqq_abbreviated_trust_units_are_fund_shares(self) -> None:
         for issuer in ("INVESCO QQQ TR", "INVESCO QQQ TRUST"):

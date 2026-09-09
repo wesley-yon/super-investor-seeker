@@ -3212,7 +3212,10 @@ def build_cusip_registry() -> CusipRegistry:
             if resolution.get("fund_series_name"):
                 classification_entry = {**classification_entry,
                                         "name": resolution["fund_series_name"]}
-            kind = _filer_security_kind(classification_entry)
+            # A fund investing in closed-end funds or ETNs is still an ETF
+            # when its verified SEC product name explicitly identifies one.
+            kind = ("ETF" if re.search(r"\bETFs?\b", str(resolution.get("fund_series_name") or ""),
+                                     re.IGNORECASE) else _filer_security_kind(classification_entry))
             if kind in {"ETF", "MUTUAL FUND", "CLOSED-END FUND"} and (
                 "sec_fund_series" in sources or resolution.get("fund_series_name")
             ):
