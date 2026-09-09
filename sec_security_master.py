@@ -7370,11 +7370,17 @@ def refresh_fund_series_names(
     _apply_fund_series_names(refreshed["records"], candidate_state)
     refreshed["generated_at"] = candidate_state.get("updated_at")
     refreshed["source_state_sha256"] = _mapping_sha256(candidate_state)
-    refreshed["sources"] = [
+    # EDGAR filing references also live in the master, outside state.sources.
+    # Retain every non-fund reference verbatim when replacing fund-page names.
+    refreshed["sources"] = sorted([
+        dict(source) for source in prior_master["sources"]
+        if source.get("kind") != "sec_fund_series"
+    ] + [
         {"url": url, "sha256": entry["sha256"], "kind": entry["kind"],
          "schema_sha256": _source_schema_fingerprint(entry)}
         for url, entry in sorted(new_sources.items())
-    ]
+        if entry["kind"] == "sec_fund_series"
+    ], key=lambda source: (source["url"], source["kind"], source["sha256"]))
     refreshed["audit"] = dict(prior_master["audit"])
     refreshed["audit"]["fund_series_source_checkpoints"] = _fund_series_source_checkpoints(refreshed["records"])
     refreshed["audit"] = project_master_audit(refreshed, candidate_state)
