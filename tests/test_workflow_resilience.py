@@ -40,6 +40,17 @@ next_sequence_value() {
 
 
 class WorkflowResilienceTests(unittest.TestCase):
+    def test_display_only_refresh_preserves_validation_and_publication(self):
+        workflow = (ROOT / ".github/workflows/refresh-cusip-registry.yml").read_text()
+        self.assertIn("security_labels_only:", workflow)
+        self.assertIn("Validate display-only refresh scope", workflow)
+        self.assertIn("inputs.security_labels_only != true", workflow)
+        self.assertIn("write_security_labels(load_cusip_registry())", workflow)
+        for check in ["python validate_data.py --incremental --refresh-cache",
+                      "python -m unittest discover -s tests -v",
+                      "bash scripts/publish_private_snapshot.sh"]:
+            self.assertIn(check, workflow)
+
     @staticmethod
     def _finalization_shell() -> str:
         pages = read(".github/workflows/deploy-pages.yml")

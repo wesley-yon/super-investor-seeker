@@ -17,6 +17,11 @@ on:
         required: false
         default: true
         type: boolean
+      security_labels_only:
+        description: Regenerate display labels offline from the verified snapshot
+        required: false
+        default: false
+        type: boolean
       fund_names_only:
         description: Refresh SEC ETF descriptions using existing verified ticker mappings
         required: false
@@ -135,25 +140,38 @@ jobs:
             exit 1
           fi
 
+      - name: Validate display-only refresh scope
+        env:
+          LABELS_ONLY: ${{ inputs.security_labels_only || 'false' }}
+          CLEAN_REBUILD: ${{ inputs.rebuild_security_master || 'false' }}
+          FUND_NAMES_ONLY: ${{ inputs.fund_names_only || 'false' }}
+          LEGACY_SNAPSHOT: ${{ steps.restore_snapshot.outputs.legacy_snapshot }}
+        run: |
+          if [ "$LABELS_ONLY" = true ] &&
+             { [ "$CLEAN_REBUILD" = true ] || [ "$FUND_NAMES_ONLY" = true ] || [ "$LEGACY_SNAPSHOT" = true ]; }; then
+            echo "::error::Display-only refresh requires a verified snapshot and cannot combine with source refresh modes"
+            exit 1
+          fi
+
       - name: Restore pinned reviewed primary-source identities
         env:
           DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
         run: python scripts/prepare_reviewed_ticker_map.py --repository "$DATA_REPOSITORY"
 
       - name: Repair reviewed note classifications once per snapshot policy
-        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true' && inputs.security_labels_only != true
         run: >-
           python scripts/repair_note_classifications.py --apply --rebuild
           --pending-only --workers 2 --report .cache/note-classification-repair.json
 
       - name: Repair reviewed preferred classifications once per snapshot policy
-        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true' && inputs.security_labels_only != true
         run: >-
           python scripts/repair_preferred_classifications.py --apply --rebuild
           --pending-only --workers 2 --report .cache/preferred-classification-repair.json
 
       - name: Refresh reviewed identifier history once per snapshot policy
-        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true' && inputs.security_labels_only != true
         run: python scripts/refresh_security_history.py --pending-only
 
       - name: Verify SEC_USER_AGENT secret is configured
@@ -256,6 +274,7 @@ jobs:
           steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
           inputs.rebuild_security_master != true &&
           inputs.fund_names_only != true &&
+          inputs.security_labels_only != true &&
           (github.event_name != 'workflow_dispatch' || inputs.reconcile_filings == true)
         timeout-minutes: 50
         env:
@@ -281,8 +300,11 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           FUND_NAMES_ONLY: ${{ inputs.fund_names_only || 'false' }}
+          LABELS_ONLY: ${{ inputs.security_labels_only || 'false' }}
         run: |
-          if [ "$FUND_NAMES_ONLY" = true ]; then
+          if [ "$LABELS_ONLY" = true ]; then
+            python -c "from pipeline import load_cusip_registry, write_security_labels; write_security_labels(load_cusip_registry())"
+          elif [ "$FUND_NAMES_ONLY" = true ]; then
             python pipeline.py --regenerate-only --refresh-fund-names
           else
             python pipeline.py --regenerate-only --refresh-security-master
