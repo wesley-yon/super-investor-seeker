@@ -43,6 +43,21 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual('DROPBOX INC', result['bond'])
         self.assertEqual('NOTE', result['bondType'])
 
+    def test_qqq_fund_unit_classification_reaches_search(self) -> None:
+        import pipeline
+        entry = {"name": "INVESCO QQQ TR", "dominant_class": "UNIT SER 1", "type": "EQUITY"}
+        kind = pipeline._filer_security_kind(entry)
+        result = self.run_javascript("securityKinds = " + json.dumps({"46090E103": kind}) + ";" + """
+            const qqq = {cusip:'46090E103', ticker:'QQQ', instrument_type:'EQUITY'};
+            securityLabels = {'46090E103':'INVESCO QQQ TR — UNIT SER 1'};
+            console.log(JSON.stringify({
+              included:isCommonStockSearchEntry(qqq), tag:searchEntryTagLabel(qqq),
+              call:isCommonStockSearchEntry({...qqq,instrument_type:'CALL'}),
+              put:isCommonStockSearchEntry({...qqq,instrument_type:'PUT'})
+            }));
+        """)
+        self.assertEqual({'included':True, 'tag':'ETF', 'call':False, 'put':False}, result)
+
     def test_repaired_note_bookmarks_route_to_exact_fund_or_preferred(self) -> None:
         result = self.run_javascript("""
             securityNoteTypeCorrections = {'921937827': 'EQUITY', '012653200': 'PREF'};

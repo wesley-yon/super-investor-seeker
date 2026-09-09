@@ -4251,6 +4251,7 @@ _FILER_ABBREVIATED_SPONSOR_TR_RE = re.compile(
 _FILER_EXCLUSIVE_ETF_ISSUER_RE = re.compile(
     r"(?:"
     r"ISHARES\s+TR|"
+    r"INVESCO\s+QQQ\s+TR(?:UST)?|"
     r"ETFIS\s+SER(?:IES)?\s+TR(?:UST)?(?:\s+I)?|"
     r"JANUS\s+DETROIT\s+STR\s+TR|"
     r"(?:SELECT\s+SECTOR\s+)?SPDR\s+"

@@ -260,6 +260,20 @@ class GeneratedDataContractTests(unittest.TestCase):
                 validate_data.validate_security_labels(registry, errors)
                 self.assertTrue(any("fund_identities differ" in error for error in errors))
 
+    def test_qqq_abbreviated_trust_units_are_fund_shares(self) -> None:
+        for issuer in ("INVESCO QQQ TR", "INVESCO QQQ TRUST"):
+            entry = {"name": issuer, "dominant_issuer": issuer,
+                     "dominant_class": "UNIT SER 1", "type": "EQUITY"}
+            self.assertEqual("ETF", pipeline._filer_security_kind(entry))
+            self.assertEqual("ETF", validate_data.expected_filer_fund_kind(entry))
+            for kind in ("NOTE", "PREF", "WARRANT"):
+                self.assertIsNone(validate_data.expected_filer_fund_kind({**entry, "type": kind}))
+        for issuer in ("EXAMPLE ACQUISITION CORP", "INVESCO MORTGAGE CAPITAL",
+                       "INVESCO QQQ TR HOLDINGS CORP"):
+            entry = {"name": issuer, "dominant_class": "UNIT SER 1", "type": "EQUITY"}
+            self.assertEqual("UNIT", pipeline._filer_security_kind(entry))
+            self.assertIsNone(validate_data.expected_filer_fund_kind(entry))
+
     def test_filer_fund_kind_does_not_reclassify_saved_debt_from_issuer_alone(self) -> None:
         entry = {"name": "ISHARES TR", "dominant_class": "IBONDS DEC 2029",
                  "security_kind": "BOND", "ticker": None}
