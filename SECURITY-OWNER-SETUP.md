@@ -59,6 +59,22 @@ closed. [Pinned action inputs](https://github.com/actions/create-github-app-toke
 
 ## 3. Merge, verify, then remove the repository duplicate
 
+For a quick credential-only check, confirm both production environments contain
+`DATA_ARCHIVE_APP_PRIVATE_KEY`, then dispatch **Verify protected environment
+credentials** on `main`. All three matrix jobs must pass: `private-data` with
+Contents read, `private-data` with Contents write, and `github-pages` with
+Contents read. Environment secrets take precedence over the same-named repository
+secret. Record the environment secret update times and verify that the test jobs
+started afterward. A green test without confirmed environment entries could be
+using the repository fallback and is not sufficient.
+
+This test requests the permissions used in production and reads private release
+metadata. It does not publish the site, change private data, or test a full
+pipeline. The token action revokes its temporary tokens after each job. The
+workflow must be merged before its first manual dispatch; branch restrictions
+must remain in place. Repeat the test after deleting the repository duplicate,
+then verify production update and Pages runs as described below.
+
 After the environment setup and PR checks pass, merge the workflow changes.
 Confirm a main-branch update and Pages workflow can authenticate using their
 environments. Keeping the repository secret briefly during this transition

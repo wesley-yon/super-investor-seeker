@@ -1659,7 +1659,7 @@ class SourceStateCompactionTests(unittest.TestCase):
         wrong_period["sources"][LIST_URL]["list_period"] = "2026Q1"
         mutations.append(wrong_period)
         extra_field = copy.deepcopy(valid)
-        extra_field["sources"][LIST_URL]["records"][0]["vendor_id"] = "x"
+        extra_field["sources"][LIST_URL]["records"][0]["unverified_id"] = "x"
         mutations.append(extra_field)
         duplicate = copy.deepcopy(valid)
         duplicate["sources"][LIST_URL]["records"] *= 2
@@ -1907,6 +1907,9 @@ class RebuildAndResolutionTests(unittest.TestCase):
         )
 
     def test_rebuild_embeds_checksummed_unique_fund_series_name(self) -> None:
+        from tests.test_sec_edgar_evidence import refreshed_cache
+        import validate_data
+
         cusip = "78462F103"
         cik = "0000884394"
         fund_page_url = master.sec_fund_series_url(cik)
@@ -1962,6 +1965,7 @@ class RebuildAndResolutionTests(unittest.TestCase):
             "class_names": {"C000007635": "SPDR S&P 500 ETF Trust"},
         }
 
+        state["edgar_evidence"] = refreshed_cache()
         rebuilt = master.rebuild_security_master(
             state,
             [
@@ -1979,6 +1983,62 @@ class RebuildAndResolutionTests(unittest.TestCase):
         self.assertEqual("SPDR S&P 500 ETF Trust", record["fund_series_name"])
         self.assertEqual(fund_page_url, record["fund_series_evidence"]["url"])
         self.assertEqual("e" * 64, record["fund_series_evidence"]["sha256"])
+
+        # A description-only refresh must produce the same name evidence as a
+        # complete resolution pass, without changing any mapping decision.
+        before_state = copy.deepcopy(state)
+        before_state["sources"].pop(fund_page_url)
+        before_state = master._normalize_source_state(before_state)
+        state = master._normalize_source_state(state)
+        before_master = master.rebuild_security_master(before_state, [{
+            "cusip": cusip, "instrument_type": "EQUITY",
+            "reported_issuer": "SPDR S&P 500 ETF TRUST", "reported_class": "UNIT SER 1",
+        }])
+        original = copy.deepcopy(before_master)
+        enriched = master.refresh_fund_series_names(before_master, before_state, state)
+        self.assertEqual(rebuilt, enriched)
+        self.assertTrue(state["edgar_evidence"]["sources"])
+        with tempfile.TemporaryDirectory() as tmp:
+            master_path, state_path = Path(tmp) / "master.json", Path(tmp) / "state.json"
+            master.save_security_master_pair(enriched, state, master_path=master_path, source_state_path=state_path)
+            errors = []
+            # The small fixture lacks production coverage thresholds. Exercise
+            # the real source-reference reconciliation independently of those.
+            with mock.patch.object(validate_data, "audit_security_master", return_value={"ok": True, "issues": []}):
+                validate_data.validate_private_sec_security_state(
+                    {}, errors, master_path=master_path, source_state_path=state_path,
+                    enforce_production_source_gates=False,
+                )
+            self.assertEqual([], errors)
+            broken = copy.deepcopy(enriched)
+            edgar_urls = {source["url"] for source in state["edgar_evidence"]["sources"]}
+            broken["sources"] = [source for source in broken["sources"] if source["url"] not in edgar_urls]
+            master_path.write_text(json.dumps(broken), encoding="utf-8")
+            with mock.patch.object(validate_data, "audit_security_master", return_value={"ok": True, "issues": []}):
+                validate_data.validate_private_sec_security_state(
+                    {}, errors, master_path=master_path, source_state_path=state_path,
+                    enforce_production_source_gates=False,
+                )
+            self.assertIn(
+                "private SEC security master source checksums do not match the current source state",
+                errors,
+            )
+        self.assertEqual(original, before_master)
+        for key, prior in before_master["records"].items():
+            self.assertEqual(prior, {k: v for k, v in enriched["records"][key].items()
+                                     if k not in {"fund_series_name", "fund_series_evidence"}})
+        changed_ticker_evidence = copy.deepcopy(state)
+        changed_ticker_evidence["sources"][master.SEC_FUND_TICKERS_URL]["sha256"] = "a" * 64
+        with self.assertRaisesRegex(master.SecurityMasterError, "ticker evidence"):
+            master.refresh_fund_series_names(before_master, before_state, changed_ticker_evidence)
+        changed_other_state = copy.deepcopy(state)
+        changed_other_state["filter_universes"]["0" * 64] = []
+        with self.assertRaises(master.SecurityMasterError):
+            master.refresh_fund_series_names(before_master, before_state, changed_other_state)
+        unbound = copy.deepcopy(before_master)
+        unbound["source_state_sha256"] = "0" * 64
+        with self.assertRaisesRegex(master.SecurityMasterError, "bound prior"):
+            master.refresh_fund_series_names(unbound, before_state, state)
 
     def test_rebuild_is_deterministic_and_resolves_exact_key(self) -> None:
         state = self.apple_state()

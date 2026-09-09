@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -57,6 +59,22 @@ class PagesArtifactTests(unittest.TestCase):
             compresslevel=6,
             max_archive_bytes=1_000_000,
         )
+
+    def test_history_aware_build_requires_matching_review_metadata(self):
+        from security_history import public_identity_history
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = self.make_source(root)
+            with (source / "app.js").open("a") as handle:
+                handle.write("const SECURITY_HISTORY_SCHEMA_VERSION = 1;\n")
+            with self.assertRaisesRegex(ValueError, "history is missing or stale"):
+                self.build(source, root / "rejected")
+            self.assertFalse((root / "rejected").exists())
+            labels = source / "data/security_labels.json"
+            payload = json.loads(labels.read_text())
+            payload["identity_history"] = public_identity_history()
+            labels.write_text(json.dumps(payload))
+            self.build(source, root / "accepted")
 
     def test_build_is_bounded_compressed_and_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,6 +139,8 @@ class PagesArtifactTests(unittest.TestCase):
                     "index.html",
                     "app.js",
                     "site-data-loader.js",
+                    f"app.{hashlib.sha256((source / 'app.js').read_bytes()).hexdigest()}.js",
+                    f"site-data-loader.{hashlib.sha256((source / 'site-data-loader.js').read_bytes()).hexdigest()}.js",
                     "data/funds-index.json",
                     "data/index.json",
                     "data/security_labels.json",
@@ -129,6 +149,25 @@ class PagesArtifactTests(unittest.TestCase):
                 },
                 public_files,
             )
+
+    def test_new_html_cannot_reuse_an_older_cached_application_url(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = self.make_source(root)
+            original_html = (source / "index.html").read_bytes()
+            self.build(source, root / "before")
+            before = re.findall(r'src="([^"]+)"', (root / "before/index.html").read_text())
+            with (source / "app.js").open("a") as handle:
+                handle.write("// corrected ETF descriptions\n")
+            self.build(source, root / "after")
+            after = re.findall(r'src="([^"]+)"', (root / "after/index.html").read_text())
+            self.assertEqual(2, len(after))
+            self.assertEqual(before[0], after[0])
+            self.assertNotEqual(before[1], after[1])
+            for script, expected in zip(after, ("site-data-loader.js", "app.js")):
+                self.assertEqual((source / expected).read_bytes(), (root / "after" / script).read_bytes())
+                self.assertEqual((source / expected).read_bytes(), (root / "after" / expected).read_bytes())
+            self.assertEqual(original_html, (source / "index.html").read_bytes())
 
     def test_build_rejects_missing_loader_integration(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

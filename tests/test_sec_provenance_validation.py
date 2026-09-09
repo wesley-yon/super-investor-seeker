@@ -386,7 +386,7 @@ class SecProvenanceValidationTests(unittest.TestCase):
             "000000001": {
                 "mapping_status": "resolved",
                 "ticker": "lower",
-                "ticker_source": "vendor_feed",
+                "ticker_source": "unverified_feed",
                 "ticker_as_of": "2026-08-14T00:00:00Z",
             },
             "000000002": {
@@ -444,13 +444,13 @@ class SecProvenanceValidationTests(unittest.TestCase):
         self.assertEqual([], errors)
 
         registry.update({
-            "vendor-label": {
-                "label_source": "openfigi",
+            "unverified-label": {
+                "label_source": "unverified_source",
                 "sources": ["sec_ftd"],
             },
-            "vendor-source": {
+            "unverified-source": {
                 "label_source": "sec_ftd",
-                "sources": ["openfigi"],
+                "sources": ["unverified_source"],
             },
             "malformed-sources": {
                 "label_source": "sec_13f_list",
@@ -464,8 +464,8 @@ class SecProvenanceValidationTests(unittest.TestCase):
         self.assertEqual(2, len(errors))
         self.assertTrue(any("security labels" in error for error in errors))
         self.assertTrue(any("entries with sources" in error for error in errors))
-        self.assertTrue(any("vendor-label" in error for error in errors))
-        self.assertTrue(any("vendor-source" in error for error in errors))
+        self.assertTrue(any("unverified-label" in error for error in errors))
+        self.assertTrue(any("unverified-source" in error for error in errors))
         self.assertTrue(any("malformed-sources" in error for error in errors))
 
     def test_sec_safety_anchors_accept_exact_registry_and_master_state(
@@ -656,7 +656,7 @@ class SecProvenanceValidationTests(unittest.TestCase):
             self.assertEqual([], errors)
 
             registry["037833100"]["underlying_ticker_source"] = (
-                "openfigi"
+                "unverified_source"
             )
             errors.clear()
             validate_data.validate_private_sec_security_state(

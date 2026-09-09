@@ -32,7 +32,6 @@ POLICY_VERSION = 1
 ROOT = Path(__file__).resolve().parent
 DEFAULT_EVIDENCE_PATH = ROOT / ".cache/quantity_estimation_evidence.json"
 DEFAULT_MARKET_PATH = ROOT / ".cache/quarter_close_prices.json"
-DEFAULT_REQUEST_PATH = ROOT / ".cache/quarter_close_price_requests.json"
 MIN_PEER_FILERS = 3
 MIN_PEER_AGREEMENT = 0.8
 SUPPORTED_UNITS = {"EQUITY": "SH", "NOTE": "PRN", "CALL": "SH", "PUT": "SH"}
@@ -348,18 +347,25 @@ def _validate_reference(reference: Mapping[str, Any]) -> list[str]:
             errors.append("insufficient peer agreement")
         if accepted_count < reference.get("peer_count", 0) or len(str(reference.get("screened_observations_sha256", ""))) != 64:
             errors.append("invalid peer screening receipt")
-    elif method == "fiscal_ai_quarter_close":
+    elif method == "saved_quarter_close":
+        original = reference.get("original_receipt")
+        if not isinstance(original, dict) or canonical_json_hash(original) != reference.get("original_receipt_sha256"):
+            errors.append("missing or changed archived price receipt")
+        elif any(reference.get(key) != original.get(key) for key in ("cusip", "report_date", "price_date", "price", "currency", "unit", "split_adjusted_close", "split_adjustment_factor", "split_history", "series_through", "sec_identity", "volume", "listing_id", "company_key", "price_basis", "price_conversion", "retrieved_at")):
+            errors.append("saved price differs from its archived receipt")
+        if isinstance(original, dict) and original.get("instrument_type") != kind and not (original.get("instrument_type") == "EQUITY" and kind in {"CALL", "PUT"}):
+            errors.append("saved price changed its security type")
         if kind not in {"EQUITY", "CALL", "PUT"}:
             errors.append("stock price cannot estimate a debt or other security quantity")
         if reference.get("price_basis") != "quarter_end_unadjusted":
             errors.append("unsupported price adjustment basis")
-        if not isinstance(reference.get("provider_response_sha256"), str) or len(reference["provider_response_sha256"]) != 64:
-            errors.append("missing provider response checksum")
+        if re.fullmatch(r"[0-9a-f]{64}", str(reference.get("source_response_sha256", ""))) is None:
+            errors.append("missing source response checksum")
         if not reference.get("listing_id") or not reference.get("company_key") or not reference.get("sec_identity"):
             errors.append("missing exact listing identity")
         identity = reference.get("sec_identity", {})
         interval = identity.get("interval", {})
-        listing = reference.get("provider_listing", {})
+        listing = reference.get("source_listing", {})
         if (
             identity.get("cusip") != reference.get("cusip")
             or identity.get("instrument_type") != "EQUITY"
@@ -367,10 +373,10 @@ def _validate_reference(reference: Mapping[str, Any]) -> list[str]:
             or identity.get("ticker") != listing.get("ticker")
             or interval.get("symbol") != identity.get("ticker")
             or not interval.get("first_seen", "9999") <= reference.get("report_date", "") <= interval.get("last_seen", "")
-            or listing.get("tradingCurrency") != "USD"
-            or listing.get("operatingMic") not in {"XNAS", "XNYS", "XASE", "ARCX", "BATS", "IEXG"}
-            or listing.get("listingFiscalIdentifier") != reference.get("listing_id")
-            or reference.get("company_key") != f"{listing.get('exchangeCode')}_{listing.get('ticker')}"
+            or listing.get("currency") != "USD"
+            or listing.get("mic") not in {"XNAS", "XNYS", "XASE", "ARCX", "BATS", "IEXG"}
+            or listing.get("listing_id") != reference.get("listing_id")
+            or reference.get("company_key") != f"{listing.get('exchange')}_{listing.get('ticker')}"
         ):
             errors.append("market listing does not match the dated SEC identity")
         sources = interval.get("sources", [])
@@ -380,7 +386,7 @@ def _validate_reference(reference: Mapping[str, Any]) -> list[str]:
             for source in sources
         ):
             errors.append("market identity lacks SEC source receipts")
-        if reference.get("volume", 0) <= 0 or not positive_number(reference.get("split_adjustment_factor")):
+        if not positive_number(reference.get("volume")) or not positive_number(reference.get("split_adjustment_factor")):
             errors.append("missing traded close or invalid split adjustment")
         adjusted = reference.get("split_adjusted_close")
         factor = reference.get("split_adjustment_factor")
@@ -392,7 +398,7 @@ def _validate_reference(reference: Mapping[str, Any]) -> list[str]:
                 reference["price_date"], reference["series_through"],
             )
             if factor != expected_factor:
-                errors.append("split factor does not match the provider history")
+                errors.append("split factor does not match the saved history")
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(f"unverified split basis: {exc}")
     else:
@@ -405,7 +411,7 @@ def split_adjustment_factor(splits: list[dict], price_date: str, series_through:
     date.fromisoformat(price_date)
     date.fromisoformat(series_through)
     if series_through < price_date:
-        raise QuantityEstimationError("price date exceeds the provider series")
+        raise QuantityEstimationError("price date exceeds the saved series")
     events = {}
     for split in splits:
         ex_date = split.get("exDate")
@@ -414,8 +420,8 @@ def split_adjustment_factor(splits: list[dict], price_date: str, series_through:
         date.fromisoformat(ex_date)
         if not price_date < ex_date <= series_through:
             continue
-        # The connector documents split-adjusted prices but does not define
-        # reverse-split/stock-dividend rate conventions. Do not guess them.
+        # Only documented forward splits have an unambiguous conversion here.
+        # Other corporate actions require separate verified unit conventions.
         rate = split.get("rate")
         if split.get("splitType") != "Stock Split" or not positive_number(rate) or rate < 1:
             raise QuantityEstimationError("later corporate-action rate needs explicit verification")
@@ -423,44 +429,6 @@ def split_adjustment_factor(splits: list[dict], price_date: str, series_through:
             raise QuantityEstimationError("conflicting split events")
         events[ex_date] = rate
     return math.prod(events.values())
-
-
-def fiscal_reference(export: Mapping[str, Any], request: Mapping[str, Any], company: Mapping[str, Any]) -> dict:
-    """Admit a connector export only for the exact preverified US listing."""
-    if export.get("error"):
-        raise QuantityEstimationError(str(export["error"]))
-    listing = export.get("listing", {})
-    if export.get("companyKey") != company.get("companyKey"):
-        raise QuantityEstimationError("provider company does not match its request")
-    if listing.get("ticker") != company.get("ticker") or listing.get("operatingMic") != company.get("micCode"):
-        raise QuantityEstimationError("provider returned another listing")
-    if company.get("tradingCurrency") != "USD" or listing.get("tradingCurrency") != "USD":
-        raise QuantityEstimationError("quantity estimation requires a USD quote")
-    price_date = quarter_close_date(request["report_date"])
-    points = [point for point in export.get("prices", []) if point.get("date") == price_date]
-    if len(points) != 1 or not positive_number(points[0].get("closePrice")) or not positive_number(points[0].get("volume")):
-        raise QuantityEstimationError("no unique traded close on the quarter-end session")
-    point = points[0]
-    factor = split_adjustment_factor(export.get("splits", []), price_date, export["seriesThrough"])
-    reference = {
-        "policy_version": POLICY_VERSION, "method": "fiscal_ai_quarter_close",
-        "report_date": request["report_date"], "price_date": price_date,
-        "cusip": request["cusip"], "instrument_type": "EQUITY", "unit": "SH",
-        "quantity_basis": "shares", "currency": "USD",
-        "price": point["closePrice"] * factor,
-        "price_basis": "quarter_end_unadjusted",
-        "price_conversion": "undo_later_forward_splits" if factor != 1 else "none",
-        "split_adjusted_close": point["closePrice"], "split_adjustment_factor": factor,
-        "split_history": export.get("splits", []), "series_through": export["seriesThrough"],
-        "volume": point["volume"], "listing_id": listing.get("listingFiscalIdentifier"),
-        "company_key": company["companyKey"], "provider_listing": listing,
-        "provider_response_sha256": canonical_json_hash(export),
-        "retrieved_at": export.get("fetchedAt"), "sec_identity": request["sec_identity"],
-    }
-    errors = validate_reference(reference)
-    if errors:
-        raise QuantityEstimationError("; ".join(errors))
-    return reference
 
 
 def validate_quantity_annotation(holding: Mapping[str, Any], report_date: str, evidence: Mapping[str, Any], *, cik: str | None = None) -> list[str]:
@@ -517,7 +485,7 @@ def build_plan(funds_dir: Path, *, evidence_path: Path = DEFAULT_EVIDENCE_PATH, 
             raise QuantityEstimationError(f"conflicting market references for {key}")
         market[key] = reference
     evidence = {"schema_version": POLICY_VERSION, "references": dict(old_book.get("references", {})), "reported_rows": old_book.get("reported_rows", {})}
-    changes, requests = [], {}
+    changes = []
     for target in targets:
         holding = target["holding"]
         key = (target["report_date"], holding["cusip"], holding_instrument_type(holding))
@@ -541,13 +509,6 @@ def build_plan(funds_dir: Path, *, evidence_path: Path = DEFAULT_EVIDENCE_PATH, 
                 # contract counts. Preserve CALL/PUT as separate identities.
                 reference = {**reference, "instrument_type": key[2], "quantity_basis": "underlying_shares"}
             reference = reference or peers[peer_key]
-            needs_quote = (
-                holding.get("shares_imputed") is True
-                or reference is None
-                or holding["value"] >= reference["price"]
-            )
-            if key[2] in {"EQUITY", "CALL", "PUT"} and market_key not in market and needs_quote:
-                requests[market_key] = {"report_date": key[0], "cusip": key[1], "instrument_type": "EQUITY", "ticker": holding.get("ticker")}
         revised = dict(holding)
         for field in ("shares_imputed", "quantity_estimate", "quantity_unknown", "quantity_unknown_reason"):
             revised.pop(field, None)
@@ -566,10 +527,10 @@ def build_plan(funds_dir: Path, *, evidence_path: Path = DEFAULT_EVIDENCE_PATH, 
         if errors:
             raise QuantityEstimationError(f"invalid proposed estimate: {errors}")
         changes.append({**target, "revised": revised})
-    return {"schema_version": POLICY_VERSION, "targets": changes, "evidence": evidence, "price_requests": [requests[key] for key in sorted(requests)]}
+    return {"schema_version": POLICY_VERSION, "targets": changes, "evidence": evidence}
 
 
-def apply_plan(plan: dict, funds_dir: Path, *, evidence_path: Path = DEFAULT_EVIDENCE_PATH, request_path: Path = DEFAULT_REQUEST_PATH) -> dict:
+def apply_plan(plan: dict, funds_dir: Path, *, evidence_path: Path = DEFAULT_EVIDENCE_PATH) -> dict:
     """Preflight the entire change set before any holding file is replaced."""
     by_file = defaultdict(list)
     for target in plan["targets"]:
@@ -608,8 +569,7 @@ def apply_plan(plan: dict, funds_dir: Path, *, evidence_path: Path = DEFAULT_EVI
     # Additive evidence is durable first. An interruption can leave mixed policy
     # generations, which validation rejects; it cannot leave dangling receipts.
     atomic_json(evidence_path, plan["evidence"])
-    atomic_json(request_path, {"schema_version": POLICY_VERSION, "requests": plan["price_requests"]})
     for path, fund in staged:
         atomic_json(path, fund)
     targets = plan["targets"]
-    return {"targets_reviewed": len(targets), "files_changed": len(staged), "estimated_rows": sum(row["revised"].get("shares_imputed") is True for row in targets), "unknown_rows": sum(row["revised"].get("quantity_unknown") is True for row in targets), "market_price_requests": len(plan["price_requests"])}
+    return {"targets_reviewed": len(targets), "files_changed": len(staged), "estimated_rows": sum(row["revised"].get("shares_imputed") is True for row in targets), "unknown_rows": sum(row["revised"].get("quantity_unknown") is True for row in targets)}
