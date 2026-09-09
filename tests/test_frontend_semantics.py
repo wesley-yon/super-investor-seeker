@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -636,46 +637,76 @@ class FrontendSemanticsTests(unittest.TestCase):
         self.assertEqual("2026-02-31", result["impossible"])
         self.assertEqual("0000-02-29", result["invalidYear"])
 
-    def test_homepage_pins_adar1_before_other_popular_filers(self) -> None:
-        constants_start = self.html.index(
-            "const PINNED_POPULAR_FUND_CIKS ="
-        )
-        constants_end = self.html.index(
-            "// ---------- global state ----------", constants_start
-        )
-        lookup_start = self.html.index("let _popularFundsCache = null;")
-        lookup_end = self.html.index(
-            "// ---------- global unified search ----------", lookup_start
-        )
-        completed = subprocess.run(
-            [
-                "node",
-                "-e",
-                (
-                    self.html[constants_start:constants_end]
-                    + "\nlet idx = {funds: ["
-                    + '{cik: 1067983, name: "BERKSHIRE HATHAWAY INC"},'
-                    + '{cik: 1940272, name: "Renamed SEC Filer"},'
-                    + '{cik: 1336528, name: "Pershing Square Capital"}'
-                    + "]};\n"
-                    + self.html[lookup_start:lookup_end]
-                    + "\nconst present = getPopularFunds().map(f => f.cik);"
-                    + "\n_popularFundsCache = null;"
-                    + "\nidx = {funds: idx.funds.filter("
-                    + "f => f.cik !== 1940272)};"
-                    + "\nconst absent = getPopularFunds().map(f => f.cik);"
-                    + "\nconsole.log(JSON.stringify({present, absent}));"
-                ),
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        result = json.loads(completed.stdout)
+    def test_homepage_keeps_live_summary_and_search_without_browse_sections(self) -> None:
+        result = self.run_javascript("""
+            const root = {innerHTML:''};
+            global.document = {getElementById:()=>root};
+            idx = {funds:[{cik:1},{cik:2}],last_updated:'2026-09-09T12:00:00Z'};
+            renderFundsHome();
+            console.log(JSON.stringify({html:root.innerHTML}));
+        """, application=True)
+        visible_text = ' '.join(re.sub(r'<[^>]+>', '', result['html']).split())
+        self.assertIn('Track What Institutional Funds Are Buying', visible_text)
+        self.assertIn('home-filer-count">2</span>', result['html'])
+        self.assertIn('updated', result['html'])
+        self.assertIn('id="homeSearch"', result['html'])
+        self.assertIn('enterkeyhint="search"', result['html'])
+        self.assertNotIn('autofocus', result['html'])
+        self.assertNotIn('fundBrowse', result['html'])
+        self.assertNotIn('popular', result['html'].lower())
+        self.assertNotIn('getPopularFunds', self.application)
 
-        self.assertEqual([1940272, 1067983, 1336528], result["present"])
-        self.assertEqual([1067983, 1336528], result["absent"])
+    def test_mobile_search_layout_follows_viewport_and_restores_on_exit(self) -> None:
+        result = self.run_javascript("""
+            let narrow = false, focusCalls = 0, blurred = 0, frame;
+            const styles = {}, classes = new Set(), scrolls = [];
+            const docEvents = {}, viewportEvents = {}, windowEvents = {};
+            const root = {classList:{add:v=>classes.add(v),remove:v=>classes.delete(v)},
+              style:{setProperty:(k,v)=>styles[k]=v,removeProperty:k=>delete styles[k]}};
+            const input = {id:'homeSearch',closest:()=>root,focus:()=>focusCalls++,
+              blur:()=>{blurred++;document.activeElement=null;}};
+            global.document = {getElementById:()=>input,activeElement:null,
+              addEventListener:(k,v)=>docEvents[k]=v};
+            global.window = {scrollY:35,innerHeight:800,matchMedia:()=>({matches:narrow}),
+              scrollTo:value=>scrolls.push(value),addEventListener:(k,v)=>windowEvents[k]=v,
+              requestAnimationFrame:callback=>{frame=callback;return 1;},
+              visualViewport:{height:800,offsetTop:0,addEventListener:(k,v)=>viewportEvents[k]=v}};
+            wireHomeSearchLayout();
+            const initiallyActive = homeSearchSession !== null;
+            docEvents.focusin({target:input});
+            const desktopActive = homeSearchSession !== null;
+            narrow = true;
+            document.activeElement = input;
+            docEvents.focusin({target:input});
+            const opened = classes.has('is-searching');
+            window.visualViewport.height = 360;
+            window.visualViewport.offsetTop = 42;
+            viewportEvents.resize();
+            viewportEvents.scroll();
+            frame();
+            const compact = {...styles};
+            endHomeSearch();
+            const restored = {active:homeSearchSession !== null,classes:[...classes],styles:{...styles}};
+            // Browsers without VisualViewport still get a bounded search area.
+            window.visualViewport = undefined;
+            docEvents.focusin({target:input});
+            const fallback = {...styles};
+            narrow = false;
+            windowEvents.resize();
+            frame();
+            console.log(JSON.stringify({initiallyActive,desktopActive,opened,compact,restored,
+              fallback,desktopRestored:homeSearchSession === null,focusCalls,blurred,scrolls}));
+        """, application=True)
+        self.assertFalse(result['initiallyActive'])
+        self.assertFalse(result['desktopActive'])
+        self.assertTrue(result['opened'])
+        self.assertEqual({'--search-viewport-height':'360px','--search-viewport-top':'42px'}, result['compact'])
+        self.assertEqual({'active':False,'classes':[],'styles':{}}, result['restored'])
+        self.assertEqual({'--search-viewport-height':'800px','--search-viewport-top':'0px'}, result['fallback'])
+        self.assertTrue(result['desktopRestored'])
+        self.assertEqual(0, result['focusCalls'])
+        self.assertEqual(1, result['blurred'])
+        self.assertEqual([{'top':35,'behavior':'instant'}] * 2, result['scrolls'])
 
     def test_fund_search_identity_always_includes_the_authoritative_cik(
         self,

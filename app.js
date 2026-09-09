@@ -1887,41 +1887,6 @@ function holderFundCell(holder, rowBg = "") {
 }
 
 
-// ---------- curated browse lists ----------
-// Stable identities that should always lead the popular-filer list when they
-// are present. CIK matching keeps placement intact if an SEC filer name changes.
-const PINNED_POPULAR_FUND_CIKS = [1940272]; // ADAR1 Capital Management, LLC
-
-// Popular investors that users are likely to look up first. We match the rest
-// by substring against the actual index fund names, so any name that isn't in
-// the pulled data silently drops out (rather than producing a dead card).
-const POPULAR_FUND_NEEDLES = [
-  "BERKSHIRE HATHAWAY",
-  "PERSHING SQUARE",
-  "RENAISSANCE TECHNOLOGIES",
-  "CITADEL ADVISORS",
-  "BRIDGEWATER ASSOCIATES",
-  "SOROS FUND MANAGEMENT",
-  "BAUPOST GROUP",
-  "GREENLIGHT CAPITAL",
-  "APPALOOSA",
-  "TIGER GLOBAL",
-  "COATUE",
-  "D1 CAPITAL",
-  "ARK INVESTMENT",
-  "RTW INVESTMENTS",
-  "SEQUOIA FINANCIAL",
-  "TWO SIGMA",
-  "MILLENNIUM MANAGEMENT",
-  "POINT72",
-  "THIRD POINT",
-  "DUQUESNE",
-  "ICAHN",
-  "VIKING GLOBAL",
-  "OAKTREE",
-  "LONE PINE",
-];
-
 // ---------- global state ----------
 let idx = null;                  // lightweight fund bootstrap + lazy ticker search
 let fundIndexByCik = new Map();  // one O(1) reporting-calendar lookup per holder
@@ -1994,6 +1959,7 @@ function showLoadError(title, path) {
 }
 
 function showDataMaintenance() {
+  endHomeSearch();
   dataContractBlocked = true;
   $("gsearchWrap").style.display = "none";
   $("backBtn").style.display = "none";
@@ -2265,6 +2231,7 @@ function stockIdNeedsSearchIndex(stockId) {
     }
     await securityLabelsReady;
     wireGlobalSearch();
+    wireHomeSearchLayout();
     wireSiteInteractions();
     wireUrlRouting();
     // Fund pages and the home page no longer wait for the full ticker index.
@@ -2311,6 +2278,7 @@ function wireSiteInteractions() {
     const { action, col, dir, page } = target.dataset;
     switch (action) {
       case "home": goHome(); break;
+      case "close-home-search": clearAllSearchInputs(); break;
       case "fund-sort": onFundSort(col); break;
       case "stock-sort": onStockSort(col); break;
       case "stock-focus-sort": focusStockSort(col, dir); break;
@@ -2358,6 +2326,7 @@ function wireSiteInteractions() {
       event.target.value = "";
       $("gsearch").value = "";
       closeGlobalSearch();
+      endHomeSearch();
     } else if (event.key === "Enter") {
       const first = document.querySelector(".gsearch-results.open .gsearch-item");
       if (first) { event.preventDefault(); first.click(); }
@@ -2407,32 +2376,60 @@ function setUrl(kind, id) {
   }
 }
 
-// ---------- curated browse lookups ----------
-// Run once per index load; results are cached so home-page renders are free.
-let _popularFundsCache = null;
-function getPopularFunds() {
-  if (_popularFundsCache) return _popularFundsCache;
-  const out = [];
-  const seen = new Set();
-  for (const cik of PINNED_POPULAR_FUND_CIKS) {
-    const match = idx.funds.find(f => f.cik === cik);
-    if (match) {
-      out.push(match);
-      seen.add(match.cik);
-    }
+// ---------- mobile home search layout ----------
+// Focus is requested only by the visitor. The visual viewport excludes the
+// software keyboard, unlike the layout viewport used by position:fixed on iOS.
+let homeSearchSession = null;
+
+function startHomeSearch() {
+  if (homeSearchSession || !window.matchMedia("(max-width: 768px)").matches) return;
+  const input = $("homeSearch");
+  const hero = input?.closest(".home-hero");
+  if (!hero) return;
+  homeSearchSession = { hero, input, scrollY: window.scrollY };
+  hero.classList.add("is-searching");
+  updateHomeSearchViewport();
+}
+
+function updateHomeSearchViewport() {
+  if (!homeSearchSession) return;
+  if (!window.matchMedia("(max-width: 768px)").matches) {
+    endHomeSearch();
+    return;
   }
-  for (const needle of POPULAR_FUND_NEEDLES) {
-    const match = idx.funds.find(
-      f => !seen.has(f.cik) && (f.name || "").toUpperCase().includes(needle)
-    );
-    if (match) {
-      out.push(match);
-      seen.add(match.cik);
-    }
-    if (out.length >= 24) break;
-  }
-  _popularFundsCache = out;
-  return out;
+  const viewport = window.visualViewport;
+  const { hero } = homeSearchSession;
+  hero.style.setProperty("--search-viewport-height", `${viewport?.height ?? window.innerHeight}px`);
+  hero.style.setProperty("--search-viewport-top", `${viewport?.offsetTop ?? 0}px`);
+}
+
+function endHomeSearch() {
+  if (!homeSearchSession) return;
+  const { hero, input, scrollY } = homeSearchSession;
+  homeSearchSession = null;
+  if (document.activeElement === input) input.blur();
+  hero.classList.remove("is-searching");
+  hero.style.removeProperty("--search-viewport-height");
+  hero.style.removeProperty("--search-viewport-top");
+  window.scrollTo({ top: scrollY, behavior: "instant" });
+}
+
+function wireHomeSearchLayout() {
+  document.addEventListener("focusin", event => {
+    if (event.target.id === "homeSearch") startHomeSearch();
+  });
+  // Register once at bootstrap, not every time the home view is rendered.
+  let frame = null;
+  const scheduleUpdate = () => {
+    if (!homeSearchSession || frame !== null) return;
+    frame = window.requestAnimationFrame(() => {
+      frame = null;
+      updateHomeSearchViewport();
+    });
+  };
+  window.addEventListener("resize", scheduleUpdate);
+  window.visualViewport?.addEventListener("resize", scheduleUpdate);
+  window.visualViewport?.addEventListener("scroll", scheduleUpdate);
 }
 
 // ---------- global unified search ----------
@@ -2461,7 +2458,7 @@ function wireGlobalSearch() {
 
   // Outside click closes the dropdown
   document.addEventListener("click", (e) => {
-    if (!inp.parentElement.contains(e.target)) closeGlobalSearch();
+    if (!e.target.closest(".search-bar-wrap, .gsearch-wrap")) closeGlobalSearch();
   });
 
   // Auto-focus: typing anywhere focuses the visible search input
@@ -2485,6 +2482,7 @@ function closeGlobalSearch() {
 }
 
 function clearAllSearchInputs() {
+  endHomeSearch();
   document.querySelectorAll(".search-bar input, .gsearch-input").forEach(el => { el.value = ""; });
   closeGlobalSearch();
 }
@@ -2591,6 +2589,7 @@ function globalSearch(q) {
 }
 
 function showEmpty() {
+  endHomeSearch();
   detailLoadVersion += 1;
   app().innerHTML = `
     <div class="empty">
@@ -2618,43 +2617,25 @@ function goHome(opts = {}) {
 function renderFundsHome() {
   const n = idx.funds.length;
   const updated = idx.last_updated ? new Date(idx.last_updated).toLocaleDateString() : "—";
-  const popular = getPopularFunds();
-
   app().innerHTML = `
     <div class="home-hero">
+      <div class="home-search-toolbar">
+        <a class="home-search-brand" href="#" aria-label="Super Investor Seeker home">13F</a>
+        <button class="home-search-close" data-action="close-home-search">Cancel</button>
+      </div>
       <div class="home-copy">
-        <h1>Track What Institutional Funds Are Buying</h1>
+        <h1>Track What <span class="home-title-subject">Institutional <span class="home-title-accent">Funds</span></span> <span class="home-title-accent">Are Buying</span></h1>
         <p class="home-subtitle">
           Searchable portfolios from <span class="mono home-filer-count">${n.toLocaleString()}</span>
-          institutional 13F filers · updated ${esc(updated)}
+          institutional 13F filers <span class="home-updated">· updated ${esc(updated)}</span>
         </p>
       </div>
       <div class="search-bar-wrap">
         <div class="search-bar">
-          <input id="homeSearch" aria-label="Search funds or tickers" placeholder="Search funds or tickers…" autocomplete="off" spellcheck="false"/>
+          <input id="homeSearch" type="search" aria-label="Search funds or tickers" placeholder="Search funds or tickers…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search"/>
         </div>
         <div class="gsearch-results"></div>
       </div>
-    </div>
-    <div id="fundBrowse"></div>`;
-
-  if (!popular.length) {
-    $("fundBrowse").innerHTML = `
-      <div style="text-align:center;color:var(--mt);padding:30px;font-size:13px">
-        No popular filers found in this snapshot — use the search above.
-      </div>`;
-    return;
-  }
-
-  $("fundBrowse").innerHTML = `
-    <div class="lbl">Popular filers</div>
-    <div class="grid">
-      ${popular.map(f => `
-        <a class="card" href="#fund/${esc(cikKey(f.cik))}">
-          <div class="popular-name">${esc(displayFundName(f.name))}</div>
-          <div class="mono popular-cik">CIK ${esc(f.cik)}</div>
-        </a>
-      `).join("")}
     </div>`;
 }
 
