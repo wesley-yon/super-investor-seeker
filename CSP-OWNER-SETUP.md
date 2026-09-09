@@ -40,7 +40,7 @@ billing change has been authorized.
    **Content-Security-Policy-Report-Only**, including a different nonce on fresh
    requests. Check Console for policy violations, especially Cloudflare's
    injected detection script. Report-only mode records console violations; it
-   does not block scripts and does not send reports to a third party.
+   does not block scripts and does not send reports to an external endpoint.
 
 [Cloudflare Worker routes](https://developers.cloudflare.com/workers/configuration/routing/routes/)
 
