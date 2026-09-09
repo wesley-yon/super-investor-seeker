@@ -206,6 +206,7 @@ _SECURITY_IDENTITY_VERSION = 1
 _EXCLUSIVE_ETF_ISSUER_RE = re.compile(
     r"(?:"
     r"ISHARES\s+TR|"
+    r"INVESCO\s+QQQ\s+TR(?:UST)?|"
     r"ETFIS\s+SER(?:IES)?\s+TR(?:UST)?(?:\s+I)?|"
     r"JANUS\s+DETROIT\s+STR\s+TR|"
     r"(?:SELECT\s+SECTOR\s+)?SPDR\s+"
