@@ -2688,6 +2688,7 @@ def apply_sec_edgar_evidence(
         recent_window_days = DEFAULT_RECENT_WINDOW_DAYS
     _reconcile_current_symbol_cusips(
         records,
+        source_provenance=updated.get("sources", []),
         concurrent_window_days=recent_window_days,
     )
     summary = {status: 0 for status in sorted(_MASTER_STATUS_VALUES)}

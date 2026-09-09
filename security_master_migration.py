@@ -1,9 +1,9 @@
-"""Provider-neutral shadow comparison for the SEC security-master cutover.
+"""Source-neutral shadow comparison for the SEC security-master cutover.
 
 The frozen baseline contains only the public CUSIP/ticker projection and
 position-preservation invariants.  It is captured before the clean SEC rebuild
 and is never used as an input to resolution.  The resulting private report is
-therefore useful for migration review without retaining a vendor cache or
+therefore useful for migration review without retaining an unverified cache or
 creating a fallback path.
 """
 

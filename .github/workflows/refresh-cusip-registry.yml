@@ -12,10 +12,22 @@ on:
         required: false
         default: false
         type: boolean
+      reconcile_filings:
+        description: Replay broad filing indexes before refreshing the security master
+        required: false
+        default: true
+        type: boolean
+      fund_names_only:
+        description: Refresh SEC ETF descriptions using existing verified ticker mappings
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: data-maintenance
   cancel-in-progress: false
+  # Routine update triggers must not replace a waiting rebuild.
+  queue: max
 
 permissions:
   contents: read
@@ -110,6 +122,39 @@ jobs:
           echo "code_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "legacy_snapshot=$legacy_snapshot" >> "$GITHUB_OUTPUT"
           echo "Restored private snapshot $release_tag ($dataset_id)"
+
+      - name: Validate description refresh scope
+        env:
+          FUND_NAMES_ONLY: ${{ inputs.fund_names_only || 'false' }}
+          CLEAN_REBUILD: ${{ inputs.rebuild_security_master || 'false' }}
+          LEGACY_SNAPSHOT: ${{ steps.restore_snapshot.outputs.legacy_snapshot }}
+        run: |
+          if [ "$FUND_NAMES_ONLY" = true ] &&
+             { [ "$CLEAN_REBUILD" = true ] || [ "$LEGACY_SNAPSHOT" = true ]; }; then
+            echo "::error::A description-only refresh requires an existing verified master and cannot be a clean rebuild"
+            exit 1
+          fi
+
+      - name: Restore pinned reviewed primary-source identities
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+        run: python scripts/prepare_reviewed_ticker_map.py --repository "$DATA_REPOSITORY"
+
+      - name: Repair reviewed note classifications once per snapshot policy
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: >-
+          python scripts/repair_note_classifications.py --apply --rebuild
+          --pending-only --workers 2 --report .cache/note-classification-repair.json
+
+      - name: Repair reviewed preferred classifications once per snapshot policy
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: >-
+          python scripts/repair_preferred_classifications.py --apply --rebuild
+          --pending-only --workers 2 --report .cache/preferred-classification-repair.json
+
+      - name: Refresh reviewed identifier history once per snapshot policy
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: python scripts/refresh_security_history.py --pending-only
 
       - name: Verify SEC_USER_AGENT secret is configured
         env:
@@ -209,7 +254,9 @@ jobs:
       - name: Reconcile broad SEC filing indexes overnight
         if: >-
           steps.restore_snapshot.outputs.legacy_snapshot != 'true' &&
-          inputs.rebuild_security_master != true
+          inputs.rebuild_security_master != true &&
+          inputs.fund_names_only != true &&
+          (github.event_name != 'workflow_dispatch' || inputs.reconcile_filings == true)
         timeout-minutes: 50
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
@@ -233,10 +280,19 @@ jobs:
         timeout-minutes: 90
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-        run: python pipeline.py --regenerate-only --refresh-security-master
+          FUND_NAMES_ONLY: ${{ inputs.fund_names_only || 'false' }}
+        run: |
+          if [ "$FUND_NAMES_ONLY" = true ]; then
+            python pipeline.py --regenerate-only --refresh-fund-names
+          else
+            python pipeline.py --regenerate-only --refresh-security-master
+          fi
 
       - name: Validate generated data
         run: python validate_data.py --incremental --refresh-cache
+
+      - name: Validate reviewed identities and report coverage warnings
+        run: python scripts/validate_reviewed_coverage.py
 
       - name: Run generated-data contract regression tests
         # Keep known identity and descriptive-name corrections in the publish
@@ -247,7 +303,10 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Test compressed site loader
-        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs
+        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs tests/test_etf_description_audit.mjs
+
+      - name: Audit ETF search descriptions
+        run: node scripts/audit_etf_descriptions.mjs
 
       - name: Annotate ticker health report
         # Non-fatal notices keep terminal no-symbol and quarantined identifiers

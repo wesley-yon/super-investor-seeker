@@ -29,7 +29,7 @@ class FrontendSecurityTests(unittest.TestCase):
         cls.without_init = cls.code[:a] + cls.code[b:]
 
     def js(self, body):
-        result = subprocess.run(["node", "-e", self.without_init + "\n" + body],
+        result = subprocess.run(["node", "-"], input=self.without_init + "\n" + body,
                                 capture_output=True, text=True, check=False)
         self.assertEqual(0, result.returncode, result.stderr)
         return json.loads(result.stdout)

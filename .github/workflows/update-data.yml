@@ -29,6 +29,8 @@ on:
 concurrency:
   group: data-maintenance
   cancel-in-progress: false
+  # Preserve requested security-master rebuilds behind an active update.
+  queue: max
 
 permissions:
   contents: read
@@ -150,6 +152,27 @@ jobs:
           echo "code_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "legacy_snapshot=$legacy_snapshot" >> "$GITHUB_OUTPUT"
           echo "Restored private snapshot $release_tag ($dataset_id)"
+
+      - name: Restore pinned reviewed primary-source identities
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+        run: python scripts/prepare_reviewed_ticker_map.py --repository "$DATA_REPOSITORY"
+
+      - name: Repair reviewed note classifications once per snapshot policy
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: >-
+          python scripts/repair_note_classifications.py --apply --rebuild
+          --pending-only --workers 2 --report .cache/note-classification-repair.json
+
+      - name: Repair reviewed preferred classifications once per snapshot policy
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: >-
+          python scripts/repair_preferred_classifications.py --apply --rebuild
+          --pending-only --workers 2 --report .cache/preferred-classification-repair.json
+
+      - name: Refresh reviewed identifier history once per snapshot policy
+        if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
+        run: python scripts/refresh_security_history.py --pending-only
 
       - name: Verify SEC_USER_AGENT secret is configured
         # Fail fast with a clear error if the repo secret wasn't set. Without
@@ -380,6 +403,9 @@ jobs:
         # succeed. A failed replay leaves the last published data untouched.
         run: python validate_data.py --incremental
 
+      - name: Validate reviewed identities and report coverage warnings
+        run: python scripts/validate_reviewed_coverage.py
+
       - name: Run generated-data contract regression tests
         # Run the focused corpus contract here so stale-cache identity losses
         # fail before a private snapshot is published.
@@ -389,7 +415,10 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Test compressed site loader
-        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs
+        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs tests/test_etf_description_audit.mjs
+
+      - name: Audit ETF search descriptions
+        run: node scripts/audit_etf_descriptions.mjs
 
       - name: Annotate ticker health report
         # Non-fatal: always runs, never fails the job. It surfaces informational
