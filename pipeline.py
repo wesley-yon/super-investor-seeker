@@ -106,6 +106,7 @@ from sec_edgar_evidence import (
 from reviewed_ticker_map import (
     apply_review, public_instrument_mappings, REVIEW_SOURCE, load_review,
     public_display_mappings, reviewed_display_ticker, assert_display_compatibility,
+    approved_fund_name_symbols,
 )
 from fund_product_names import (
     PRODUCT_NAME_SOURCE, reviewed_product_name, valid_reviewed_product_name,
@@ -3205,9 +3206,18 @@ def build_cusip_registry() -> CusipRegistry:
                 if official_class
                 else entry
             )
-            kind = _filer_security_kind(classification_entry)
+            # Full SEC series/class names can identify an ETF even when the
+            # 13F issuer is truncated and its class only says creation units.
+            # This name comes from the bound private source projection above.
+            if resolution.get("fund_series_name"):
+                classification_entry = {**classification_entry,
+                                        "name": resolution["fund_series_name"]}
+            # A fund investing in closed-end funds or ETNs is still an ETF
+            # when its verified SEC product name explicitly identifies one.
+            kind = ("ETF" if re.search(r"\bETFs?\b", str(resolution.get("fund_series_name") or ""),
+                                     re.IGNORECASE) else _filer_security_kind(classification_entry))
             if kind in {"ETF", "MUTUAL FUND", "CLOSED-END FUND"} and (
-                "sec_fund_series" in sources
+                "sec_fund_series" in sources or resolution.get("fund_series_name")
             ):
                 kind_source = "sec_fund_series"
             elif kind and official_class:
@@ -5302,7 +5312,9 @@ def _sec_edgar_candidate_priority(
     return min(priorities) if priorities else None
 
 
-def _sec_fund_series_target_ciks(master: dict, source_state: dict) -> set[str]:
+def _sec_fund_series_target_ciks(
+    master: dict, source_state: dict, *, review: dict | None = None
+) -> set[str]:
     """Return registrants needed by exact resolved fund-symbol records."""
 
     resolved_symbols = {
@@ -5312,6 +5324,7 @@ def _sec_fund_series_target_ciks(master: dict, source_state: dict) -> set[str]:
         and record.get("mapping_status") == "resolved"
         and str(record.get("ticker") or "").strip()
     }
+    resolved_symbols.update(approved_fund_name_symbols(master, review).values())
     symbol_records: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     for source in source_state.get("sources", {}).values():
         if not isinstance(source, dict) or source.get("kind") != "sec_fund_tickers":
@@ -5374,7 +5387,9 @@ def _refresh_sec_fund_series_evidence(
     sources = candidate_state.get("sources")
     if not isinstance(sources, dict):
         return result
-    target_ciks = _sec_fund_series_target_ciks(result.master, candidate_state)
+    target_ciks = _sec_fund_series_target_ciks(
+        result.master, candidate_state, review=load_review(Path(master_path).parent.parent)
+    )
     due_urls = [
         sec_fund_series_url(cik)
         for cik in sorted(target_ciks)
@@ -5501,7 +5516,9 @@ def refresh_sec_fund_names_only() -> None:
         source_state_path=SEC_SOURCE_STATE_PATH,
     )
     log.info("Refreshing SEC fund descriptions for %s registrants; preserving all %s mapping decisions",
-             len(_sec_fund_series_target_ciks(master, source)), len(master.get("records", {})))
+             len(_sec_fund_series_target_ciks(
+                 master, source, review=load_review(SEC_SECURITY_MASTER_PATH.parent.parent))),
+             len(master.get("records", {})))
     result = SecSecurityMasterRefreshResult(
         master=master, state=source, changed=False, refreshed_urls=(),
         retained_urls=(), errors=(), acceptance={},

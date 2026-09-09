@@ -78,12 +78,75 @@ def load_review(root: Path, *, required: bool = False) -> dict | None:
     return _read_review(str(path.resolve()), stat.st_mtime_ns, stat.st_size, date.today())
 
 
-def apply_review(master: dict, root: Path) -> dict:
+def approved_fund_name_symbols(master: dict, review: dict | None) -> dict[str, str]:
+    """Choose descriptive fund symbols without changing resolution or pricing."""
+    records = master.get('records', {})
+    result = {}
+    for section in ('mappings', 'display_mappings'):
+        for key, accepted in (review or {}).get(section, {}).items():
+            record = records.get(key)
+            ticker = accepted.get('ticker')
+            if (not key.endswith('|EQUITY') or not isinstance(record, dict)
+                    or not ticker or accepted.get('price_lookup_allowed') is False
+                    or record.get('price_lookup_allowed') is False
+                    or record.get('trading_status') == 'historical_retired_identity'
+                    or accepted.get('ticker_temporality') == 'historical_only'
+                    or (record.get('mapping_status') == 'resolved' and record.get('ticker') != ticker)):
+                continue
+            classes = list(record.get('reported_classes') or [])
+            classes.extend(row.get('description', '') for row in
+                           (record.get('official_13f') or {}).get('records', [])
+                           if isinstance(row, dict) and row.get('status') != '*D*')
+            explicit_etf_class = any(re.search(r'\bETFs?\b', str(value), re.IGNORECASE)
+                                     for value in classes)
+            assertion = accepted.get('assertion') or {}
+            if section == 'mappings':
+                exact_fund = (assertion.get('instrument') == 'FUND_SHARE'
+                              and assertion.get('cusip') == key.split('|')[0]
+                              and assertion.get('symbol') == ticker)
+                if not (exact_fund or (not assertion and explicit_etf_class)):
+                    continue
+            elif not (accepted.get('match_kind') == 'exact_cusip'
+                      and accepted.get('confidence_tier') == 'A' and explicit_etf_class):
+                continue
+            if key in result and result[key] != ticker:
+                raise SecurityMasterError('conflicting reviewed fund-name symbols: ' + key)
+            result[key] = ticker
+    return result
+
+
+@lru_cache(maxsize=4)
+def _cached_fund_names(path: str, mtime_ns: int, size: int, expected_sha: str) -> dict:
+    from sec_security_master import load_source_state
+    return _bound_fund_names(load_source_state(Path(path)), expected_sha)
+
+
+def _bound_fund_names(source_state: dict, expected_sha: str) -> dict:
+    from sec_security_master import _fund_series_name_evidence, source_state_sha256
+    if source_state_sha256(source_state) != expected_sha:
+        raise SecurityMasterError('reviewed fund names require a bound SEC master/source pair')
+    return _fund_series_name_evidence(source_state)
+
+
+def apply_review(master: dict, root: Path, *, source_state: dict | None = None) -> dict:
     """Return a display-only projection, retaining the original SEC document."""
     review = load_review(root)
     if not isinstance(master.get('records'), dict):
         return master
     records = dict(master['records'])
+    fund_names = {}
+    expected_sha = master.get('source_state_sha256')
+    if expected_sha:
+        if source_state is not None:
+            fund_names = _bound_fund_names(source_state, expected_sha)
+        else:
+            source_path = Path(root) / '.cache/sec_source_state.json'
+            if source_path.is_symlink():
+                raise SecurityMasterError('SEC fund-name source must not be a symlink')
+            if source_path.exists():
+                stat = source_path.stat()
+                fund_names = _cached_fund_names(str(source_path.resolve()), stat.st_mtime_ns,
+                                               stat.st_size, expected_sha)
     conflicts = []
     for key, accepted in (review or {}).get('mappings', {}).items():
         original = records.get(key, {})
@@ -117,6 +180,13 @@ def apply_review(master: dict, root: Path) -> dict:
         if key in records:
             records[key] = {**records[key], 'price_lookup_allowed': False,
                             'trading_status': 'historical_retired_identity'}
+    # Names can describe approved exact display identities without promoting
+    # an ambiguous raw ticker or turning an option underlying into a fund share.
+    for key, ticker in approved_fund_name_symbols({'records': records}, review).items():
+        evidence = fund_names.get(ticker)
+        if evidence:
+            records[key] = {**records[key], 'fund_series_name': evidence['name'],
+                            'fund_series_evidence': evidence}
     return {**master, 'records': records}
 
 

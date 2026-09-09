@@ -260,6 +260,40 @@ class GeneratedDataContractTests(unittest.TestCase):
                 validate_data.validate_security_labels(registry, errors)
                 self.assertTrue(any("fund_identities differ" in error for error in errors))
 
+    def test_bound_sec_name_classifies_truncated_fund_and_creation_units(self) -> None:
+        cusip = "14020W106"
+        evidence = {cusip: {"issuer_value": {"CAPITAL GROUP DIVIDEND VALUE": 1},
+            "class_value": {"SHS CREATION UNI": 1},
+            "instrument_type_count": {"EQUITY": 1},
+            "instrument_type_value": {"EQUITY": 1}}}
+        record = {"cusip": cusip, "instrument_type": "EQUITY",
+            "mapping_status": "resolved", "ticker": "CGDV", "ticker_source": "sec_ftd",
+            "ticker_as_of": "2026-08-13", "reported_issuers": ["CAPITAL GROUP DIVIDEND VALUE"],
+            "reported_classes": ["SHS CREATION UNI"],
+            "official_13f": {"status": "active", "records": [{"description": "SHS CREATION UNIT"}]}}
+        def generate():
+            with tempfile.TemporaryDirectory() as temporary:
+                with (mock.patch.object(pipeline, "FUNDS_DIR", Path(temporary)),
+                      mock.patch.object(pipeline, "_aggregate_cusip_evidence", return_value=evidence),
+                      mock.patch.object(pipeline, "load_security_master",
+                          return_value={"records": {cusip + "|EQUITY": record}}),
+                      mock.patch.object(pipeline, "apply_review", side_effect=lambda m, root: m),
+                      mock.patch.object(pipeline, "save_cusip_registry")):
+                    return pipeline.build_cusip_registry()[cusip]
+        self.assertEqual("UNIT", generate()["security_kind"])
+        record["fund_series_name"] = "Capital Group Dividend Value ETF"
+        row = generate()
+        self.assertEqual("ETF", row["security_kind"])
+        self.assertEqual("sec_fund_series", row["security_kind_source"])
+        self.assertEqual(record["fund_series_name"], row["product_name"])
+        self.assertEqual("ETF", validate_data.expected_filer_fund_kind(row))
+        self.assertEqual("CAPITAL GROUP DIVIDEND VALUE", row["name"])
+        self.assertIsNone(validate_data.expected_filer_fund_kind({**row, "type": "NOTE"}))
+        record["fund_series_name"] = "Saba Opportunistically Hedged Closed-End Funds ETF"
+        self.assertEqual("ETF", generate()["security_kind"])
+        record["fund_series_name"] = "Example ETN Strategy ETF"
+        self.assertEqual("ETF", generate()["security_kind"])
+
     def test_qqq_abbreviated_trust_units_are_fund_shares(self) -> None:
         for issuer in ("INVESCO QQQ TR", "INVESCO QQQ TRUST"):
             entry = {"name": issuer, "dominant_issuer": issuer,

@@ -1324,7 +1324,8 @@ def validate_private_sec_security_state(
         )
 
     try:
-        master = apply_review(master, resolved_master_path.parent.parent)
+        master = apply_review(master, resolved_master_path.parent.parent,
+                              source_state=source_state)
     except SecurityMasterError as error:
         errors.append(f"invalid reviewed identity layer: {error}")
         return
@@ -3418,6 +3419,10 @@ def expected_filer_fund_kind(entry: dict) -> str | None:
     if _ETN_KIND_RE.search(f"{issuer_text} {dominant_class}"):
         return None
     if _exact_registry_issuer_matches(entry, _EXCLUSIVE_ETF_ISSUER_RE):
+        return "ETF"
+    if (entry.get("product_name_source") == "sec_fund_series"
+            and "sec_fund_series" in entry.get("sources", [])
+            and re.search(r"\bETFs?\b", str(entry.get("product_name") or ""), re.IGNORECASE)):
         return "ETF"
     return None
 
