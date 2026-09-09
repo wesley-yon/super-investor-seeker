@@ -350,6 +350,11 @@ body:has(.home-hero){min-height:100svh}
 }
 .search-bar input:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(0,107,79,.12),0 10px 30px rgba(50,43,34,.07)}
 @media(min-width:769px){body:has(.home-hero) .hdr{padding-inline:clamp(24px,6vw,96px)}}
+@media(max-width:768px) and (max-height:500px){
+  .home-hero:not(.is-searching) .home-copy{margin-bottom:16px}
+  .home-hero:not(.is-searching) .home-copy h1{font-size:clamp(24px,8svh,40px)}
+  .home-hero:not(.is-searching) .home-subtitle{margin-top:12px;font-size:14px;line-height:1.4}
+}
 
 .fund-page{grid-template-columns:minmax(0,1fr) 316px;gap:24px}
 .stock-page{grid-template-columns:minmax(0,1fr) 340px;gap:24px}
