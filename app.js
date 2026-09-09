@@ -108,6 +108,7 @@ const SECURITY_HISTORY_SCHEMA_VERSION = 1;
 let securityIdentityHistory = { groups: Object.create(null), byKey: Object.create(null) };
 let securityKinds = Object.create(null);
 let securityProductNames = Object.create(null);
+let securityIssuerSymbols = Object.create(null);
 let securityReviewedDisplays = Object.create(null);
 let securityFundIdentities = new Set();
 let securityNoteTypeCorrections = Object.create(null);
@@ -444,6 +445,7 @@ async function ensureSecurityLabels() {
         securityLabels = normalizeSecurityTextMap(data.labels);
         securityKinds = normalizeSecurityKindPayload(data);
         securityProductNames = normalizeSecurityTextMap(data.product_names);
+        securityIssuerSymbols = normalizeSecurityTextMap(data.issuer_display_symbols);
         securityReviewedDisplays = normalizeReviewedDisplays(data.reviewed_displays);
         securityFundIdentities = normalizeSecurityFundIdentityPayload(data);
         securityNoteTypeCorrections = Object.fromEntries(
@@ -468,6 +470,7 @@ async function ensureSecurityLabels() {
         securityLabels = Object.create(null);
         securityKinds = Object.create(null);
         securityProductNames = Object.create(null);
+        securityIssuerSymbols = Object.create(null);
         securityReviewedDisplays = Object.create(null);
         securityFundIdentities = new Set();
         securityNoteTypeCorrections = Object.create(null);
@@ -656,6 +659,19 @@ function holdingDisplayLabel(holding) {
   const cusip = String(holding.cusip || "").trim().toUpperCase();
   const mappedLabel = securityLabelForCusip(cusip);
   const trustedTicker = holdingTrustedTicker(holding);
+  const issuerSymbol = String(securityIssuerSymbols[cusip] || "");
+  if (/^[A-Z0-9][A-Z0-9.\-^/]{0,19}$/.test(issuerSymbol)
+      && ["NOTE", "BOND", "PREFERRED", "WARRANT", "RIGHT", "UNIT"].includes(holdingDisplayKind(holding))) {
+    // Exact instrument tickers win. The issuer shorthand must not reach routing
+    // or price lookup; retain every word of the SEC class description.
+    if (trustedTicker && (holdingDisplayKind(holding) !== "BOND" && holdingDisplayKind(holding) !== "NOTE"
+        || /\s/.test(trustedTicker))) return trustedTicker;
+    if (mappedLabel && !mappedLabel.includes(" — ")) return mappedLabel;
+    const details = mappedLabel.includes(" — ")
+      ? mappedLabel.split(" — ").slice(1).join(" — ")
+      : String(holding.class || "").trim();
+    return `${issuerSymbol} ${details || holdingDisplayKindLabel(holding).toUpperCase()}`;
+  }
   const mappedSymbol = /^[A-Z][A-Z0-9.-]{0,15}(?:\/(?:W|WS|RT))?$/i.test(
     mappedLabel
   );
@@ -1587,7 +1603,7 @@ function fundTicker(h) {
   const label = holdingDisplayLabel(h);
   const kind = holdingDisplayKind(h);
   return ["CALL", "PUT", "OPTION"].includes(kind)
-    ? `${label} · ${kind}`
+    ? `${label.replace(/\s*(?:[·—]\s*)?(?:CALL|PUT|OPTION)$/i, "").trim()} · ${kind}`
     : label;
 }
 
@@ -1707,11 +1723,13 @@ function compactHoldingName(holding) {
   return (isFund ? displayIssuer(name) : displayIssuer(stripLegalEntitySuffixes(name))) || "—";
 }
 
-function companyNameButton(holding) {
+function companyNameLink(holding) {
   const fullName = formattedHoldingCompany(holding) || "—";
-  return `<button type="button" class="company-name-button" data-action="show-company-name"
-    data-company-name="${esc(fullName)}" title="${esc(fullName)}"
-    aria-haspopup="dialog" aria-label="Show full name: ${esc(fullName)}">${esc(compactHoldingName(holding))}</button>`;
+  const lookupId = stockLookupId(holding.cusip || holding.ticker, holdingPublishedInstrumentType(holding));
+  const text = esc(compactHoldingName(holding));
+  return lookupId
+    ? `<a class="company-name-link security-link" href="#stock/${esc(encodeURIComponent(lookupId))}" title="${esc(fullName)}">${text}</a>`
+    : `<span class="company-name-link" title="${esc(fullName)}">${text}</span>`;
 }
 
 function displayHolderName(name) {
@@ -1792,7 +1810,7 @@ function summaryEvent(label, row, emptyText) {
   return `<div class="summary-label">${label}</div>
     <div class="summary-row">
       <span class="ticker">${esc(fundTicker(row))}</span>
-      <div class="summary-company">${companyNameButton(row)}</div>
+      <div class="summary-company">${companyNameLink(row)}</div>
       <span class="value ${esc(changeClass(row.ch))}">${esc(changeText(row.ch))}</span>
     </div>`;
 }
@@ -1822,10 +1840,10 @@ function holdingIdentityCells(h, rowBg = "") {
   const companyName = formattedHoldingCompany(h) || "—";
   const background = rowBg ? `background:${rowBg};` : "";
   const securityCell = lookupId
-    ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" ><a class="security-link" href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}</a></td>`
+    ? `<td class="mono col-sticky security-label-cell" style="font-weight:600;color:var(--ac);cursor:pointer;${background}white-space:nowrap" ><a class="security-link" title="${esc(displayLabel)}" href="#stock/${esc(encodeURIComponent(lookupId))}">${esc(displayLabel)}</a></td>`
     : `<td class="mono col-sticky security-label-cell" style="color:var(--mt);font-size:11px;${background}white-space:nowrap">${esc(displayLabel)}</td>`;
   return `${securityCell}
-      <td title="${esc(companyName)}" class="company-name">${companyNameButton(h)}${h.identity_group ? reportedPositionsDetail(h.reported_positions) : ""}</td>`;
+      <td title="${esc(companyName)}" class="company-name">${companyNameLink(h)}${h.identity_group ? reportedPositionsDetail(h.reported_positions) : ""}</td>`;
 }
 
 function holderFundCell(holder, rowBg = "") {
@@ -2257,11 +2275,6 @@ function wireSiteInteractions() {
     }
     const { action, col, dir, page } = target.dataset;
     switch (action) {
-      case "show-company-name":
-        $("companyNameText").textContent = target.dataset.companyName || "—";
-        $("companyNameDialog").showModal();
-        break;
-      case "close-company-name": $("companyNameDialog").close(); break;
       case "home": goHome(); break;
       case "fund-sort": onFundSort(col); break;
       case "stock-sort": onStockSort(col); break;

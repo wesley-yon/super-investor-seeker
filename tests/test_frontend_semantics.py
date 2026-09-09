@@ -11,6 +11,36 @@ APPLICATION_JS = ROOT / "app.js"
 
 
 class FrontendSemanticsTests(unittest.TestCase):
+    def test_compact_instruments_and_company_links(self):
+        result = self.run_javascript("""
+            securityIssuerSymbols = {'10806XAB8':'BBIO','04280AAC4':'ARWR', '123456AB1':'EXM'};
+            securityLabels = {'10806XAB8':'BRIDGEBIO PHARMA INC — NOTE 2.500% 3/1',
+                '04280AAC4':'ARROWHEAD PHARMACEUTICALS IN — NOTE 1/1',
+                '123456AB1':'EXAMPLE INC — PFD SER A'};
+            securityKinds = {'10806XAB8':'BOND','04280AAC4':'BOND','123456AB1':'PREFERRED'};
+            const rows = [
+              {cusip:'10806XAB8',instrument_type:'NOTE',issuer:'BRIDGEBIO PHARMA INC'},
+              {cusip:'04280AAC4',instrument_type:'NOTE'},
+              {cusip:'123456AB1',instrument_type:'PREF'},
+              {cusip:'78462F103',ticker:'SPY',instrument_type:'PUT'},
+              {cusip:'21873J108',ticker:'CORZ',instrument_type:'CALL'},
+            ];
+            console.log(JSON.stringify({labels:rows.map(fundTicker),
+              cells:holdingIdentityCells(rows[0]), summary:summaryEvent('Increase', rows[0], ''),
+              exact:fundTicker({...rows[2],ticker:'EXM.PA'}),
+              legacyNote:fundTicker({...rows[0],ticker:'BBIO'}),
+              unknown:fundTicker({cusip:'999999AB1',instrument_type:'NOTE',issuer:'Unknown',class:'NOTE 3% 2030'})}));
+        """, application=True)
+        self.assertEqual(['BBIO NOTE 2.500% 3/1', 'ARWR NOTE 1/1', 'EXM PFD SER A', 'SPY · PUT', 'CORZ · CALL'], result['labels'])
+        self.assertEqual('EXM.PA', result['exact'])
+        self.assertEqual('BBIO NOTE 2.500% 3/1', result['legacyNote'])
+        self.assertIn('NOTE 3% 2030', result['unknown'])
+        self.assertEqual(2, result['cells'].count('href="#stock/10806XAB8%7CNOTE"'))
+        self.assertIn('title="Bridgebio Pharma INC"', result['cells'])
+        self.assertIn('href="#stock/10806XAB8%7CNOTE"', result['summary'])
+        self.assertNotIn('show-company-name', self.html)
+        self.assertNotIn('companyNameDialog', self.html)
+
     def test_fund_descriptions_keep_class_identity_across_site_surfaces(self):
         result = self.run_javascript("""
             securityLabels = {
@@ -24,7 +54,7 @@ class FrontendSemanticsTests(unittest.TestCase):
               '78464A854':'ETF','464287432':'ETF','26210CAD6':'BOND'};
             const descriptions = ['78464A409','78464A508','78464A854'].map(cusip => {
               const row = {cusip,issuer:'SPDR SERIES TRUST',instrument_type:'EQUITY'};
-              return [searchResultDescription(row), formattedHoldingCompany(row), companyNameButton(row)];
+              return [searchResultDescription(row), formattedHoldingCompany(row), companyNameLink(row)];
             });
             const bond = {cusip:'26210CAD6',issuer:'DROPBOX INC',instrument_type:'NOTE'};
             const tlt = {cusip:'464287432',issuer:'ISHARES TR',instrument_type:'EQUITY'};
