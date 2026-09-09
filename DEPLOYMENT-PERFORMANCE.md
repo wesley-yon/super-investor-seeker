@@ -14,6 +14,7 @@ Measurements used CPython 3.11 on the same 12-logical-core, 48-GiB Mac.
 
 | Check | Baseline | Changed code | Reduction |
 | --- | ---: | ---: | ---: |
+| Validate and atomically install extracted snapshot | 203.43 s | 83.41 s | 59.0% |
 | Complete private SEC provenance gate | 261.92 s | 104.84 s | 60.0% |
 | Complete dataset-backed Python discovery | 208.14 s | 50.17 s | 75.9% |
 
@@ -26,6 +27,11 @@ metadata-key checks, date parsing, URL parsing, and filter-prefix hashing.
 Some independent verification ran concurrently on spare cores. Peak resident
 memory for provenance was approximately 7.8 GB before and 8.4 GB after, so this
 change does not add competing copies of the large master in worker processes.
+
+Restore measurements cover `_replace_payload()` with independent copies of the
+same pristine extracted archive; download and archive extraction are excluded.
+Both restored trees reproduced the original dataset digest, file count, and byte
+count above. Pair validation, atomic installation, and rollback handling remain.
 
 The same artifact build arguments were run in both checkouts (two compression
 workers, identical producing SHA and dataset digest). Every output matched:
