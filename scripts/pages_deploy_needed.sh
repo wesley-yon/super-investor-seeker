@@ -12,6 +12,9 @@ artifact_paths=(
   scripts/github_cli_retry.py
   scripts/pages_deploy_needed.sh
   .github/workflows/deploy-pages.yml
+  .github/workflows/publish-pages.yml
+  .github/workflows/finalize-private-snapshots.yml
+  scripts/pages_deployment_identity.py
 )
 
 valid_code_sha() {

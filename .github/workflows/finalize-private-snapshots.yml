@@ -1,0 +1,630 @@
+name: Finalize verified private snapshots
+
+on:
+  workflow_call:
+    inputs:
+      code_sha:
+        type: string
+        required: true
+      release_tag:
+        type: string
+        required: true
+      dataset_id:
+        type: string
+        required: true
+      resolved_latest_release_tag:
+        type: string
+        required: true
+      allow_older_release:
+        type: string
+        required: true
+      deployment_id:
+        type: string
+        required: true
+
+# The caller already holds private-release-publication. This short second lock
+# freezes Pages identity during marker updates and retention, never while waiting
+# for a data publisher. All callers acquire these two locks in this order.
+concurrency:
+  group: pages-production
+  cancel-in-progress: false
+  queue: max
+
+env:
+  DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
+
+jobs:
+  finalize-private-snapshots:
+    environment: private-data
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: read
+      pages: read
+    steps:
+      - name: Checkout trusted GitHub retry helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            scripts/github_cli_retry.py
+            scripts/pages_deployment_identity.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: super-investor-seeker-data
+          permission-contents: write
+
+      - name: Repair deployment marker and finalize active snapshot set
+        env:
+          ALLOW_OLDER_RELEASE: ${{ inputs.allow_older_release }}
+          EXPECTED_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          EXPECTED_CODE_SHA: ${{ inputs.code_sha }}
+          EXPECTED_DATASET_ID: ${{ inputs.dataset_id }}
+          EXPECTED_RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_PREVIOUS_LATEST_RELEASE_TAG: ${{ inputs.resolved_latest_release_tag }}
+          GH_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          PUBLIC_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          readonly TRANSIENT_MUTATION_EXIT_CODE=75
+          readonly -a RETRY_DELAYS_SECONDS=(1 3)
+
+          gh_read_retry() {
+            python scripts/github_cli_retry.py --retry-forbidden-read -- "$@"
+          }
+          gh_mutate_once() {
+            python scripts/github_cli_retry.py -- "$@"
+          }
+          gh_delete_once() {
+            python scripts/github_cli_retry.py --allow-release-not-found -- "$@"
+          }
+          release_state() {
+            local tag=$1
+            gh_read_retry api --paginate --slurp \
+              "/repos/$DATA_REPOSITORY/releases?per_page=100" |
+              jq -er --arg tag "$tag" '
+                (add // [])
+                | map(select(.tag_name == $tag))
+                | if length == 0 then "missing"
+                  elif length == 1 then (.[0].draft | tostring)
+                  else error("duplicate release tag")
+                  end
+              '
+          }
+          tag_ref_state() {
+            local tag=$1
+            gh_read_retry api \
+              "/repos/$DATA_REPOSITORY/git/matching-refs/tags/$tag" |
+              jq -er --arg ref "refs/tags/$tag" '
+                map(select(.ref == $ref))
+                | if length == 0 then "missing"
+                  elif length == 1 then "present"
+                  else error("duplicate exact tag ref")
+                  end
+              '
+          }
+          sleep_before_retry() {
+            local attempt=$1
+            if [ "$attempt" -ge "${#RETRY_DELAYS_SECONDS[@]}" ]; then
+              return 1
+            fi
+            sleep "${RETRY_DELAYS_SECONDS[$attempt]}"
+          }
+          wait_for_release_missing() {
+            local tag=$1
+            local observation_attempt
+            for observation_attempt in 0 1 2; do
+              if [ "$(release_state "$tag")" = missing ]; then
+                return 0
+              fi
+              if ! sleep_before_retry "$observation_attempt"; then
+                return 1
+              fi
+            done
+          }
+          wait_for_tag_missing() {
+            local tag=$1
+            local observation_attempt
+            for observation_attempt in 0 1 2; do
+              if [ "$(tag_ref_state "$tag")" = missing ]; then
+                return 0
+              fi
+              if ! sleep_before_retry "$observation_attempt"; then
+                return 1
+              fi
+            done
+          }
+          reconcile_tag_deletion() {
+            local tag=$1
+            local attempt
+            local mutation_status
+            local observed_tag_state
+
+            if [[ ! "$tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+              echo "::error::Refusing to delete unexpected tag: $tag"
+              return 1
+            fi
+            for attempt in 0 1 2; do
+              observed_tag_state=$(tag_ref_state "$tag")
+              if [ "$observed_tag_state" = missing ]; then
+                return 0
+              fi
+
+              mutation_status=0
+              gh_mutate_once api --method DELETE \
+                "/repos/$DATA_REPOSITORY/git/refs/tags/$tag" || \
+                mutation_status=$?
+              if wait_for_tag_missing "$tag"; then
+                return 0
+              fi
+              if [ "$mutation_status" -ne "$TRANSIENT_MUTATION_EXIT_CODE" ] ||
+                 ! sleep_before_retry "$attempt"; then
+                return 1
+              fi
+            done
+            return 1
+          }
+          marker_matches_remote() {
+            local candidate_dir
+            local remote_marker
+            candidate_dir=$(mktemp -d "$RUNNER_TEMP/verified-marker.XXXXXX")
+            if ! gh_read_retry release download "$EXPECTED_RELEASE_TAG" \
+                --repo "$DATA_REPOSITORY" \
+                --pattern pages-deployment.json \
+                --dir "$candidate_dir" \
+                --clobber; then
+              rm -rf "$candidate_dir"
+              return 1
+            fi
+            remote_marker="$candidate_dir/pages-deployment.json"
+            if [ ! -f "$remote_marker" ] ||
+               [ "$(jq -er '.code_sha' "$remote_marker" 2>/dev/null || true)" != "$EXPECTED_CODE_SHA" ] ||
+               [ "$(jq -er '.dataset_id' "$remote_marker" 2>/dev/null || true)" != "$EXPECTED_DATASET_ID" ] ||
+               [ "$(jq -er '.release_tag' "$remote_marker" 2>/dev/null || true)" != "$EXPECTED_RELEASE_TAG" ] ||
+               [ "$(jq -er '.deployment_id' "$remote_marker" 2>/dev/null || true)" != "$deployment_id" ] ||
+               [ "$(jq -er '.deployed_at' "$remote_marker" 2>/dev/null || true)" != "$deployed_at" ]; then
+              rm -rf "$candidate_dir"
+              return 1
+            fi
+            rm -rf "$candidate_dir"
+          }
+          wait_for_marker_match() {
+            local observation_attempt
+            for observation_attempt in 0 1 2; do
+              if marker_matches_remote; then
+                return 0
+              fi
+              if ! sleep_before_retry "$observation_attempt"; then
+                return 1
+              fi
+            done
+            return 1
+          }
+          observe_latest_release() {
+            local target_tag=$1
+            local allowed_previous_tag=$2
+            local observed_latest_tag
+
+            if ! observed_latest_tag=$(
+                gh_read_retry api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name'
+              ); then
+              return 3
+            fi
+            active_release_tag="$observed_latest_tag"
+            if [ "$observed_latest_tag" = "$target_tag" ]; then
+              return 0
+            fi
+            if [ "$observed_latest_tag" = "$allowed_previous_tag" ]; then
+              return 1
+            fi
+            return 2
+          }
+          wait_for_latest_release() {
+            local target_tag=$1
+            local allowed_previous_tag=$2
+            local observation_attempt
+            local observation_status
+
+            for observation_attempt in 0 1 2; do
+              observation_status=0
+              observe_latest_release "$target_tag" "$allowed_previous_tag" || \
+                observation_status=$?
+              if [ "$observation_status" -eq 0 ]; then
+                return 0
+              fi
+              if [ "$observation_status" -ne 1 ]; then
+                return "$observation_status"
+              fi
+              if ! sleep_before_retry "$observation_attempt"; then
+                return 1
+              fi
+            done
+            return 1
+          }
+
+          if [[ ! "$EXPECTED_DEPLOYMENT_ID" =~ ^[0-9]+$ ]] ||
+             [[ ! "$EXPECTED_CODE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ ! "$EXPECTED_DATASET_ID" =~ ^[0-9a-f]{64}$ ]] ||
+             [[ ! "$EXPECTED_RELEASE_TAG" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
+             { [ "$ALLOW_OLDER_RELEASE" != true ] && [ "$ALLOW_OLDER_RELEASE" != false ]; }; then
+            echo "::error::Invalid exact finalization target"
+            exit 1
+          fi
+          current_receipt=$(
+            GH_TOKEN="$PUBLIC_GITHUB_TOKEN" python scripts/pages_deployment_identity.py
+          )
+          if [ "$(jq -er '.deployment_id' <<<"$current_receipt")" != "$EXPECTED_DEPLOYMENT_ID" ]; then
+            echo "::notice::A newer successful Pages deployment superseded this finalizer; no private state changed"
+            exit 0
+          fi
+
+          if [[ ! "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Resolved latest release precondition is invalid"
+            exit 1
+          fi
+
+          # Revalidate the exact private input before recording or deleting
+          # anything. The resolve/deploy gates establish that this target is
+          # live; the newest successful Pages deployment is therefore the
+          # deployment that currently serves this manifest.
+          release_json=$(gh_read_retry api "/repos/$DATA_REPOSITORY/releases/tags/$EXPECTED_RELEASE_TAG")
+          if [ "$(jq -r '.draft or .prerelease' <<<"$release_json")" != false ]; then
+            echo "::error::Active dataset target is no longer published"
+            exit 1
+          fi
+          manifest_dir=$(mktemp -d "$RUNNER_TEMP/finalize-manifest.XXXXXX")
+          gh_read_retry release download "$EXPECTED_RELEASE_TAG" \
+            --repo "$DATA_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --dir "$manifest_dir" \
+            --clobber
+          if [ "$(find "$manifest_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 1 ]; then
+            echo "::error::Active dataset release must contain exactly one manifest"
+            exit 1
+          fi
+          manifest_path=$(find "$manifest_dir" -maxdepth 1 -type f)
+          if [ "$(jq -er '.dataset_id' "$manifest_path")" != "$EXPECTED_DATASET_ID" ]; then
+            echo "::error::Active dataset manifest changed before finalization"
+            exit 1
+          fi
+
+          # A non-rollback deployment can wait behind a concurrent publisher at
+          # this job's shared lock. If that publisher installed a genuinely
+          # newer latest release while Pages was deploying, this run is safely
+          # superseded: its exact artifact already deployed, but the newer
+          # release's own Pages run must own marker repair and retention.
+          active_release_json=$(
+            gh_read_retry api "/repos/$DATA_REPOSITORY/releases/latest"
+          )
+          active_release_tag=$(jq -r '.tag_name // empty' <<<"$active_release_json")
+          if [ "$ALLOW_OLDER_RELEASE" != true ] &&
+             [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+            if [ "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" != "$EXPECTED_RELEASE_TAG" ] ||
+               [[ ! "$active_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
+               ! jq -e --argjson expected_release "$release_json" '
+                   type == "object"
+                   and ((.tag_name | type) == "string")
+                   and ((.draft | type) == "boolean")
+                   and (.draft == false)
+                   and ((.prerelease | type) == "boolean")
+                   and (.prerelease == false)
+                   and ((.published_at | type) == "string")
+                   and (($expected_release | type) == "object")
+                   and (($expected_release.published_at | type) == "string")
+                   and ((.published_at | fromdateiso8601)
+                     > ($expected_release.published_at | fromdateiso8601))
+                 ' <<<"$active_release_json" >/dev/null; then
+              echo "::error::The active release changed unexpectedly before finalization"
+              exit 1
+            fi
+            echo "::notice::Deployment target $EXPECTED_RELEASE_TAG was superseded by newer active release $active_release_tag before finalization; leaving marker repair and retention to the newer deployment"
+            exit 0
+          fi
+
+          deployment_json=$(
+            GH_TOKEN="$PUBLIC_GITHUB_TOKEN" gh_read_retry api \
+              "/repos/$GITHUB_REPOSITORY/deployments?environment=github-pages&per_page=20"
+          )
+          deployment_id=""
+          deployed_at=""
+          mapfile -t deployment_ids < <(jq -r '.[].id' <<<"$deployment_json")
+          for candidate_id in "${deployment_ids[@]}"; do
+            if [[ ! "$candidate_id" =~ ^[0-9]+$ ]]; then
+              echo "::error::Pages deployment API returned an invalid identity"
+              exit 1
+            fi
+            candidate_status_json=$(
+              GH_TOKEN="$PUBLIC_GITHUB_TOKEN" gh_read_retry api \
+                "/repos/$GITHUB_REPOSITORY/deployments/$candidate_id/statuses?per_page=1"
+            )
+            candidate_status=$(jq -r '.[0].state // empty' <<<"$candidate_status_json")
+            if [ "$candidate_status" = success ]; then
+              candidate_deployed_at=$(
+                jq -r '.[0].created_at // empty' <<<"$candidate_status_json"
+              )
+              if ! jq -e '.[0].created_at | fromdateiso8601' \
+                  <<<"$candidate_status_json" >/dev/null; then
+                echo "::error::Successful Pages deployment has no valid status timestamp"
+                exit 1
+              fi
+              deployment_id="$candidate_id"
+              deployed_at="$candidate_deployed_at"
+              break
+            fi
+          done
+          if [[ ! "$deployment_id" =~ ^[0-9]+$ ]] || [ -z "$deployed_at" ]; then
+            echo "::error::Could not associate the active target with a successful Pages deployment"
+            exit 1
+          fi
+
+          if [ "$deployment_id" != "$EXPECTED_DEPLOYMENT_ID" ]; then
+            echo "::error::Pages identity changed while finalization locks were held"
+            exit 1
+          fi
+
+          marker_path="$RUNNER_TEMP/pages-deployment.json"
+          jq -n \
+            --arg code_sha "$EXPECTED_CODE_SHA" \
+            --arg dataset_id "$EXPECTED_DATASET_ID" \
+            --arg release_tag "$EXPECTED_RELEASE_TAG" \
+            --arg deployment_id "$deployment_id" \
+            --arg deployed_at "$deployed_at" \
+            '{code_sha: $code_sha, dataset_id: $dataset_id, release_tag: $release_tag, deployment_id: ($deployment_id | tonumber), deployed_at: $deployed_at}' \
+            > "$marker_path"
+          marker_verified=false
+          for attempt in 0 1 2; do
+            mutation_status=0
+            gh_mutate_once release upload "$EXPECTED_RELEASE_TAG" "$marker_path" \
+              --repo "$DATA_REPOSITORY" \
+              --clobber || mutation_status=$?
+            if wait_for_marker_match; then
+              marker_verified=true
+              break
+            fi
+            if [ "$mutation_status" -ne "$TRANSIENT_MUTATION_EXIT_CODE" ] ||
+               ! sleep_before_retry "$attempt"; then
+              break
+            fi
+          done
+          if [ "$marker_verified" != true ]; then
+            echo "::error::Private Pages deployment marker did not round-trip exactly after bounded attempts"
+            exit 1
+          fi
+
+          active_release_tag=$(gh_read_retry api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name')
+          if [ "$ALLOW_OLDER_RELEASE" = true ]; then
+            # The resolve job captured the pointer that this rollback intends to
+            # replace. This job shares the publication lock with every automated
+            # publisher, so a mismatch means the rollback became stale while
+            # Pages was deploying and must not overwrite a newer publication.
+            rollback_verified=false
+            for attempt in 0 1 2; do
+              rollback_observation_status=0
+              observe_latest_release \
+                "$EXPECTED_RELEASE_TAG" \
+                "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" || \
+                rollback_observation_status=$?
+              if [ "$rollback_observation_status" -eq 0 ]; then
+                rollback_verified=true
+                break
+              fi
+              if [ "$rollback_observation_status" -eq 2 ]; then
+                echo "::error::Refusing stale rollback because the latest release pointer changed"
+                exit 1
+              fi
+              if [ "$rollback_observation_status" -ne 1 ]; then
+                break
+              fi
+
+              mutation_status=0
+              gh_mutate_once release edit "$EXPECTED_RELEASE_TAG" \
+                --repo "$DATA_REPOSITORY" \
+                --latest || mutation_status=$?
+
+              rollback_observation_status=0
+              wait_for_latest_release \
+                "$EXPECTED_RELEASE_TAG" \
+                "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" || \
+                rollback_observation_status=$?
+              if [ "$rollback_observation_status" -eq 0 ]; then
+                rollback_verified=true
+                break
+              fi
+              if [ "$rollback_observation_status" -eq 2 ]; then
+                echo "::error::Refusing stale rollback because a different release became latest"
+                exit 1
+              fi
+              # Do not replay a confirmed latest-pointer edit merely because
+              # GitHub's read path stayed stale through the observation window.
+              if [ "$rollback_observation_status" -ne 1 ] ||
+                 [ "$mutation_status" -ne "$TRANSIENT_MUTATION_EXIT_CODE" ] ||
+                 ! sleep_before_retry "$attempt"; then
+                break
+              fi
+            done
+            if [ "$rollback_verified" != true ]; then
+              echo "::error::Could not reconcile the verified rollback pointer after bounded attempts"
+              exit 1
+            fi
+          elif [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+            # A new dataset may have published while a scheduled recovery run
+            # was finishing. Never let that stale run roll the pointer back.
+            echo "::error::The active release changed before finalization"
+            exit 1
+          fi
+          if [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+            echo "::error::Could not persist the verified Pages target as the active release"
+            exit 1
+          fi
+
+          releases_json=$(
+            gh_read_retry api --paginate --slurp \
+              "/repos/$DATA_REPOSITORY/releases?per_page=100"
+          )
+          stale_draft_cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          fallback_tag=$(
+            jq -r --arg active "$EXPECTED_RELEASE_TAG" '
+              add
+              | map(
+                  select(
+                    ((.draft or .prerelease) | not)
+                    and (.tag_name | startswith("dataset-"))
+                    and .tag_name != $active
+                  )
+                )
+              | sort_by(.published_at // .created_at)
+              | reverse
+              | .[0].tag_name // empty
+            ' <<<"$releases_json"
+          )
+          mapfile -t delete_tags < <(
+            jq -r \
+              --arg active "$EXPECTED_RELEASE_TAG" \
+              --arg fallback "$fallback_tag" \
+              --arg stale_draft_cutoff "$stale_draft_cutoff" '
+              add
+              | map(select(.tag_name | startswith("dataset-")))
+              | .[]
+              | select(
+                  (
+                    (.draft or .prerelease)
+                    and .created_at < $stale_draft_cutoff
+                  )
+                  or
+                  (
+                    ((.draft or .prerelease) | not)
+                    and .tag_name != $active
+                    and ($fallback == "" or .tag_name != $fallback)
+                  )
+                )
+              | .tag_name
+            ' <<<"$releases_json"
+          )
+          for release_tag in "${delete_tags[@]}"; do
+            if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+              echo "::error::Refusing to delete unexpected release tag: $release_tag"
+              exit 1
+            fi
+            deletion_verified=false
+            for attempt in 0 1 2; do
+              observed_release_state=$(release_state "$release_tag")
+              if [ "$observed_release_state" = missing ]; then
+                deletion_verified=true
+                break
+              fi
+
+              mutation_status=0
+              gh_delete_once release delete "$release_tag" \
+                --repo "$DATA_REPOSITORY" \
+                --cleanup-tag \
+                --yes || mutation_status=$?
+              if wait_for_release_missing "$release_tag"; then
+                deletion_verified=true
+                break
+              fi
+              if [ "$mutation_status" -ne "$TRANSIENT_MUTATION_EXIT_CODE" ] ||
+                 ! sleep_before_retry "$attempt"; then
+                break
+              fi
+            done
+            if [ "$deletion_verified" != true ]; then
+              echo "::error::Stale release deletion could not be reconciled after bounded attempts: $release_tag"
+              exit 1
+            fi
+
+            # gh release delete --cleanup-tag can remove the release before the
+            # tag deletion is observable. Reconcile the tag independently.
+            if ! reconcile_tag_deletion "$release_tag"; then
+              echo "::error::Stale tag deletion could not be reconciled after bounded attempts: $release_tag"
+              exit 1
+            fi
+          done
+
+          # A prior run can be interrupted after deleting a release but before
+          # deleting its tag. Sweep every dataset-* tag that no longer has a
+          # release so the next publication cannot collide with that orphan.
+          retained_json=$(
+            gh_read_retry api --paginate --slurp \
+              "/repos/$DATA_REPOSITORY/releases?per_page=100"
+          )
+          dataset_tag_refs_json=$(
+            gh_read_retry api --paginate --slurp \
+              "/repos/$DATA_REPOSITORY/git/matching-refs/tags/dataset-"
+          )
+          orphan_tags_json=$(
+            jq -cn \
+              --argjson release_pages "$retained_json" \
+              --argjson ref_pages "$dataset_tag_refs_json" '
+              ($release_pages | add // [] | map(.tag_name)) as $release_tags
+              | (
+                  ($ref_pages | add // []
+                    | map(.ref | sub("^refs/tags/"; ""))
+                    | unique)
+                  - $release_tags
+                )
+            '
+          )
+          mapfile -t orphan_tags < <(jq -r '.[]' <<<"$orphan_tags_json")
+          for orphan_tag in "${orphan_tags[@]}"; do
+            if [[ ! "$orphan_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+              echo "::error::Refusing to delete unexpected orphan tag: $orphan_tag"
+              exit 1
+            fi
+            if [ "$orphan_tag" = "$EXPECTED_RELEASE_TAG" ] ||
+               { [ -n "$fallback_tag" ] && [ "$orphan_tag" = "$fallback_tag" ]; }; then
+              echo "::error::Refusing to delete protected snapshot tag: $orphan_tag"
+              exit 1
+            fi
+            if [ "$(release_state "$orphan_tag")" != missing ]; then
+              echo "::error::Refusing to delete tag because its release appeared during reconciliation: $orphan_tag"
+              exit 1
+            fi
+            if ! reconcile_tag_deletion "$orphan_tag"; then
+              echo "::error::Orphan tag deletion could not be reconciled after bounded attempts: $orphan_tag"
+              exit 1
+            fi
+          done
+
+          # Fail closed if cleanup did not leave precisely the active release
+          # plus the newest available fallback (or only active when no fallback
+          # exists yet).
+          retained_json=$(
+            gh_read_retry api --paginate --slurp \
+              "/repos/$DATA_REPOSITORY/releases?per_page=100"
+          )
+          mapfile -t retained_tags < <(
+            jq -r '
+              add
+              | map(
+                  select(
+                    ((.draft or .prerelease) | not)
+                    and (.tag_name | startswith("dataset-"))
+                  )
+                )
+              | .[].tag_name
+            ' <<<"$retained_json"
+          )
+          expected_count=1
+          if [ -n "$fallback_tag" ]; then
+            expected_count=2
+          fi
+          if [ "${#retained_tags[@]}" -ne "$expected_count" ] ||
+             ! printf '%s\n' "${retained_tags[@]}" | grep -Fxq "$EXPECTED_RELEASE_TAG" ||
+             { [ -n "$fallback_tag" ] && ! printf '%s\n' "${retained_tags[@]}" | grep -Fxq "$fallback_tag"; }; then
+            echo "::error::Snapshot retention did not leave the active release and one fallback"
+            exit 1
+          fi

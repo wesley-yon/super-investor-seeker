@@ -34,6 +34,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -669,6 +670,13 @@ def normalize_sec_url(url: str, *, base_url: str | None = None) -> str:
 
     candidate = urljoin(base_url, url) if base_url else str(url or "").strip()
     candidate = urldefrag(candidate)[0]
+    return _validate_sec_url_candidate(candidate)
+
+
+@lru_cache(maxsize=8192)
+def _validate_sec_url_candidate(candidate: str) -> str:
+    # Only immutable scalar results are cached. Every source document and
+    # master record is still checked on each validation pass.
     parsed = urlparse(candidate)
     try:
         port = parsed.port
@@ -994,6 +1002,11 @@ def _normalized_header(value: object | None) -> str:
 
 def _parse_settlement_date(value: object | None) -> str | None:
     raw = str(value or "").strip()
+    return _parse_settlement_date_text(raw)
+
+
+@lru_cache(maxsize=16384)
+def _parse_settlement_date_text(raw: str) -> str | None:
     for pattern in ("%Y%m%d", "%Y-%m-%d", "%m/%d/%Y"):
         try:
             return datetime.strptime(raw, pattern).date().isoformat()
@@ -1240,6 +1253,11 @@ def _ftd_archive_date_bounds(source_url: str) -> tuple[date, date]:
     """Return the canonical settlement-date ownership interval for an archive."""
 
     canonical_url = normalize_sec_url(source_url)
+    return _canonical_ftd_archive_date_bounds(canonical_url)
+
+
+@lru_cache(maxsize=2048)
+def _canonical_ftd_archive_date_bounds(canonical_url: str) -> tuple[date, date]:
     filename = Path(urlparse(canonical_url).path).name
     semimonthly = _FTD_SEMIMONTHLY_ARCHIVE_RE.fullmatch(filename)
     if semimonthly is not None:
@@ -1677,10 +1695,15 @@ def empty_source_state() -> dict[str, Any]:
 def _is_sensitive_source_state_key(raw_key: object) -> bool:
     """Recognize credential keys without inspecting or guessing at values."""
 
+    return _is_sensitive_source_state_key_text(str(raw_key))
+
+
+@lru_cache(maxsize=4096)
+def _is_sensitive_source_state_key_text(raw_key: str) -> bool:
     normalized_key = re.sub(
         r"[^a-z0-9]+",
         "_",
-        str(raw_key).strip().lower(),
+        raw_key.strip().lower(),
     ).strip("_")
     if normalized_key in _FORBIDDEN_SOURCE_STATE_KEYS:
         return True
@@ -3241,6 +3264,9 @@ def _validate_source_state(state: Mapping[str, Any]) -> None:
     if not isinstance(sources, dict):
         raise SecurityMasterError("SEC source state must contain a sources object")
     ftd_archive_urls: list[str] = []
+    # Many archives bind to the same prefix of this already validated log.
+    # Keep this memo local: a later call must recheck a changed source state.
+    filter_prefix_digests: dict[int, str] = {}
     for url, entry in sources.items():
         canonical_url = normalize_sec_url(str(url))
         if canonical_url != url or not isinstance(entry, dict):
@@ -3374,16 +3400,18 @@ def _validate_source_state(state: Mapping[str, Any]) -> None:
             else:
                 digest = entry.get("filter_universe_sha256")
                 coverage_count = entry.get("filter_universe_count")
-                covered_prefix = (
-                    filter_sequence[:coverage_count]
-                    if type(coverage_count) is int
-                    and 0 <= coverage_count <= len(filter_sequence)
-                    else None
-                )
                 if (
-                    covered_prefix is None
-                    or digest != _filter_universe_sha256(covered_prefix)
+                    type(coverage_count) is not int
+                    or not 0 <= coverage_count <= len(filter_sequence)
                 ):
+                    raise SecurityMasterError(
+                        f"FTD archive has invalid filter coverage: {url}"
+                    )
+                if coverage_count not in filter_prefix_digests:
+                    filter_prefix_digests[coverage_count] = (
+                        _filter_universe_sha256(filter_sequence[:coverage_count])
+                    )
+                if digest != filter_prefix_digests[coverage_count]:
                     raise SecurityMasterError(
                         f"FTD archive has invalid filter coverage: {url}"
                     )

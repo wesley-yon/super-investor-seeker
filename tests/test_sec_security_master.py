@@ -1159,6 +1159,30 @@ class SourceStateCompactionTests(unittest.TestCase):
 
                 self.assertFalse(path.exists())
 
+    def test_warm_scalar_checks_still_reject_mutated_source_documents(self) -> None:
+        state = source_state()
+        master.source_state_sha256(state)
+        state['edgar_discovery']['diagnostics'] = {'access_token': 'fixture'}
+        with self.assertRaisesRegex(master.SecurityMasterError, 'forbidden request metadata'):
+            master.source_state_sha256(state)
+
+        q1, q2 = compact_2004_boundary_pair([
+            ('20040401', '037833100', 'AAPL', 100, 'APPLE INC', '99'),
+        ])
+        original = source_state_with_2004_boundary(q1, q2)
+        master._validate_source_state(original)
+        for mutation in ('sequence', 'digest', 'count'):
+            with self.subTest(mutation=mutation):
+                changed = copy.deepcopy(original)
+                if mutation == 'sequence':
+                    changed['ftd_filter_cusips'][0] = '594918104'
+                elif mutation == 'digest':
+                    changed['sources'][FTD_2004_Q2_URL]['filter_universe_sha256'] = SHA_B
+                else:
+                    changed['sources'][FTD_2004_Q2_URL]['filter_universe_count'] = True
+                with self.assertRaisesRegex(master.SecurityMasterError, 'filter coverage'):
+                    master._validate_source_state(changed)
+
     def test_source_state_sensitive_key_check_avoids_value_scanning(self) -> None:
         state = source_state()
         state["edgar_discovery"] = {
