@@ -663,6 +663,8 @@ class SecOnlyRegistryBuildTests(unittest.TestCase):
             }
             with (
                 mock.patch.object(pipeline, "FUNDS_DIR", root),
+                mock.patch.object(pipeline, "SEC_SECURITY_MASTER_PATH",
+                                  root / ".cache/sec_security_master.json"),
                 mock.patch.object(
                     pipeline,
                     "_aggregate_cusip_evidence",

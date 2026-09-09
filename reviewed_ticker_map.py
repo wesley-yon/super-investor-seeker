@@ -78,12 +78,38 @@ def load_review(root: Path, *, required: bool = False) -> dict | None:
     return _read_review(str(path.resolve()), stat.st_mtime_ns, stat.st_size, date.today())
 
 
-def apply_review(master: dict, root: Path) -> dict:
+@lru_cache(maxsize=4)
+def _cached_fund_names(path: str, mtime_ns: int, size: int, expected_sha: str) -> dict:
+    from sec_security_master import load_source_state
+    return _bound_fund_names(load_source_state(Path(path)), expected_sha)
+
+
+def _bound_fund_names(source_state: dict, expected_sha: str) -> dict:
+    from sec_security_master import _fund_series_name_evidence, source_state_sha256
+    if source_state_sha256(source_state) != expected_sha:
+        raise SecurityMasterError('reviewed fund names require a bound SEC master/source pair')
+    return _fund_series_name_evidence(source_state)
+
+
+def apply_review(master: dict, root: Path, *, source_state: dict | None = None) -> dict:
     """Return a display-only projection, retaining the original SEC document."""
     review = load_review(root)
     if not isinstance(master.get('records'), dict):
         return master
     records = dict(master['records'])
+    fund_names = {}
+    expected_sha = master.get('source_state_sha256')
+    if expected_sha:
+        if source_state is not None:
+            fund_names = _bound_fund_names(source_state, expected_sha)
+        else:
+            source_path = Path(root) / '.cache/sec_source_state.json'
+            if source_path.is_symlink():
+                raise SecurityMasterError('SEC fund-name source must not be a symlink')
+            if source_path.exists():
+                stat = source_path.stat()
+                fund_names = _cached_fund_names(str(source_path.resolve()), stat.st_mtime_ns,
+                                               stat.st_size, expected_sha)
     conflicts = []
     for key, accepted in (review or {}).get('mappings', {}).items():
         original = records.get(key, {})
@@ -117,6 +143,22 @@ def apply_review(master: dict, root: Path) -> dict:
         if key in records:
             records[key] = {**records[key], 'price_lookup_allowed': False,
                             'trading_status': 'historical_retired_identity'}
+    # The SEC-only resolver may leave a fund ambiguous until this approved
+    # exact-CUSIP review resolves it. Enrich that display projection only;
+    # retain the authoritative SEC record and its original ticker decision.
+    for key, accepted in (review or {}).get('mappings', {}).items():
+        record = records.get(key, {})
+        assertion = accepted.get('assertion') or {}
+        evidence = fund_names.get(record.get('ticker'))
+        if (key.endswith('|EQUITY') and evidence
+                and record.get('mapping_status') == 'resolved'
+                and record.get('price_lookup_allowed') is not False
+                and record.get('trading_status') != 'historical_retired_identity'
+                and assertion.get('instrument') == 'FUND_SHARE'
+                and assertion.get('cusip') == key.split('|')[0]
+                and assertion.get('symbol') == record.get('ticker')):
+            records[key] = {**record, 'fund_series_name': evidence['name'],
+                            'fund_series_evidence': evidence}
     return {**master, 'records': records}
 
 

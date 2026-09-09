@@ -3205,9 +3205,15 @@ def build_cusip_registry() -> CusipRegistry:
                 if official_class
                 else entry
             )
+            # Full SEC series/class names can identify an ETF even when the
+            # 13F issuer is truncated and its class only says creation units.
+            # This name comes from the bound private source projection above.
+            if resolution.get("fund_series_name"):
+                classification_entry = {**classification_entry,
+                                        "name": resolution["fund_series_name"]}
             kind = _filer_security_kind(classification_entry)
             if kind in {"ETF", "MUTUAL FUND", "CLOSED-END FUND"} and (
-                "sec_fund_series" in sources
+                "sec_fund_series" in sources or resolution.get("fund_series_name")
             ):
                 kind_source = "sec_fund_series"
             elif kind and official_class:

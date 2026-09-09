@@ -240,3 +240,90 @@ class ListedFundSearchTests(unittest.TestCase):
             self.assertEqual([row['stock_id'] for row in index['tickers']], ['123456789'])
             self.assertEqual(json.loads((stocks / '123456789__PREF.json').read_text())['ticker'], 'FUND')
             self.assertEqual(path.read_bytes(), original)
+
+class ReviewedFundNameTests(unittest.TestCase):
+    def setUp(self):
+        import sec_security_master as sm
+        self.state = sm.empty_source_state()
+        self.state['updated_at'] = '2026-09-08T12:00:00Z'
+        self.state['sources'][sm.SEC_FUND_TICKERS_URL] = {
+            'url': sm.SEC_FUND_TICKERS_URL, 'kind': 'sec_fund_tickers',
+            'sha256': 'd' * 64, 'accepted_at': '2026-09-08T12:00:00Z',
+            'symbols': ['DAPR'], 'symbol_titles': {}, 'symbol_exchanges': {},
+            'symbol_count': 1, 'fund_records': [{'symbol': 'DAPR', 'cik': '0001000000',
+                'series_id': 'S000002745', 'class_id': 'C000007635'}],
+        }
+        url = sm.sec_fund_series_url('0001000000')
+        self.state['sources'][url] = {
+            'url': url, 'kind': 'sec_fund_series', 'sha256': 'e' * 64,
+            'accepted_at': '2026-09-08T12:00:00Z',
+            'last_successful_check_at': '2026-09-08T12:00:00Z', 'cik': '0001000000',
+            'series_names': {'S000002745': 'FT Vest U.S. Equity Deep Buffer ETF - April'},
+            'class_names': {'C000007635': 'ETF Shares'},
+        }
+        self.key = '33740U802|EQUITY'
+        self.master = {'source_state_sha256': sm.source_state_sha256(self.state),
+            'records': {self.key: {'cusip': '33740U802', 'instrument_type': 'EQUITY',
+                'mapping_status': 'ambiguous', 'ticker': None}}}
+        self.accepted = {'ticker': 'DAPR', 'ticker_as_of': '2026-09-07',
+            'assertion': {'cusip': '33740U802', 'symbol': 'DAPR', 'instrument': 'FUND_SHARE'}}
+        self.review = {'mappings': {self.key: self.accepted}}
+
+    def apply(self, root=Path('.'), **kwargs):
+        with patch.object(r, 'load_review', return_value=self.review):
+            return r.apply_review(self.master, root, **kwargs)['records'][self.key]
+
+    def test_reviewed_fund_gets_exact_sec_name_without_changing_raw_record(self):
+        row = self.apply(source_state=self.state)
+        self.assertEqual('FT Vest U.S. Equity Deep Buffer ETF - April — ETF Shares',
+                         row['fund_series_name'])
+        self.assertEqual('e' * 64, row['fund_series_evidence']['sha256'])
+        self.assertEqual('ambiguous', self.master['records'][self.key]['mapping_status'])
+        self.assertNotIn('fund_series_name', self.master['records'][self.key])
+
+    def test_source_binding_rejects_changed_names(self):
+        import sec_security_master as sm
+        url = sm.sec_fund_series_url('0001000000')
+        self.state['sources'][url]['series_names']['S000002745'] = 'Wrong Fund'
+        with self.assertRaisesRegex(r.SecurityMasterError, 'bound SEC'):
+            self.apply(source_state=self.state)
+
+    def test_retired_or_nonfund_review_cannot_name_a_current_fund(self):
+        for field, value in [('instrument', 'COMMON_SHARE'), ('cusip', '33740U999'),
+                             ('symbol', 'OTHER')]:
+            with self.subTest(field=field):
+                prior = self.accepted['assertion'][field]
+                self.accepted['assertion'][field] = value
+                self.assertNotIn('fund_series_name', self.apply(source_state=self.state))
+                self.accepted['assertion'][field] = prior
+        self.accepted['price_lookup_allowed'] = False
+        self.assertNotIn('fund_series_name', self.apply(source_state=self.state))
+
+    def test_disk_source_and_supplied_source_produce_same_projection(self):
+        import sec_security_master as sm
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.cache').mkdir()
+            sm.save_source_state(self.state, root / '.cache/sec_source_state.json')
+            self.assertEqual(self.apply(source_state=self.state), self.apply(root))
+            r._cached_fund_names.cache_clear()
+
+    def test_ambiguous_sec_fund_symbol_withholds_product_name(self):
+        import sec_security_master as sm
+        source = self.state['sources'][sm.SEC_FUND_TICKERS_URL]
+        source['fund_records'].append({'symbol':'DAPR','cik':'0001000001',
+                                      'series_id':'S000002746','class_id':'C000007636'})
+        self.master['source_state_sha256'] = sm.source_state_sha256(self.state)
+        self.assertNotIn('fund_series_name', self.apply(source_state=self.state))
+
+    def test_cache_cannot_reuse_names_for_a_different_source_digest(self):
+        import sec_security_master as sm
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.cache').mkdir()
+            sm.save_source_state(self.state, root / '.cache/sec_source_state.json')
+            self.assertIn('fund_series_name', self.apply(root))
+            self.master['source_state_sha256'] = '0' * 64
+            with self.assertRaisesRegex(r.SecurityMasterError, 'bound SEC'):
+                self.apply(root)
+            r._cached_fund_names.cache_clear()
