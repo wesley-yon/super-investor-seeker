@@ -1,0 +1,1289 @@
+{
+  "reviewed_as_of": "2026-09-08",
+  "schema_version": 1,
+  "scope": "Exact SEC CUSIP/symbol evidence paired with exchange class descriptions. Preferred interests, fund shares, and corporate units remain distinct. Display evidence grants no quote permission.",
+  "securities": {
+    "012653200": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Albemarle Corporation Depositary Shares each representing a 1/20th of 7.25% Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 54637: 012653200 | ALBPRA | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 231",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "ALBPRA",
+      "to_type": "PREF"
+    },
+    "02079K404": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Alphabet Inc. - Depositary Shares representing a 1/20th Interest in a Share of Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 43043: 02079K404 | GOOGM | 2026-08-12",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2131",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "GOOGM",
+      "to_type": "PREF"
+    },
+    "02079K602": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Alphabet Inc. - Depositary Shares representing a 1/20th Interest in a Share of Series B Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 25796: 02079K602 | GOOGN | 2026-08-07",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2132",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "GOOGN",
+      "to_type": "PREF"
+    },
+    "03769M304": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "historical_retired": true,
+      "name": "Apollo Global Management, Inc. 6.75% Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202311b line 587: 03769M304 | APOPRA | 2023-11-15",
+          "retrieved_at": "2026-09-07T20:59:39.085389+00:00",
+          "sha256": "cd698a138171cfa56aa29fdf3d6f19201dc232c54b98244079e903bc43247068",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202311b.zip"
+        },
+        {
+          "locator": "Series A mandatory convertible preferred stock",
+          "retrieved_at": "2026-09-08T11:08:05.150497+00:00",
+          "sha256": "218dde4d5db90e448fad40b4cb79efdd9f563806a8e94801551a8c0a51ffed9d",
+          "url": "https://ir.apollo.com/sec-filings/content/0001858681-26-000033/apo-20260701.htm"
+        },
+        {
+          "locator": "Series A mandatory convertible preferred stock",
+          "retrieved_at": "2026-09-08T11:08:05.249100+00:00",
+          "sha256": "08191d6cfe60e8eb981452eebd0b9ca3c670c64a5ffcfe495fa3c0afe628f852",
+          "url": "https://ir.apollo.com/news-events/press-releases/detail/637/apollo-announces-conversion-rate-for-mandatory-convertible"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "APOPRA",
+      "to_type": "PREF"
+    },
+    "03990B309": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Ares Management Corporation 6.75% Series B Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202412a line 47195: 03990B309 | ARESPRB | 2024-12-13",
+          "retrieved_at": "2026-09-07T20:59:40.248607+00:00",
+          "sha256": "850c4cc50fc20e4b91f8e581a4d4a2bd783985dafcacd46ee5f2077e1d2de82e",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202412a.zip"
+        },
+        {
+          "locator": "line 372",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "ARESPRB",
+      "to_type": "PREF"
+    },
+    "059460402": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Banco Bradesco Sa American Depositary Shares (each representing one Common Share)",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 37413: 059460402 | BBDO | 2026-08-11",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 609",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": null,
+      "ticker": "BBDO",
+      "to_type": "EQUITY"
+    },
+    "097023204": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Boeing Company (The) Depositary Shares, each representing a 1/20th interest in a share of 6.00% Series A Mandatory Convertible Preferred Stock, par value $1.00",
+      "proofs": [
+        {
+          "locator": "cnsfails202607b.txt line 41478: 097023204 | BAPRA | 2026-07-24",
+          "retrieved_at": "2026-09-07T13:23:19.974228+00:00",
+          "sha256": "dc7d52c6eaf5c3cd18cbd8f6700ed1c8f9311a2a5d2c710b74f2a697384fbdea",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202607b.zip"
+        },
+        {
+          "locator": "line 548",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "BAPRA",
+      "to_type": "PREF"
+    },
+    "10482B200": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Braemar Hotels & Resorts Inc. 5.50% Series B Cumulative Convertible Preferred Stock, par value $0.01 per share",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 49322: 10482B200 | BHRPRB | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 748",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "BHRPRB",
+      "to_type": "PREF"
+    },
+    "10950A205": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "BrightSpring Health Services, Inc. - Tangible Equity Unit",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 49328: 10950A205 | BTSGU | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 856",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "UNIT",
+      "ticker": "BTSGU",
+      "to_type": "EQUITY"
+    },
+    "116794207": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Bruker Corporation - 6.375% Mandatory Convertible Preferred Stock, Series A",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 49342: 116794207 | BRKRP | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 777",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "BRKRP",
+      "to_type": "PREF"
+    },
+    "19249U203": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Cohen & Steers Preferred and Income Opportunities Active ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 55373: 19249U203 | CSPF | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 1474",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "CSPF",
+      "to_type": "EQUITY"
+    },
+    "26884U208": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "EPR Properties 5.75% Series C Cumulative Convertible Preferred Shares",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 49954: 26884U208 | EPRPRC | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2131",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "EPRPRC",
+      "to_type": "PREF"
+    },
+    "26884U307": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "EPR Properties Series E Cumulative Conv Pfd Shs Ser E",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 49955: 26884U307 | EPRPRE | 2026-08-13",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2132",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "EPRPRE",
+      "to_type": "PREF"
+    },
+    "26922A198": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "AAM Low Duration Preferred and Income Securities ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 20900: 26922A198 | PFLD | 2026-08-06",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5135",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "PFLD",
+      "to_type": "EQUITY"
+    },
+    "26923G400": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "InfraCap REIT Preferred ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 32625: 26923G400 | PFFR | 2026-08-10",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5127",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "PFFR",
+      "to_type": "EQUITY"
+    },
+    "283678209": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "El Paso Corporation Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202304a line 41570: 283678209 | EPPRC | 2023-04-13",
+          "retrieved_at": "2026-09-07T20:59:41.311971+00:00",
+          "sha256": "4293dcd87b2c56e873e1f19f44d1a98018f3bd8f5802404f96a2aa7c19784a4a",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202304a.zip"
+        },
+        {
+          "locator": "line 2115",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "EPPRC",
+      "to_type": "PREF"
+    },
+    "29273V704": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Energy Transfer L.P. Series I Fixed Rate Perpetual Preferred Units",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 38442: 29273V704 | ETPRI | 2026-08-11",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2184",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "ETPRI",
+      "to_type": "PREF"
+    },
+    "316092261": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Fidelity Preferred Securities & Income ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 38574: 316092261 | FPFD | 2026-08-11",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2590",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "FPFD",
+      "to_type": "EQUITY"
+    },
+    "38149W127": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Goldman Sachs Access U.S. Preferred Stock and Hybrid Securities ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 56543: 38149W127 | GPRF | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2148",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "GPRF",
+      "to_type": "EQUITY"
+    },
+    "38983D862": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Rithm Property Trust Inc. 9.875% Series C Fixed-to-Floating Rate Cumulative Redeemable Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 56644: 38983D862 | RPTPRC | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5713",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "RPTPRC",
+      "to_type": "PREF"
+    },
+    "42824C208": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Hewlett Packard Enterprise Company 7.625% Series C Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 56746: 42824C208 | HPEPRC | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3167",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "HPEPRC",
+      "to_type": "PREF"
+    },
+    "45783Y822": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Innovator S&P Investment Grade Preferred ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 56906: 45783Y822 | EPRF | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2134",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "EPRF",
+      "to_type": "EQUITY"
+    },
+    "465562106": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Itau Unibanco Banco Holding SA American Depositary Shares (Each repstg 500 Preferred shares)",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 3598: 465562106 | ITUB | 2026-08-03",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3558",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "ITUB",
+      "to_type": "PREF"
+    },
+    "47804J776": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "John Hancock Preferred Income ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57448: 47804J776 | JHPI | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3696",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "JHPI",
+      "to_type": "EQUITY"
+    },
+    "48251W500": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "KKR & Co. Inc. 6.25% Series D Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57467: 48251W500 | KKRPRD | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3861",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "KKRPRD",
+      "to_type": "PREF"
+    },
+    "49446R687": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Kimco Realty Corporation Depositary Shares, each representing 1/1,000th interest in a share of 7.25% Class N Cumulative Convertible Perpetual Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202607a.txt line 52779: 49446R687 | KIMPRN | 2026-07-14",
+          "retrieved_at": "2026-09-07T13:23:19.231946+00:00",
+          "sha256": "a0f4a8d3c88f8a81a3207a999008c656be251daac3df93acd04e71bb55b17f24",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202607a.zip"
+        },
+        {
+          "locator": "line 3855",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "KIMPRN",
+      "to_type": "PREF"
+    },
+    "529043309": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "LXP Industrial Trust 6.5% Series C Cumulative Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202112b.txt line 15556: 529043309 | LXPPRC | 2021-12-17",
+          "retrieved_at": "2026-09-07T20:59:44.101603+00:00",
+          "sha256": "0e830dfea68035117efe5c054653d902d8764e718c79d5a7eb2919283708ce04",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202112b.zip"
+        },
+        {
+          "locator": "line 4137",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "LXPPRC",
+      "to_type": "PREF"
+    },
+    "594972887": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Strategy Inc - 8.00% Series A Perpetual Strike Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 10651: 594972887 | STRK | 2026-08-04",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 4727",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "STRK",
+      "to_type": "PREF"
+    },
+    "595017302": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Microchip Technology Incorporated - Depositary Shares Each Representing a 1/20th Interest in a Share of 7.50% Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 4050: 595017302 | MCHPP | 2026-08-03",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3086",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "MCHPP",
+      "to_type": "PREF"
+    },
+    "65339F119": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "NextEra Energy, Inc. 7.234% Corporate Units",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57939: 65339F119 | NEEPRT | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 4610",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "UNIT",
+      "ticker": "NEEPRT",
+      "to_type": "EQUITY"
+    },
+    "65339F655": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "NextEra Energy, Inc. 7.375% Corporate Units",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57940: 65339F655 | NEEPRV | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 4612",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "UNIT",
+      "ticker": "NEEPRV",
+      "to_type": "EQUITY"
+    },
+    "65339F663": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "NextEra Energy, Inc. 7.299% Corporate Units",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 57941: 65339F663 | NEEPRS | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 4609",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "UNIT",
+      "ticker": "NEEPRS",
+      "to_type": "EQUITY"
+    },
+    "67092P771": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Nuveen Preferred and Income ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58056: 67092P771 | NPFI | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 3472",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "NPFI",
+      "to_type": "EQUITY"
+    },
+    "68389X204": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Oracle Corporation Depositary Shares, each representing a 1/2,000th interest in a sh of 6.50% Series D Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58099: 68389X204 | ORCLPRD | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 4955",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "ORCLPRD",
+      "to_type": "PREF"
+    },
+    "69331C306": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "PG&E Corp 6.000% Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 11052: 69331C306 | PCGPRX | 2026-08-04",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5074",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "PCGPRX",
+      "to_type": "PREF"
+    },
+    "69351T866": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "PPL Corporation Corporate Units",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58147: 69351T866 | PPLC | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5270",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "UNIT",
+      "ticker": "PPLC",
+      "to_type": "EQUITY"
+    },
+    "70509V605": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Pebblebrook Hotel Trust 6.375% Series E Cumulative Redeemable Preferred Shares of Beneficial Interest",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58242: 70509V605 | PEBPRE | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5104",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "PEBPRE",
+      "to_type": "PREF"
+    },
+    "70509V704": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Pebblebrook Hotel Trust 6.3% Series F Cumulative Redeemable Preferred Shares of Beneficial Interest",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58243: 70509V704 | PEBPRF | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5105",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "PEBPRF",
+      "to_type": "PREF"
+    },
+    "72201R619": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "PIMCO Preferred and Capital Securities Active Exchange-Traded Fund",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58286: 72201R619 | PRFD | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5289",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "PRFD",
+      "to_type": "EQUITY"
+    },
+    "74255Y888": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Principal Spectrum Preferred Securities Active ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58354: 74255Y888 | PREF | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5287",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "PREF",
+      "to_type": "EQUITY"
+    },
+    "74965L200": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "RLJ Lodging Trust $1.95 Series A Cumulative Convertible  Preferred Shares",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58520: 74965L200 | RLJPRA | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5664",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "RLJPRA",
+      "to_type": "PREF"
+    },
+    "82452J307": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Shift4 Payments, Inc. 6.00% Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 58870: 82452J307 | FOURPRA | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 2581",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "FOURPRA",
+      "to_type": "PREF"
+    },
+    "82846H504": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "QXO, Inc.  Depositary Shares, each representing a 1/20th interest in a share of 5.50% Series B Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 24018: 82846H504 | QXOPRB | 2026-08-06",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5518",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "QXOPRB",
+      "to_type": "PREF"
+    },
+    "842587842": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Southern Company (The) 2025 Series A Corporate Units",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 41357: 842587842 | SOMN | 2026-08-11",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 6178",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "UNIT",
+      "ticker": "SOMN",
+      "to_type": "EQUITY"
+    },
+    "84741T401": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Special Opportunities Fund Inc. 2.75% Convertible Preferred Stock, Series C",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 29919: 84741T401 | SPEPRC | 2026-08-07",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 6215",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "SPEPRC",
+      "to_type": "PREF"
+    },
+    "86800U500": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Super Micro Computer, Inc. - Depositary Shares Each Representing a 1/20th Interest in a Share of 7% Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59061: 86800U500 | SMCIP | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 4571",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "SMCIP",
+      "to_type": "PREF"
+    },
+    "918284209": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "VSE Corporation - Tangible Equity Units",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59612: 918284209 | VSECU | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5292",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "UNIT",
+      "ticker": "VSECU",
+      "to_type": "EQUITY"
+    },
+    "92189F429": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "VanEck Preferred Securities ex Financials ETF",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59630: 92189F429 | PFXF | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 5142",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "ETF",
+      "ticker": "PFXF",
+      "to_type": "EQUITY"
+    },
+    "949746804": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Wells Fargo & Company 7.50% Non-Cumulative Perpetual Convertible Class A Preferred Stock, Series L",
+      "proofs": [
+        {
+          "locator": "cnsfails202308a line 17761: 949746804 | WFCPRL | 2023-08-03",
+          "retrieved_at": "2026-09-07T20:59:37.803194+00:00",
+          "sha256": "a2a0e7f9490f62b295617a74ed8be55f17ce4dda482272aac293ad40f3439b73",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202308a.zip"
+        },
+        {
+          "locator": "line 7230",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "WFCPRL",
+      "to_type": "PREF"
+    },
+    "963025309": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Wheeler Real Estate Investment Trust, Inc. - Series B Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails201412b.txt line 69607: 963025309 | WHLRP | 2014-12-30",
+          "retrieved_at": "2026-09-07T20:59:55.819251+00:00",
+          "sha256": "8324e83c5ba1dd32012f3ee3a207fb5ca9036d8e3e85c72069c1eda1640df1c3",
+          "url": "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails201412b.zip"
+        },
+        {
+          "locator": "line 5364",
+          "retrieved_at": "2026-09-07T21:00:02.861468+00:00",
+          "sha256": "491337a821469a830093aca740849358982960c46f0192537f5de898f59e9200",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "WHLRP",
+      "to_type": "PREF"
+    },
+    "963320205": {
+      "from_types": [
+        "EQUITY",
+        "PREF",
+        "NOTE"
+      ],
+      "name": "Whirlpool Corporation Depositary Shares, each representing a 1/20th interest in a share of 8.50% Series A Mandatory Convertible Preferred Stock",
+      "proofs": [
+        {
+          "locator": "cnsfails202608a.txt line 59857: 963320205 | WHRPRA | 2026-08-14",
+          "retrieved_at": "2026-09-07T13:23:20.275837+00:00",
+          "sha256": "7eac7eb87278af473d8ba63387da2bb1ce22432261589d732c54e2c54640fefa",
+          "url": "https://www.sec.gov/files/data/fails-deliver-data/cnsfails202608a.zip"
+        },
+        {
+          "locator": "line 7240",
+          "retrieved_at": "2026-09-07T21:00:02.861532+00:00",
+          "sha256": "0e7be707f683443160a78e85139d8af18f786270c9ed82de8402d1d72538a319",
+          "url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        }
+      ],
+      "security_kind": "PREFERRED",
+      "ticker": "WHRPRA",
+      "to_type": "PREF"
+    }
+  }
+}

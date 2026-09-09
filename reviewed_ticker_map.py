@@ -1,0 +1,270 @@
+"""Pinned private review layer for display identities; never rewrites SEC evidence.
+
+Only the reviewed bytes selected in code can extend the resolver. SEC conflicts
+stop publication instead of silently changing a reviewed identity. Historical
+identity retention is independent of permission to request a current quote.
+"""
+from __future__ import annotations
+
+from datetime import date
+from functools import lru_cache
+import hashlib
+import json
+from pathlib import Path
+import re
+
+from sec_security_master import SecurityMasterError
+
+REVIEW_COMMIT = 'bc4015fa852bfae4060a65afb59ea4589a854d5e'
+REVIEW_PATH = 'reviewed-maps/2026-09-07/holder-research-display-map.json'
+REVIEW_BLOB = '780aa14838bce20df5db8066adb5a921546d2c77'
+REVIEW_SHA256 = '0f9ac4ed6acf34edc957efae4434c8d56fef4eed38457c1c0e351e7713f70c2b'
+CACHE_RELATIVE_PATH = Path('.cache/reviewed_ticker_map.json')
+REVIEW_SOURCE = 'reviewed_primary_identity'
+REVIEW_MAX_AGE_DAYS = 90
+DISPLAY_MAPPING_COUNT = 2185
+REVIEW_MAPPING_COUNT = 10532
+
+
+def validate_review_bytes(raw: bytes, *, as_of: date | None = None) -> dict:
+    if hashlib.sha256(raw).hexdigest() != REVIEW_SHA256:
+        raise SecurityMasterError('reviewed map checksum differs from approved revision')
+    document = json.loads(raw)
+    age = ((as_of or date.today()) - date.fromisoformat(document['as_of'])).days
+    if not 0 <= age <= REVIEW_MAX_AGE_DAYS:
+        raise SecurityMasterError('reviewed map requires source revalidation before publication')
+    mappings = document['mappings']
+    if len(mappings) != REVIEW_MAPPING_COUNT:
+        raise SecurityMasterError('reviewed map population differs from approved revision')
+    for key, entry in mappings.items():
+        if (not re.fullmatch(r'[A-Z0-9]{9}\|(EQUITY|PREF|WARRANT)', key)
+                or entry.get('baseline_record') != key
+                or not re.fullmatch(r'[A-Z0-9][A-Z0-9.\-^/]{0,19}', entry['ticker'])):
+            raise SecurityMasterError(f'invalid reviewed identity: {key}')
+    displays = document.get('display_mappings', {})
+    if len(displays) != DISPLAY_MAPPING_COUNT:
+        raise SecurityMasterError('reviewed display population differs from approved revision')
+    for key, entry in displays.items():
+        if (not re.fullmatch(r'[A-Z0-9]{9}\|(EQUITY|PREF|WARRANT|NOTE|CALL|PUT)', key)
+                or not isinstance(entry, dict)
+                or entry.get('confidence_tier') not in {'A', 'B'}
+                or not isinstance(entry.get('ticker'), str)
+                or not re.fullmatch(r'[A-Z0-9][A-Z0-9.\-^/]{0,19}', entry.get('ticker', ''))
+                or not entry.get('proofs')):
+            raise SecurityMasterError(f'invalid reviewed display identity: {key}')
+        option = key.endswith(('|CALL', '|PUT'))
+        if (entry.get('match_kind') != ('underlying_only' if option else 'exact_cusip')
+                or (option and (not isinstance(entry.get('underlying_cusip'), str)
+                    or not re.fullmatch(r'[A-Z0-9]{9}', entry['underlying_cusip'])))
+                or (not option and entry.get('underlying_cusip'))):
+            raise SecurityMasterError(f'invalid reviewed display instrument: {key}')
+    return document
+
+
+@lru_cache(maxsize=4)
+def _read_review(path: str, mtime_ns: int, size: int, today: date) -> dict:
+    return validate_review_bytes(Path(path).read_bytes(), as_of=today)
+
+
+def load_review(root: Path, *, required: bool = False) -> dict | None:
+    path = Path(root) / CACHE_RELATIVE_PATH
+    if path.is_symlink():
+        raise SecurityMasterError('reviewed map must not be a symlink')
+    if not path.exists():
+        if required:
+            raise SecurityMasterError('approved private reviewed map is missing')
+        return None
+    stat = path.stat()
+    return _read_review(str(path.resolve()), stat.st_mtime_ns, stat.st_size, date.today())
+
+
+def approved_fund_name_symbols(master: dict, review: dict | None) -> dict[str, str]:
+    """Choose descriptive fund symbols without changing resolution or pricing."""
+    records = master.get('records', {})
+    result = {}
+    for section in ('mappings', 'display_mappings'):
+        for key, accepted in (review or {}).get(section, {}).items():
+            record = records.get(key)
+            ticker = accepted.get('ticker')
+            if (not key.endswith('|EQUITY') or not isinstance(record, dict)
+                    or not ticker or accepted.get('price_lookup_allowed') is False
+                    or record.get('price_lookup_allowed') is False
+                    or record.get('trading_status') == 'historical_retired_identity'
+                    or accepted.get('ticker_temporality') == 'historical_only'
+                    or (record.get('mapping_status') == 'resolved' and record.get('ticker') != ticker)):
+                continue
+            classes = list(record.get('reported_classes') or [])
+            classes.extend(row.get('description', '') for row in
+                           (record.get('official_13f') or {}).get('records', [])
+                           if isinstance(row, dict) and row.get('status') != '*D*')
+            explicit_etf_class = any(re.search(r'\bETFs?\b', str(value), re.IGNORECASE)
+                                     for value in classes)
+            assertion = accepted.get('assertion') or {}
+            if section == 'mappings':
+                exact_fund = (assertion.get('instrument') == 'FUND_SHARE'
+                              and assertion.get('cusip') == key.split('|')[0]
+                              and assertion.get('symbol') == ticker)
+                if not (exact_fund or (not assertion and explicit_etf_class)):
+                    continue
+            elif not (accepted.get('match_kind') == 'exact_cusip'
+                      and accepted.get('confidence_tier') == 'A' and explicit_etf_class):
+                continue
+            if key in result and result[key] != ticker:
+                raise SecurityMasterError('conflicting reviewed fund-name symbols: ' + key)
+            result[key] = ticker
+    return result
+
+
+@lru_cache(maxsize=4)
+def _cached_fund_names(path: str, mtime_ns: int, size: int, expected_sha: str) -> dict:
+    from sec_security_master import load_source_state
+    return _bound_fund_names(load_source_state(Path(path)), expected_sha)
+
+
+def _bound_fund_names(source_state: dict, expected_sha: str) -> dict:
+    from sec_security_master import _fund_series_name_evidence, source_state_sha256
+    if source_state_sha256(source_state) != expected_sha:
+        raise SecurityMasterError('reviewed fund names require a bound SEC master/source pair')
+    return _fund_series_name_evidence(source_state)
+
+
+def apply_review(master: dict, root: Path, *, source_state: dict | None = None) -> dict:
+    """Return a display-only projection, retaining the original SEC document."""
+    review = load_review(root)
+    if not isinstance(master.get('records'), dict):
+        return master
+    records = dict(master['records'])
+    fund_names = {}
+    expected_sha = master.get('source_state_sha256')
+    if expected_sha:
+        if source_state is not None:
+            fund_names = _bound_fund_names(source_state, expected_sha)
+        else:
+            source_path = Path(root) / '.cache/sec_source_state.json'
+            if source_path.is_symlink():
+                raise SecurityMasterError('SEC fund-name source must not be a symlink')
+            if source_path.exists():
+                stat = source_path.stat()
+                fund_names = _cached_fund_names(str(source_path.resolve()), stat.st_mtime_ns,
+                                               stat.st_size, expected_sha)
+    conflicts = []
+    for key, accepted in (review or {}).get('mappings', {}).items():
+        original = records.get(key, {})
+        ticker = accepted['ticker']
+        if original.get('mapping_status') == 'resolved' and original.get('ticker') != ticker:
+            conflicts.append(key)
+            continue
+        cusip, kind = key.split('|')
+        record = dict(original)
+        record["reviewed_identity"] = True
+        if original.get('mapping_status') != 'resolved':
+            record.update(cusip=cusip, instrument_type=kind,
+                          mapping_status='resolved', ticker=ticker,
+                          ticker_source=REVIEW_SOURCE,
+                          ticker_as_of=accepted['ticker_as_of'])
+        if accepted.get('price_lookup_allowed') is False:
+            record.update(price_lookup_allowed=False,
+                          trading_status='historical_retired_identity')
+        records[key] = record
+    if conflicts:
+        raise SecurityMasterError('SEC/reviewed ticker conflict requires review: '
+                                  + ', '.join(sorted(conflicts)[:20]))
+    from preferred_classification import classification_review as preferred_review
+    for cusip, entry in preferred_review().items():
+        key = f"{cusip}|{entry['to_type']}"
+        if entry.get('historical_retired') and key in records:
+            records[key] = {**records[key], 'price_lookup_allowed': False,
+                            'trading_status': 'historical_retired_identity'}
+    from security_history import historical_security_keys
+    for key in historical_security_keys(review):
+        if key in records:
+            records[key] = {**records[key], 'price_lookup_allowed': False,
+                            'trading_status': 'historical_retired_identity'}
+    # Names can describe approved exact display identities without promoting
+    # an ambiguous raw ticker or turning an option underlying into a fund share.
+    for key, ticker in approved_fund_name_symbols({'records': records}, review).items():
+        evidence = fund_names.get(ticker)
+        if evidence:
+            records[key] = {**records[key], 'fund_series_name': evidence['name'],
+                            'fund_series_evidence': evidence}
+    return {**master, 'records': records}
+
+
+def public_instrument_mappings(cusip: str, primary_type: str, records: dict) -> dict:
+    """Retain exact reviewed row types when a CUSIP's aggregate type differs.
+
+    Some old filings label a fund by its underlying assets (bond/preferred) or
+    report a warrant as EQUITY. Do not alter a retained row's classified identity
+    to fit the single aggregate registry type, or attach an issuer's common
+    symbol to it. Each secondary mapping must have its own approved exact key.
+    """
+    result = {}
+    for kind in ('EQUITY', 'PREF', 'WARRANT'):
+        record = records.get(f'{cusip}|{kind}', {})
+        if (kind == primary_type or not record.get('reviewed_identity')
+                or record.get('mapping_status') != 'resolved'):
+            continue
+        result[kind] = {field: record[field] for field in (
+            'ticker', 'ticker_source', 'ticker_as_of',
+            'price_lookup_allowed', 'trading_status',
+        ) if field in record}
+    return result
+
+
+def public_display_mappings(cusip: str, review: dict | None) -> dict:
+    """Publish only exact typed display metadata; proofs stay in the private map.
+
+    Display evidence never changes retained SEC position types, amounts, or the
+    raw resolver's ticker. In particular an option underlying is not a contract
+    ticker and a misclassified fund share is not silently rewritten as equity.
+    """
+    rows = (review or {}).get('display_mappings', {})
+    result = {}
+    for kind in ('EQUITY', 'PREF', 'WARRANT', 'NOTE', 'CALL', 'PUT'):
+        entry = rows.get(f'{cusip}|{kind}')
+        if entry:
+            result[kind] = {field: entry[field] for field in (
+                'ticker', 'match_kind', 'underlying_cusip',
+                'confidence_tier', 'reviewed_as_of', 'ticker_temporality',
+            ) if entry.get(field) is not None}
+    # This explicit review changes the derived classification, not the CUSIP
+    # or symbol. Preserve the existing exact display proof at its corrected
+    # type; never infer a bridge from another row's aggregate registry type.
+    from note_classification import classification_review
+    correction = classification_review().get(cusip)
+    if correction and "NOTE" in result:
+        display = result["NOTE"]
+        if display["ticker"] != correction["ticker"] or display["match_kind"] != "exact_cusip":
+            raise SecurityMasterError(f"note-classification display conflict: {cusip}")
+        target = correction["to_type"]
+        if target in result and result[target]["ticker"] != display["ticker"]:
+            raise SecurityMasterError(f"corrected note-classification ticker conflict: {cusip}")
+        result.setdefault(target, dict(display))
+    from preferred_classification import classification_review as preferred_review
+    preferred = preferred_review().get(cusip)
+    if preferred:
+        exact = [d for t, d in result.items() if t in preferred['from_types']]
+        for display in exact:
+            if display['ticker'] != preferred['ticker'] or display['match_kind'] != 'exact_cusip':
+                raise SecurityMasterError(f'preferred-classification display conflict: {cusip}')
+        if exact:
+            result.setdefault(preferred['to_type'], dict(exact[0]))
+    return result
+
+
+def reviewed_display_ticker(entry: dict | None, kind: str) -> str | None:
+    """Never fall back to another instrument type at the same CUSIP."""
+    return ((entry or {}).get('display_mappings', {}).get(kind, {}).get('ticker'))
+
+
+def assert_display_compatibility(entry: dict) -> None:
+    """Conflicting resolved symbols require review rather than an override."""
+    for kind, display in entry.get('display_mappings', {}).items():
+        if kind in {'CALL', 'PUT'}:
+            prior = entry.get('underlying_ticker')
+        elif kind == entry.get('type'):
+            prior = entry.get('ticker')
+        else:
+            prior = entry.get('instrument_mappings', {}).get(kind, {}).get('ticker')
+        if prior and prior != display['ticker']:
+            raise SecurityMasterError(f'SEC/reviewed display conflict for {kind}: {prior} / {display["ticker"]}')

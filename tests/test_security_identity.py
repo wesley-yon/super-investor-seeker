@@ -1,4 +1,4 @@
-"""Provider-neutral tests for immutable public security identity."""
+"""Source-neutral tests for immutable public security identity."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ class FrontendIdentityContractTests(unittest.TestCase):
             tuple(re.findall(r'"([A-Z]+)"', match.group(1))),
         )
 
-    def test_frontend_normalizes_type_and_uses_exact_stock_identity(self) -> None:
+    def test_frontend_normalizes_type_and_preserves_unreviewed_stock_identity(self) -> None:
         self.assertRegex(
             self.html,
             r"function normalizeInstrumentType\(type\)\s*\{\s*"
@@ -157,8 +157,8 @@ class FrontendIdentityContractTests(unittest.TestCase):
         )
         self.assertRegex(
             self.html,
-            r"(?s)function holdingHistoryKey\(h\)\s*\{\s*"
-            r"return stockLookupId\(.*?holdingPublishedInstrumentType\(h\)",
+            r"(?s)function holdingHistoryKey\(h\)\s*\{.*?"
+            r": stockLookupId\(.*?holdingPublishedInstrumentType\(h\)",
         )
         for field in (
             "cusip: parsed.id_base",
@@ -813,6 +813,33 @@ probe()
 
 
 class RegistryPublicationGateTests(unittest.TestCase):
+    def test_fund_name_cli_keeps_ticker_discovery_and_quantity_work_out(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            names, tickers, outputs = mock.Mock(), mock.Mock(), mock.Mock()
+            with mock.patch("sys.argv", ["pipeline.py", "--regenerate-only", "--refresh-fund-names"]), mock.patch.multiple(
+                pipeline, DATA_DIR=data_dir, FUNDS_DIR=data_dir / "funds", STOCKS_DIR=data_dir / "stocks",
+                USER_AGENT="test ops@example.org", load_state=mock.Mock(return_value={}),
+                enforce_published_quarter_health=mock.Mock(), save_state=mock.Mock(),
+                refresh_sec_fund_names_only=names, rebuild_tickers_in_place=tickers,
+                rebuild_registry_backed_outputs=outputs,
+            ):
+                self.assertEqual(0, pipeline.main())
+            names.assert_called_once_with()
+            tickers.assert_not_called()
+            outputs.assert_called_once_with(preserve_position_economics=True, apply_quantity_policy=False)
+
+    def test_fund_name_cli_rejects_conflicting_refresh_modes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            with mock.patch.multiple(pipeline, DATA_DIR=data_dir, FUNDS_DIR=data_dir / "funds",
+                                     STOCKS_DIR=data_dir / "stocks"):
+                for extra in (["--all"], ["--regenerate-only", "--refresh-security-master"],
+                              ["--regenerate-only", "--rebuild-security-master"],
+                              ["--regenerate-only", "--apply-quantity-policy"]):
+                    with mock.patch("sys.argv", ["pipeline.py", "--refresh-fund-names", *extra]):
+                        self.assertEqual(2, pipeline.main())
+
     def test_security_master_cli_uses_economics_preserving_regeneration(
         self,
     ) -> None:
@@ -1205,7 +1232,7 @@ class CanonicalizationAndTypePreservationTests(unittest.TestCase):
                     "holdings": [{
                         "cusip": "037833100",
                         "ticker": "UNPROVEN",
-                        "issuer": "Unproven Vendor Label",
+                        "issuer": "Unproven Unverified Label",
                         "reported_issuer": "APPLE INC",
                         "holding_type": "EQUITY",
                         "shares": 1,
@@ -1887,6 +1914,33 @@ class SecFundSeriesMetadataTests(unittest.TestCase):
             "Class F-2",
             class_names["C000068556"],
         )
+
+    def test_explicit_missing_class_names_are_not_a_schema_change(self) -> None:
+        # Observed on the SEC WisdomTree registrant page, CIK 0001350487:
+        # C000033621 = N/A, C000033634 = None, C000232650 = NA.
+        for placeholder in ("N/A", "None", "none", "NA"):
+            page = self.PAGE.replace("<td>Class F-2</td>", f"<td>{placeholder}</td>")
+            series, classes = pipeline._parse_sec_fund_series_page(page)
+            self.assertEqual(series["S000008999"], "AMERICAN MUTUAL FUND")
+            self.assertNotIn("C000068556", classes)
+            self.assertIn("C000173141", classes)
+            self.assertNotIn(placeholder, classes.values())
+
+    def test_missing_class_does_not_hide_conflicting_named_row(self) -> None:
+        for order in (False, True):
+            extra = '<tr><td></td><td></td><td><a href="?CIK=C000068556">C000068556</a></td><td>N/A</td></tr>'
+            page = self.PAGE.replace('</table>', extra + '</table>')
+            if order:
+                page = page.replace('<td>Class F-2</td>', '<td>N/A</td>', 1)
+                at = page.rfind('<td>N/A</td>')
+                page = page[:at] + page[at:].replace('<td>N/A</td>', '<td>Class F-2</td>', 1)
+            with self.assertRaises(pipeline.SourceSchemaError):
+                pipeline._parse_sec_fund_series_page(page)
+
+    def test_blank_class_cell_still_fails_completeness(self) -> None:
+        page = self.PAGE.replace('<td>Class F-2</td>', '<td></td>')
+        with self.assertRaises(pipeline.SourceSchemaError):
+            pipeline._parse_sec_fund_series_page(page)
 
     def test_series_parser_fails_closed_on_bad_headers_and_conflicts(self) -> None:
         missing_header = """

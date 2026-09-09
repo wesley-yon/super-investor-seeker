@@ -1,0 +1,52 @@
+{
+  "policy_version": 1,
+  "method": "archived_close_v1",
+  "report_date": "2025-12-31",
+  "price_date": "2025-12-31",
+  "cusip": "037833100",
+  "instrument_type": "EQUITY",
+  "unit": "SH",
+  "quantity_basis": "shares",
+  "currency": "USD",
+  "price": 100,
+  "price_basis": "quarter_end_unadjusted",
+  "split_adjusted_close": 25,
+  "split_adjustment_factor": 4,
+  "split_history": [
+    {
+      "exDate": "2026-02-01",
+      "splitType": "Stock Split",
+      "rate": 4
+    }
+  ],
+  "series_through": "2026-06-30",
+  "volume": 1000,
+  "listing_id": "listing123",
+  "company_key": "NASDAQ_AAPL",
+  "provider_response_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "provider_listing": {
+    "ticker": "AAPL",
+    "operatingMic": "XNAS",
+    "tradingCurrency": "USD",
+    "exchangeCode": "NASDAQ",
+    "listingIdentifier": "listing123"
+  },
+  "sec_identity": {
+    "cusip": "037833100",
+    "instrument_type": "EQUITY",
+    "ticker": "AAPL",
+    "ticker_source": "sec_ftd",
+    "interval": {
+      "symbol": "AAPL",
+      "first_seen": "2020-01-01",
+      "last_seen": "2026-06-30",
+      "sources": [
+        {
+          "accession": "a",
+          "url": "https://www.sec.gov/Archives/a",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  }
+}
