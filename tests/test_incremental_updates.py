@@ -118,11 +118,11 @@ class IncrementalValidationTests(unittest.TestCase):
                                  load_cusip_registry=mock.Mock(return_value=self.registry)):
             p.regenerate_stock_files_and_index(state={})
 
-    def compare(self, *, expected_valid=True, reuse=True):
+    def compare(self, *, expected_valid=True, reuse=True, workers=None):
         full_errors, full_quality, full_splits = [], {}, {}
         full_funds = v.validate_funds(full_errors, self.registry, full_quality)
         full_stocks = v.validate_stocks(full_errors, full_funds[3], full_funds[4], full_splits, registry=self.registry)
-        cache = ValidationCache(v, self.cache_path, reuse=reuse)
+        cache = ValidationCache(v, self.cache_path, reuse=reuse, workers=workers)
         errors, quality, splits = [], {}, {}
         funds = cache.validate_funds(errors, self.registry, quality)
         stocks = cache.validate_stocks(errors, funds[3], funds[4], splits, registry=self.registry)
@@ -225,6 +225,24 @@ class IncrementalValidationTests(unittest.TestCase):
         cache = ValidationCache(v, self.cache_path)
         self.assertIsNone(cache.read('test', 'file', 'key'))
         cache.finish(success=False)
+
+    def test_parallel_cold_checks_and_warm_reuse_equal_serial_checker(self):
+        counts = self.compare(workers=2)
+        self.assertEqual(6, counts['fund_checked'])
+        counts = self.compare(workers=2)
+        self.assertEqual(6, counts['fund_reused'])
+        self.assertEqual(2, counts['stock_reused'])
+
+    def test_parallel_checks_retain_cross_fund_and_stock_failures(self):
+        self.compare(workers=2)
+        path = self.funds / '1.json'
+        obj = json.loads(path.read_bytes())
+        obj['quarters'][0]['holdings'][0]['shares'] = 12
+        path.write_text(json.dumps(obj))
+        self.compare(workers=2, expected_valid=False)
+        (self.stocks / '037833100.json').write_text('{broken json')
+        self.compare(workers=2, reuse=False, expected_valid=False)
+
 
 
 class DurableRecentFeedTests(unittest.TestCase):

@@ -321,8 +321,8 @@ def compile_peer_price_index(
             return
         assert isinstance(index, MutableMapping)
         while index:
-            key = next(iter(index))
-            yield key, index.pop(key)
+            # dict.popitem avoids repeatedly scanning deleted leading slots.
+            yield index.popitem()
 
     compiled: dict[PeerIndexKey, tuple[tuple[float, str], ...]] = {}
     for key, by_filer in source_items():

@@ -88,7 +88,20 @@ a:hover{text-decoration:underline}
 #fundExitTable,#stockExitTable{min-width:820px}
 .summary-row{display:grid;grid-template-columns:minmax(42px,auto) 1fr auto;align-items:baseline;color:var(--mt)}
 .summary-line{height:1px}
-.summary-company{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.summary-company{min-width:0}
+.company-name{font-weight:500;max-width:220px;white-space:nowrap}
+.company-name-button{display:block;max-width:100%;width:100%;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.company-name .company-name-button{max-width:220px}
+.company-name-button:hover{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
+.company-name-button:focus-visible{outline:2px solid var(--ac);outline-offset:3px;border-radius:2px}
+.company-search-name{white-space:normal;overflow-wrap:anywhere;line-height:1.4}
+.company-search-name.reviewed-instrument-name{white-space:normal!important;overflow:visible;overflow-wrap:anywhere}
+.company-name-dialog{margin:auto;width:calc(100% - 32px);max-width:440px;padding:24px;border:1px solid var(--bd);border-radius:8px;background:var(--cd);color:var(--tx);box-shadow:0 12px 40px #0003}
+.company-name-dialog::backdrop{background:#0005}
+.company-name-dialog h2{font-size:16px;margin-bottom:12px}
+.company-name-dialog p{font-size:17px;line-height:1.5;overflow-wrap:anywhere}
+.company-name-dialog button{display:block;margin:20px 0 0 auto;padding:8px 16px;border:1px solid var(--bd);border-radius:4px;background:var(--sf);color:var(--ac);font:inherit;cursor:pointer}
+
 .summary-exit{color:var(--rd)!important;font-weight:800}
 .summary-list{font-size:13px}
 .fineprint{padding:4px 6px}
@@ -125,7 +138,30 @@ a:hover{text-decoration:underline}
 .stock-summary-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 .fund-data-footer,.stock-data-footer{grid-column:1/-1;border-top:1px solid rgba(148,163,184,.12)}
 @media(max-width:768px){.stock-title h1{margin-bottom:4px}.stock-stat .mini,.stock-icon{width:28px;height:28px;max-width:72px}.stock-largest{gap:10px}.stock-panel .fund-panel-head{height:auto;min-height:0}.stock-panel .fund-panel-title{font-size:15px}.stock-panel .holdings-tools{gap:8px;flex:1}.stock-panel .holdings-search{min-width:0;padding:8px 32px 8px 12px}.stock-pagination{justify-content:flex-start;flex-wrap:wrap}.fund-data-footer,.stock-data-footer{padding:10px 0 0}#stockTable{min-width:700px;font-size:13px;table-layout:fixed}#stockTable th,#stockTable td{padding:9px 10px}#stockTable th:nth-child(2),#stockTable td:nth-child(2){width:160px;max-width:160px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#stockTable th:nth-child(3),#stockTable td:nth-child(3){width:92px}#stockTable th:nth-child(4),#stockTable td:nth-child(4){width:92px}#stockTable th:nth-child(5),#stockTable td:nth-child(5){width:82px}#stockTable th:nth-child(6),#stockTable td:nth-child(6){width:94px}#stockTable th:nth-child(7),#stockTable td:nth-child(7){width:72px}#stockTable th:nth-child(8),#stockTable td:nth-child(8){width:94px}}
-@media(max-width:768px){.logo span:last-child{font-size:14px!important}.holdings-search{min-width:0}.summary-row{grid-template-columns:minmax(52px,auto) minmax(0,1fr) auto}#fundTable{min-width:738px;font-size:13px;table-layout:fixed}#fundTable th,#fundTable td{padding:9px 10px}#fundTable th:nth-child(2),#fundTable td:nth-child(2){width:124px;max-width:124px!important}#fundTable th:nth-child(3),#fundTable td:nth-child(3){width:150px;max-width:150px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#fundTable th:nth-child(4),#fundTable td:nth-child(4){width:90px}#fundTable th:nth-child(5),#fundTable td:nth-child(5){width:92px}#fundTable th:nth-child(6),#fundTable td:nth-child(6){width:92px}#fundTable th:nth-child(7),#fundTable td:nth-child(7){width:94px}#fundTable th:nth-child(8),#fundTable td:nth-child(8){width:78px}#fundTable th:nth-child(9),#fundTable td:nth-child(9){width:72px}#fundTable th:nth-child(10),#fundTable td:nth-child(10){width:86px}}
+@media(max-width:768px){.logo span:last-child{font-size:14px!important}.holdings-search{min-width:0}.summary-row{grid-template-columns:minmax(52px,auto) minmax(0,1fr) auto}#fundTable{min-width:738px;font-size:13px;table-layout:fixed}#fundTable th,#fundTable td{padding:9px 10px}#fundTable th:nth-child(2),#fundTable td:nth-child(2){width:124px;max-width:124px!important}#fundTable th:nth-child(3),#fundTable td:nth-child(3){width:150px;max-width:150px!important}#fundTable th:nth-child(4),#fundTable td:nth-child(4){width:90px}#fundTable th:nth-child(5),#fundTable td:nth-child(5){width:92px}#fundTable th:nth-child(6),#fundTable td:nth-child(6){width:92px}#fundTable th:nth-child(7),#fundTable td:nth-child(7){width:94px}#fundTable th:nth-child(8),#fundTable td:nth-child(8){width:78px}#fundTable th:nth-child(9),#fundTable td:nth-child(9){width:72px}#fundTable th:nth-child(10),#fundTable td:nth-child(10){width:86px}}
+
+
+
+.reported-identifiers{font-size:11px;font-weight:400;color:var(--mt);white-space:normal;margin-top:4px}
+.reported-identifiers summary{cursor:pointer;color:var(--ac);width:max-content;max-width:100%}
+.reported-identifiers ul{list-style:none;padding:0;margin:8px 0;display:grid;gap:8px}
+.reported-identifiers li>span{display:block;overflow-wrap:anywhere}
+.identity-history{margin-bottom:24px;padding:16px;border:1px solid var(--bd);border-radius:8px;background:var(--sf);font-size:13px}
+.identity-history-notice{line-height:1.6;margin-bottom:12px}
+.identity-history summary{cursor:pointer;font-weight:600}
+.identity-history summary span{display:inline-block;margin-left:12px;font-size:12px;font-weight:400;color:var(--mt)}
+.identity-history ol{margin:16px 0;padding-left:22px;display:grid;gap:14px}
+.identity-history li{padding-left:4px}
+.identity-history li>*{display:block;overflow-wrap:anywhere}
+.identity-history .identity-period{color:var(--mt);font-size:12px;margin:4px 0}
+.identity-history a{color:var(--ac);text-underline-offset:3px}
+.identity-history a[aria-current="page"]{font-weight:700}
+.identity-history p{margin:12px 0 0}
+.data-footnotes{font-size:12px;color:var(--mt);line-height:1.5}
+.data-footnotes .identity-history{margin:0 0 10px;padding:0;border:0;border-radius:0;background:none;font-size:12px}
+.data-footnotes .identity-history-notice{margin-bottom:4px;line-height:1.5}
+.data-footnotes .info-note{margin:8px 0;padding:0;border:0;background:none;font-size:12px;line-height:1.5}
+.data-footnotes>p{margin-top:12px}
 </style>
 <style id="analysts-notebook-theme">
 /* Analyst's Notebook visual system. App behavior and DOM contracts remain unchanged. */
@@ -559,6 +595,12 @@ th.sort.active,th.sort.active .arr{color:var(--ac)}
 <div class="wrap" id="app">
   <div class="empty"><div><span class="spinner"></span>Loading filings...</div></div>
 </div>
+
+<dialog id="companyNameDialog" class="company-name-dialog" aria-labelledby="companyNameHeading" aria-describedby="companyNameText">
+  <h2 id="companyNameHeading">Full security name</h2>
+  <p id="companyNameText"></p>
+  <button type="button" data-action="close-company-name" autofocus>Close</button>
+</dialog>
 
 <script src="site-data-loader.js"></script>
 <script src="app.js"></script>
