@@ -1380,7 +1380,8 @@ class GeneratedDataContractTests(unittest.TestCase):
             workflow,
             r"(?m)^  push:\n    branches: \[main\]",
         )
-        self.assertNotIn("paths-ignore:", workflow)
+        self.assertIn("paths-ignore:", workflow)
+        self.assertIn("- 'index.html'", workflow)
         self.assertRegex(workflow, r"(?m)^          ref: main$")
         self.assertRegex(
             workflow,
@@ -1403,7 +1404,7 @@ class GeneratedDataContractTests(unittest.TestCase):
         self.assertIn("python scripts/data_snapshot.py pull", workflow)
         self.assertIn("bash scripts/publish_private_snapshot.sh", workflow)
         self.assertIn("python scripts/data_snapshot.py pack", publisher)
-        self.assertIn("main moved during generation", publisher)
+        self.assertIn('python scripts/data_code_identity.py --source "$code_sha"', publisher)
         self.assertNotIn("git add data/", publisher)
         self.assertNotIn("git commit -m", publisher)
         self.assertNotIn("git push origin", publisher)
@@ -1499,7 +1500,7 @@ class GeneratedDataContractTests(unittest.TestCase):
         self.assertIn("deployment-manifest.json", deploy_check)
 
         deployment = (
-            ROOT / ".github/workflows/deploy-pages.yml"
+            ROOT / ".github/workflows/publish-pages.yml"
         ).read_text()
         self.assertIn(
             '--between "$EXPECTED_CODE_SHA" "$current_sha"',

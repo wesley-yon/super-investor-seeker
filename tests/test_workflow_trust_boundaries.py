@@ -72,11 +72,15 @@ class WorkflowTrustBoundaryTests(unittest.TestCase):
                     self.assertIn(f"persist-credentials: {expected}", block)
 
     def test_pages_credential_jobs_require_protected_environments(self):
-        workflow = (WORKFLOWS / "deploy-pages.yml").read_text()
-        for job in ("resolve", "build", "finalize-private-snapshots"):
+        workflow = (WORKFLOWS / "publish-pages.yml").read_text()
+        for job in ("resolve", "build"):
             policy = job_header(workflow, job)
             self.assertIn("environment: private-data", policy)
             self.assertIn("github.ref == 'refs/heads/main'", policy)
+        finalizer = (WORKFLOWS / "finalize-private-snapshots.yml").read_text()
+        policy = job_header(finalizer, "finalize-private-snapshots")
+        self.assertIn("environment: private-data", policy)
+        self.assertIn("github.ref == 'refs/heads/main'", policy)
         policy = job_header(workflow, "deploy")
         self.assertIn("name: github-pages", policy)
         self.assertIn("github.ref == 'refs/heads/main'", policy)

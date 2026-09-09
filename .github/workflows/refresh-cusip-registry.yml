@@ -316,12 +316,9 @@ jobs:
       - name: Validate reviewed identities and report coverage warnings
         run: python scripts/validate_reviewed_coverage.py
 
-      - name: Run generated-data contract regression tests
-        # Keep known identity and descriptive-name corrections in the publish
-        # gate for both full-refresh and ordinary update paths.
-        run: python -m unittest discover -s tests -p 'test_data_contract.py' -v
-
       - name: Run full Python regression suite
+        # Includes the bootstrapped generated-data contract exactly once,
+        # before a private snapshot can be published.
         run: python -m unittest discover -s tests -v
 
       - name: Test compressed site loader

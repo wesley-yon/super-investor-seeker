@@ -1,0 +1,658 @@
+name: Publish validated Pages artifact
+
+on:
+  workflow_call:
+    inputs:
+      code_sha:
+        type: string
+        required: false
+        default: ''
+      release_tag:
+        type: string
+        required: false
+        default: ''
+      dataset_id:
+        type: string
+        required: false
+        default: ''
+    outputs:
+      page_url:
+        value: ${{ jobs.deploy.outputs.page_url }}
+      deployment_id:
+        value: ${{ jobs.deployment-identity.outputs.deployment_id }}
+      code_sha:
+        value: ${{ jobs.resolve.outputs.code_sha }}
+      release_tag:
+        value: ${{ jobs.resolve.outputs.release_tag }}
+      dataset_id:
+        value: ${{ jobs.resolve.outputs.dataset_id }}
+      resolved_latest_release_tag:
+        value: ${{ jobs.resolve.outputs.resolved_latest_release_tag }}
+      allow_older_release:
+        value: ${{ jobs.resolve.outputs.allow_older_release }}
+
+# The private publication lock is never acquired inside this workflow.
+concurrency:
+  group: pages-production
+  cancel-in-progress: false
+  queue: max
+
+env:
+  DATA_REPOSITORY: ${{ github.repository_owner }}/super-investor-seeker-data
+
+jobs:
+  resolve:
+    if: github.ref == 'refs/heads/main'
+    environment: private-data
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: read
+      pages: read
+    outputs:
+      code_sha: ${{ steps.target.outputs.code_sha }}
+      release_tag: ${{ steps.target.outputs.release_tag }}
+      dataset_id: ${{ steps.target.outputs.dataset_id }}
+      resolved_latest_release_tag: ${{ steps.target.outputs.resolved_latest_release_tag }}
+      deploy_needed: ${{ steps.target.outputs.deploy_needed }}
+      allow_older_release: ${{ steps.target.outputs.allow_older_release }}
+    steps:
+      - name: Checkout explicitly requested code target
+        if: inputs.code_sha != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.code_sha }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            CNAME
+            scripts/github_cli_retry.py
+            scripts/pages_deploy_needed.sh
+
+      - name: Checkout newest main for queued frontend push
+        if: inputs.code_sha == '' && github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            CNAME
+            scripts/github_cli_retry.py
+            scripts/pages_deploy_needed.sh
+
+      - name: Checkout live main recovery target
+        if: inputs.code_sha == '' && github.event_name != 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            CNAME
+            scripts/github_cli_retry.py
+            scripts/pages_deploy_needed.sh
+
+      # Retry policy is workflow machinery, not part of the historical code
+      # target. Keep manual rollbacks to commits from before this helper was
+      # introduced working by loading it from the commit that defines this job.
+      - name: Checkout trusted GitHub retry helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-tools
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: scripts/github_cli_retry.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Resolve exact code and private dataset target
+        id: target
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          PUBLIC_GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_CODE_SHA: ${{ inputs.code_sha }}
+          REQUESTED_DATASET_ID: ${{ inputs.dataset_id }}
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh_read_retry() {
+            python "$GITHUB_WORKSPACE/.workflow-tools/scripts/github_cli_retry.py" \
+              --retry-forbidden-read -- "$@"
+          }
+
+          code_sha=$(git rev-parse HEAD)
+          if [[ ! "$code_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid resolved code SHA: $code_sha"
+            exit 1
+          fi
+          if [ -n "$REQUESTED_CODE_SHA" ]; then
+            if [[ ! "$REQUESTED_CODE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+               [ "$code_sha" != "$REQUESTED_CODE_SHA" ]; then
+              echo "::error::Checked out $code_sha, expected $REQUESTED_CODE_SHA"
+              exit 1
+            fi
+          fi
+
+          latest_release_tag=$(
+            gh_read_retry api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name'
+          )
+          if [[ ! "$latest_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::No valid latest dataset release was resolved"
+            exit 1
+          fi
+
+          allow_older_release=false
+          release_tag="$REQUESTED_RELEASE_TAG"
+          if [ -z "$release_tag" ]; then
+            # The GitHub latest-release pointer is the durable Pages target.
+            # It changes for a new publication or a verified manual rollback,
+            # rather than merely because another release has a newer date.
+            release_tag="$latest_release_tag"
+          elif [ -z "$REQUESTED_CODE_SHA" ]; then
+            # Only an explicit manual dispatch may intentionally roll Pages
+            # back to an older validated private release.
+            allow_older_release=true
+          fi
+          if [[ ! "$release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::No valid published dataset release was resolved"
+            exit 1
+          fi
+
+          release_json=$(gh_read_retry api "/repos/$DATA_REPOSITORY/releases/tags/$release_tag")
+          if [ "$(jq -r '.draft or .prerelease' <<<"$release_json")" != false ]; then
+            echo "::error::Dataset target must be a published, non-prerelease release"
+            exit 1
+          fi
+          manifest_dir=$(mktemp -d "$RUNNER_TEMP/snapshot-manifest.XXXXXX")
+          gh_read_retry release download "$release_tag" \
+            --repo "$DATA_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --dir "$manifest_dir" \
+            --clobber
+          if [ "$(find "$manifest_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 1 ]; then
+            echo "::error::Dataset release must contain exactly one snapshot manifest"
+            exit 1
+          fi
+          manifest_path=$(find "$manifest_dir" -maxdepth 1 -type f)
+          dataset_id=$(jq -er '.dataset_id' "$manifest_path")
+          if [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Dataset release contains an invalid dataset ID"
+            exit 1
+          fi
+          if [ -n "$REQUESTED_DATASET_ID" ] &&
+             [ "$dataset_id" != "$REQUESTED_DATASET_ID" ]; then
+            echo "::error::Release $release_tag contains $dataset_id, expected $REQUESTED_DATASET_ID"
+            exit 1
+          fi
+
+          deploy_needed=$(
+            GH_TOKEN="$PUBLIC_GITHUB_TOKEN" \
+              DATA_ARCHIVE_TOKEN="$DATA_ARCHIVE_TOKEN" \
+              DATA_REPOSITORY="$DATA_REPOSITORY" \
+              bash scripts/pages_deploy_needed.sh \
+                "$code_sha" "$dataset_id" "$release_tag"
+          )
+          echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
+          echo "resolved_latest_release_tag=$latest_release_tag" >> "$GITHUB_OUTPUT"
+          echo "deploy_needed=$deploy_needed" >> "$GITHUB_OUTPUT"
+          echo "allow_older_release=$allow_older_release" >> "$GITHUB_OUTPUT"
+          if [ "$deploy_needed" = true ]; then
+            echo "Pages must publish code $code_sha with dataset $dataset_id"
+          else
+            echo "Live Pages already serves code $code_sha with dataset $dataset_id"
+          fi
+
+  build:
+    needs: resolve
+    if: github.ref == 'refs/heads/main' && needs.resolve.outputs.deploy_needed == 'true'
+    environment: private-data
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pages: write
+    steps:
+      - name: Checkout exact public code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.code_sha }}
+          fetch-depth: 1
+
+      - name: Verify exact code checkout
+        env:
+          ALLOW_OLDER_RELEASE: ${{ needs.resolve.outputs.allow_older_release }}
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha=$(git rev-parse HEAD)
+          if [ "$checked_out_sha" != "$EXPECTED_CODE_SHA" ]; then
+            echo "::error::Checked out $checked_out_sha, expected $EXPECTED_CODE_SHA"
+            exit 1
+          fi
+
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install validation dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore exact validated private snapshot
+        env:
+          DATA_ARCHIVE_TOKEN: ${{ steps.data-app-token.outputs.token }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          EXPECTED_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          restore_json=$(
+            python scripts/data_snapshot.py pull \
+              --repository "$DATA_REPOSITORY" \
+              --release-tag "$EXPECTED_RELEASE_TAG" \
+              --root "$GITHUB_WORKSPACE" \
+              --replace
+          )
+          restored_tag=$(jq -er '.release_tag' <<<"$restore_json")
+          restored_id=$(jq -er '.dataset_id' <<<"$restore_json")
+          if [ "$restored_tag" != "$EXPECTED_RELEASE_TAG" ] ||
+             [ "$restored_id" != "$EXPECTED_DATASET_ID" ]; then
+            echo "::error::Restored snapshot does not match the resolved Pages target"
+            exit 1
+          fi
+
+      - name: Verify reviewed-map compatibility before the corpus audit
+        run: >-
+          python -c "from pathlib import Path; from reviewed_ticker_map import load_review;
+          load_review(Path.cwd(), required=True)"
+
+      - name: Validate restored snapshot against current code
+        # A code-only change or manual rollback can pair today's validator and
+        # frontend with an older retained dataset. Bind every reused file check
+        # to actual bytes, checker code, and dependencies; changed inputs rerun
+        # those checks. Every global/source gate still runs before building.
+        run: python validate_data.py --incremental
+
+      - name: Validate reviewed identities and report coverage warnings
+        run: python scripts/validate_reviewed_coverage.py
+
+      - name: Run full Python regression suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Test compressed site loader
+        run: node --test tests/test_site_data_loader.mjs tests/test_csp_worker.mjs
+
+      - name: Build bounded public Pages artifact
+        env:
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+        run: |
+          set -euo pipefail
+          artifact_dir=$(mktemp -d "$RUNNER_TEMP/pages-site.XXXXXX")
+          python scripts/build_pages_artifact.py \
+            --output "$artifact_dir" \
+            --source-sha "$EXPECTED_CODE_SHA" \
+            --dataset-id "$EXPECTED_DATASET_ID" \
+            --max-archive-bytes 1000000000
+          if [ "$(jq -er '.source_sha' "$artifact_dir/deployment-manifest.json")" != "$EXPECTED_CODE_SHA" ] ||
+             [ "$(jq -er '.dataset_id' "$artifact_dir/deployment-manifest.json")" != "$EXPECTED_DATASET_ID" ]; then
+            echo "::error::Pages manifest does not identify the exact code and dataset inputs"
+            exit 1
+          fi
+          echo "ARTIFACT_DIR=$artifact_dir" >> "$GITHUB_ENV"
+
+      - name: Audit the public artifact allowlist
+        run: |
+          set -euo pipefail
+          if find "$ARTIFACT_DIR" -type l -print -quit | grep -q .; then
+            echo "::error::Pages artifact contains a symlink"
+            exit 1
+          fi
+          while IFS= read -r -d '' path; do
+            relative=${path#"$ARTIFACT_DIR"/}
+            case "$relative" in
+              .nojekyll|CNAME|index.html|app.js|site-data-loader.js|deployment-manifest.json|data/funds-index.json|data/index.json|data/security_labels.json|data/funds/*.json.gz|data/stocks/*.json.gz)
+                ;;
+              app.*.js|site-data-loader.*.js)
+                if [[ ! "$relative" =~ ^(app|site-data-loader)\.[0-9a-f]{64}\.js$ ]]; then
+                  echo "::error::Invalid versioned script name: $relative"
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "::error::Unexpected public Pages file: $relative"
+                exit 1
+                ;;
+            esac
+          done < <(find "$ARTIFACT_DIR" -type f -print0)
+
+      - name: Ensure Actions is the Pages publishing source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          build_type=$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$GITHUB_REPOSITORY/pages" \
+              --jq '.build_type'
+          )
+          if [ "$build_type" != workflow ]; then
+            gh api \
+              --method PUT \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$GITHUB_REPOSITORY/pages" \
+              -f build_type=workflow >/dev/null
+          fi
+          verified_type=$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$GITHUB_REPOSITORY/pages" \
+              --jq '.build_type'
+          )
+          if [ "$verified_type" != workflow ]; then
+            echo "::error::Set Settings > Pages > Source to GitHub Actions"
+            exit 1
+          fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+
+      - name: Upload bounded Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: ${{ env.ARTIFACT_DIR }}
+          include-hidden-files: true
+
+  deploy:
+    needs: [resolve, build]
+    if: >-
+      ${{ github.ref == 'refs/heads/main' &&
+          needs.resolve.outputs.deploy_needed == 'true' &&
+          needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      deployments: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout live main for stale-deploy guard
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            scripts/pages_deploy_needed.sh
+
+      - name: Authenticate to the private data repository
+        id: data-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Refuse an artifact superseded by newer public or private inputs
+        env:
+          ALLOW_OLDER_RELEASE: ${{ needs.resolve.outputs.allow_older_release }}
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          EXPECTED_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          GH_TOKEN: ${{ steps.data-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          current_sha=$(git rev-parse refs/remotes/origin/main)
+          if [ "$current_sha" != "$EXPECTED_CODE_SHA" ]; then
+            public_inputs_changed=$(
+              bash scripts/pages_deploy_needed.sh \
+                --between "$EXPECTED_CODE_SHA" "$current_sha"
+            )
+            if [ "$public_inputs_changed" = true ]; then
+              echo "::error::Refusing stale Pages artifact; main now has newer public inputs"
+              exit 1
+            fi
+            echo "::notice::main advanced only in non-Pages state; built public content remains current"
+          fi
+
+          release_json=$(gh api "/repos/$DATA_REPOSITORY/releases/tags/$EXPECTED_RELEASE_TAG")
+          if [ "$(jq -r '.draft or .prerelease' <<<"$release_json")" != false ]; then
+            echo "::error::Expected dataset release is no longer published"
+            exit 1
+          fi
+          manifest_dir=$(mktemp -d "$RUNNER_TEMP/deploy-manifest.XXXXXX")
+          gh release download "$EXPECTED_RELEASE_TAG" \
+            --repo "$DATA_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --dir "$manifest_dir"
+          manifest_path=$(find "$manifest_dir" -maxdepth 1 -type f)
+          if [ "$(find "$manifest_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne 1 ] ||
+             [ "$(jq -er '.dataset_id' "$manifest_path")" != "$EXPECTED_DATASET_ID" ]; then
+            echo "::error::Expected private release no longer matches the built dataset"
+            exit 1
+          fi
+
+          if [ "$ALLOW_OLDER_RELEASE" != true ]; then
+            active_release_tag=$(
+              gh api "/repos/$DATA_REPOSITORY/releases/latest" --jq '.tag_name'
+            )
+            if [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
+              echo "::error::Refusing stale Pages artifact; the active private release changed"
+              exit 1
+            fi
+          fi
+
+      - name: Deploy exact validated artifact
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
+        with:
+          timeout: 600000
+
+      - name: Verify live deployment manifest
+        env:
+          EXPECTED_CODE_SHA: ${{ needs.resolve.outputs.code_sha }}
+          EXPECTED_DATASET_ID: ${{ needs.resolve.outputs.dataset_id }}
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          set -euo pipefail
+          manifest_url="${PAGE_URL%/}/deployment-manifest.json"
+          headers_file=$(mktemp "$RUNNER_TEMP/pages-manifest-headers.XXXXXX")
+          body_file=$(mktemp "$RUNNER_TEMP/pages-manifest-body.XXXXXX")
+          trap 'rm -f "$headers_file" "$body_file"' EXIT
+          saw_mismatched_identity=false
+          saw_non_challenge_http=false
+          for attempt in $(seq 1 24); do
+            : > "$headers_file"
+            : > "$body_file"
+            observed_code_sha=""
+            observed_dataset_id=""
+            if curl \
+                --fail \
+                --silent \
+                --show-error \
+                --location \
+                --max-time 5 \
+                --dump-header "$headers_file" \
+                --output "$body_file" \
+                -H "Cache-Control: no-cache" \
+                "${manifest_url}?code=${EXPECTED_CODE_SHA}&dataset=${EXPECTED_DATASET_ID}&attempt=${attempt}" \
+                2>/dev/null; then
+              observed_code_sha=$(jq -r '.source_sha // empty' "$body_file" 2>/dev/null || true)
+              observed_dataset_id=$(jq -r '.dataset_id // empty' "$body_file" 2>/dev/null || true)
+            fi
+            http_status=$(
+              awk '/^HTTP\// { status=$2 } END { print status }' "$headers_file" |
+                tr -d '\r'
+            )
+            if [ "$observed_code_sha" = "$EXPECTED_CODE_SHA" ] &&
+               [ "$observed_dataset_id" = "$EXPECTED_DATASET_ID" ]; then
+              echo "Live Pages serves code $EXPECTED_CODE_SHA with dataset $EXPECTED_DATASET_ID"
+              exit 0
+            fi
+            if [ -n "$observed_code_sha" ] || [ -n "$observed_dataset_id" ]; then
+              saw_mismatched_identity=true
+            fi
+            if [ "$http_status" = 403 ] &&
+               grep -qiE '^server:[[:space:]]*cloudflare[[:space:]]*$' "$headers_file" &&
+               grep -qiE '^cf-mitigated:[[:space:]]*challenge[[:space:]]*$' "$headers_file"; then
+              if [ "$saw_mismatched_identity" = false ] &&
+                 [ "$saw_non_challenge_http" = false ]; then
+                # deploy-pages already polled this exact uploaded artifact to
+                # success; only independent public readback is unavailable.
+                echo "::notice::Exact Pages artifact deployed; Cloudflare requires a browser challenge for public manifest readback"
+                exit 0
+              fi
+            elif [ -n "$http_status" ]; then
+              saw_non_challenge_http=true
+            fi
+            if [ "$attempt" -lt 24 ]; then
+              sleep 5
+            fi
+          done
+          echo "::error::Pages completed but did not serve the expected code and dataset"
+          exit 1
+
+  deployment-identity:
+    needs: [resolve, deploy]
+    if: >-
+      ${{ always() && github.ref == 'refs/heads/main' &&
+          needs.resolve.result == 'success' &&
+          (needs.resolve.outputs.deploy_needed == 'false' ||
+           needs.deploy.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: read
+    outputs:
+      deployment_id: ${{ steps.receipt.outputs.deployment_id }}
+    steps:
+      - name: Checkout trusted deployment identity helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            scripts/pages_deployment_identity.py
+            scripts/github_cli_retry.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Bind finalization to this exact successful deployment
+        id: receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_NEEDED: ${{ needs.resolve.outputs.deploy_needed }}
+        run: |
+          set -euo pipefail
+          arguments=(--github-output)
+          if [ "$DEPLOY_NEEDED" = true ]; then
+            arguments+=(--run-id "$GITHUB_RUN_ID")
+          fi
+          python scripts/pages_deployment_identity.py "${arguments[@]}"
+
+  cleanup-public-pages-artifacts:
+    needs: [resolve, build, deploy]
+    # Cleanup must also run when artifact upload succeeds but deployment or
+    # live verification fails. Workflow concurrency prevents this job from
+    # deleting an artifact belonging to another in-flight Pages run.
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Remove temporary public Pages bulk artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # upload-pages-artifact is necessarily readable while deploy-pages
+          # consumes it. Remove every leftover Pages artifact as soon as the
+          # deploy attempt finishes, regardless of success. A later scheduled
+          # run retries this cleanup if the workflow itself was interrupted.
+          artifacts_json=$(
+            gh api --paginate --slurp \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"
+          )
+          pages_artifact_ids_json=$(
+            jq -ce '
+              [map(.artifacts // []) | add | .[]
+                | select(.name == "github-pages" and .expired == false)
+                | .id]
+              | if all(.[]; type == "number") then .
+                else error("invalid artifact identity") end
+            ' <<<"$artifacts_json"
+          )
+          pages_artifact_count=$(jq -er 'length' <<<"$pages_artifact_ids_json")
+          for ((index = 0; index < pages_artifact_count; index++)); do
+            artifact_id=$(jq -er ".[${index}]" <<<"$pages_artifact_ids_json")
+            if [[ ! "$artifact_id" =~ ^[0-9]+$ ]]; then
+              echo "::error::Refusing to delete unexpected Pages artifact ID: $artifact_id"
+              exit 1
+            fi
+            gh api --method DELETE \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          done
+          remaining_artifacts_json=$(
+            gh api --paginate --slurp \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"
+          )
+          remaining_pages_count=$(
+            jq -er '
+              [map(.artifacts // []) | add | .[]
+                | select(.name == "github-pages" and .expired == false)]
+              | length
+            ' <<<"$remaining_artifacts_json"
+          )
+          if [ "$remaining_pages_count" -ne 0 ]; then
+            echo "::error::Public Pages artifacts remain downloadable after cleanup"
+            exit 1
+          fi

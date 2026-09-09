@@ -504,6 +504,9 @@ complete corpus up front.
 
 - Runs repeatedly during the Monday-Friday 7am-6pm America/New_York filing
   window and supports manual dispatch.
+- Pushes to `main` refresh data unless every changed path is one of the five
+  presentation entry points: `index.html`, `app.js`, `site-data-loader.js`,
+  `CNAME`, or `.nojekyll`. Schedules and manual dispatch are unaffected.
 - Uses a shared `data-maintenance` concurrency group so Update and the overnight
   security-master rebuild cannot mutate snapshot state concurrently.
 - Checks out live `main`, authenticates to the private data repository with a
@@ -516,6 +519,10 @@ complete corpus up front.
   publishes a draft release, round-trips its manifest and archive, then marks it
   public and passes the exact release identity to Pages.
 - Never commits generated data to the public repository.
+- A newer descendant commit containing only those presentation changes may
+  become the Pages target without discarding completed ingestion. The snapshot
+  retains its actual producing SHA. Changes to any other tracked input,
+  including its file mode or object type, still reject stale publication.
 
 ### `refresh-cusip-registry.yml`
 
@@ -551,6 +558,15 @@ complete corpus up front.
 - Records the successful deployment identity in the private release, retains
   the active release plus one fallback, and deletes every temporary public
   `github-pages` artifact.
+- The wrapper calls `publish-pages.yml`, which holds `pages-production` only
+  through resolve, validation, deployment, receipt capture, and artifact cleanup.
+  A queued frontend push resolves the newest `main` when it starts.
+- Housekeeping first waits for `private-release-publication` outside that
+  Pages lock. Once acquired, `finalize-private-snapshots.yml` briefly acquires
+  Pages too, verifies that the exact successful deployment ID is still current,
+  and only then updates markers and retention. Superseded finalizers exit before
+  inspecting or mutating their former target release. Both locks remain held
+  during actual mutations; rollback and latest-pointer safeguards still apply.
 
 ### `test.yml` and schedule keepalive
 
@@ -558,6 +574,15 @@ complete corpus up front.
   and Git history, runs the loader and CSP Worker tests, and executes the complete Python suite.
 - Publishing workflows repeat the regression gates against their actual code
   and restored data rather than depending on a parallel CI result.
+- Each publisher runs full Python discovery once, including the bootstrapped
+  generated-data contract. Replay fixture tests use their own small master;
+  the corpus contract continues to reconcile the real production master.
+- SEC validation caches only bounded, immutable syntax results (metadata key
+  classification, settlement dates, SEC URL validation, and archive date bounds).
+  Filter-prefix digests are reused within one source-state validation call.
+  Whole documents, acceptance results, and mutable source state are not cached
+  by these optimizations. Existing process-parallel file checks and compression
+  remain enabled; see [DEPLOYMENT-PERFORMANCE.md](DEPLOYMENT-PERFORMANCE.md).
 - A tiny, off-main heartbeat branch provides repository activity so GitHub does
   not disable schedules after 60 quiet days. It does not alter `main`, trigger
   deployment, or add meaningful clone weight.

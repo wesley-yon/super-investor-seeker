@@ -77,11 +77,13 @@ wait_for_draft_release() {
 verify_private_data_repository
 
 code_sha=$(git rev-parse HEAD)
-git fetch --no-tags origin main:refs/remotes/origin/main
-if [ "$code_sha" != "$(git rev-parse origin/main)" ]; then
-  echo "::error::main moved during generation; aborting stale publication"
-  exit 1
-fi
+resolve_deployment_code() {
+  git fetch --no-tags origin main:refs/remotes/origin/main
+  deployment_code_sha=$(
+    python scripts/data_code_identity.py --source "$code_sha" --target origin/main
+  )
+}
+resolve_deployment_code
 
 snapshot_dir=$(mktemp -d "$RUNNER_TEMP/data-snapshot.XXXXXX")
 pack_json=$(
@@ -104,6 +106,7 @@ if [[ ! "$dataset_id" =~ ^[0-9a-f]{64}$ ]] ||
 fi
 
 if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then
+  resolve_deployment_code
   # Pull intentionally restores the chronologically newest snapshot for
   # maintenance. Pages follows GitHub's latest-release pointer so a verified
   # rollback remains active until a different dataset is actually published.
@@ -136,9 +139,9 @@ if [ "$dataset_id" = "$BASE_DATASET_ID" ]; then
       DATA_ARCHIVE_TOKEN="$DATA_ARCHIVE_TOKEN" \
       DATA_REPOSITORY="$DATA_REPOSITORY" \
       bash scripts/pages_deploy_needed.sh \
-        "$code_sha" "$active_dataset_id" "$active_release_tag"
+        "$deployment_code_sha" "$active_dataset_id" "$active_release_tag"
   )
-  echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
+  echo "code_sha=$deployment_code_sha" >> "$GITHUB_OUTPUT"
   echo "release_tag=$active_release_tag" >> "$GITHUB_OUTPUT"
   echo "dataset_id=$active_dataset_id" >> "$GITHUB_OUTPUT"
   echo "site_changed=$site_changed" >> "$GITHUB_OUTPUT"
@@ -322,6 +325,7 @@ wait_for_publication() {
   return 1
 }
 
+resolve_deployment_code
 publication_verified=false
 for attempt in 0 1 2; do
   publication_observation_status=0
@@ -368,7 +372,7 @@ if [ "$publication_verified" != true ]; then
   exit 1
 fi
 
-echo "code_sha=$code_sha" >> "$GITHUB_OUTPUT"
+echo "code_sha=$deployment_code_sha" >> "$GITHUB_OUTPUT"
 echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
 echo "dataset_id=$dataset_id" >> "$GITHUB_OUTPUT"
 echo "site_changed=true" >> "$GITHUB_OUTPUT"

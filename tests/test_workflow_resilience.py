@@ -53,10 +53,9 @@ class WorkflowResilienceTests(unittest.TestCase):
 
     @staticmethod
     def _finalization_shell() -> str:
-        pages = read(".github/workflows/deploy-pages.yml")
-        return pages.split("\n  finalize-private-snapshots:", 1)[1].split(
-            "\n  cleanup-public-pages-artifacts:", 1
-        )[0]
+        return read(".github/workflows/finalize-private-snapshots.yml").split(
+            "\n  finalize-private-snapshots:", 1
+        )[1]
 
     def _run_private_repository_guard(
         self,
@@ -140,6 +139,7 @@ gh_mutate_once() {
                     'expected_latest_release_tag="dataset-old"',
                     'DATA_REPOSITORY="owner/private-data"',
                     "sleep_before_retry() { return 0; }",
+                    "resolve_deployment_code() { return 0; }",
                     r"""
 gh_read_retry() {
   if [ "$1" = release ] && [ "$2" = view ]; then
@@ -265,7 +265,7 @@ gh_mutate_once() {
         finalization = self._finalization_shell()
         function_start = finalization.index("          observe_latest_release() {")
         function_end = finalization.index(
-            "\n\n          if [[ ! \"$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG\"",
+            "\n\n          if [[ ! \"$EXPECTED_DEPLOYMENT_ID\"",
             function_start,
         )
         function_source = textwrap.dedent(
@@ -358,6 +358,7 @@ gh_mutate_once() {
                     'EXPECTED_CODE_SHA="d3da4c385b1235e0aacb50982ddf454a6f182d55"',
                     'EXPECTED_DATASET_ID="5e8b2383befa7ad2d6cb2109e93cf9ec38c3fd7c725b5da0d47a25478d624d67"',
                     'EXPECTED_RELEASE_TAG="dataset-expected"',
+                    'EXPECTED_DEPLOYMENT_ID="101"',
                     (
                         'EXPECTED_PREVIOUS_LATEST_RELEASE_TAG="'
                         f'{expected_previous_latest_release_tag}"'
@@ -671,7 +672,6 @@ gh_mutate_once() {
             "Refresh and audit private SEC security master and derived data",
             "Validate generated data",
             "Validate reviewed identities and report coverage warnings",
-            "Run generated-data contract regression tests",
             "Run full Python regression suite",
             "Publish refreshed private snapshot",
         ):
@@ -832,6 +832,7 @@ gh_mutate_once() {
                     workflow_call,
                     rf"(?ms)^      {field}:\n.*?^        required: true$",
                 )
+        workflow = read(".github/workflows/publish-pages.yml")
         self.assertIn(
             "code_sha: ${{ steps.target.outputs.code_sha }}", workflow
         )
@@ -843,7 +844,7 @@ gh_mutate_once() {
         )
 
     def test_pages_resolve_target_checkouts_are_sparse_and_blobless(self):
-        workflow = read(".github/workflows/deploy-pages.yml")
+        workflow = read(".github/workflows/publish-pages.yml")
         resolve = workflow.split("  resolve:", 1)[1].split("\n  build:", 1)[0]
         target_checkouts = resolve.split(
             "- name: Checkout trusted GitHub retry helper", 1
@@ -867,7 +868,8 @@ gh_mutate_once() {
         for path, minimum in (
             (".github/workflows/update-data.yml", 1),
             (".github/workflows/refresh-cusip-registry.yml", 1),
-            (".github/workflows/deploy-pages.yml", 4),
+            (".github/workflows/publish-pages.yml", 3),
+            (".github/workflows/finalize-private-snapshots.yml", 1),
         ):
             with self.subTest(path=path):
                 workflow = read(path)
@@ -922,7 +924,7 @@ gh_mutate_once() {
             self.assertIn(fragment, publisher)
 
     def test_pages_resolve_uses_bounded_retries_for_private_release_reads(self):
-        workflow = read(".github/workflows/deploy-pages.yml")
+        workflow = read(".github/workflows/publish-pages.yml")
         resolve = workflow.split("\n  resolve:", 1)[1].split("\n  build:", 1)[0]
 
         trusted_helper_checkout = resolve.split(
@@ -967,7 +969,7 @@ gh_mutate_once() {
     def test_private_release_mutations_share_a_lock_and_rollback_precondition(self):
         update = read(".github/workflows/update-data.yml")
         refresh = read(".github/workflows/refresh-cusip-registry.yml")
-        pages = read(".github/workflows/deploy-pages.yml")
+        pages = read(".github/workflows/publish-pages.yml")
         for workflow in (update, refresh):
             maintenance_queue = workflow.split("\nconcurrency:\n", 1)[1].split("\npermissions:", 1)[0]
             self.assertIn("  group: data-maintenance\n", maintenance_queue)
@@ -985,11 +987,11 @@ gh_mutate_once() {
         refresh_job = refresh.split("\n  rebuild_security_master:", 1)[1].split(
             "\n  deploy-pages:", 1
         )[0]
-        finalization = pages.split(
-            "\n  finalize-private-snapshots:", 1
-        )[1].split("\n  cleanup-public-pages-artifacts:", 1)[0]
+        finalization = self._finalization_shell()
 
-        for job in (update_job, refresh_job, finalization):
+        outer = read(".github/workflows/deploy-pages.yml")
+        outer_finalization = outer.split("\n  finalize-private-snapshots:", 1)[1]
+        for job in (update_job, refresh_job, outer_finalization):
             self.assertIn(private_lock, job)
         self.assertIn(
             "resolved_latest_release_tag: "
@@ -998,7 +1000,7 @@ gh_mutate_once() {
         )
         self.assertIn(
             "EXPECTED_PREVIOUS_LATEST_RELEASE_TAG: "
-            "${{ needs.resolve.outputs.resolved_latest_release_tag }}",
+            "${{ inputs.resolved_latest_release_tag }}",
             finalization,
         )
         self.assertIn(
@@ -1272,10 +1274,7 @@ gh_mutate_once() {
 
     def test_github_cli_retries_are_bounded_and_replay_safe(self):
         publisher = read(PUBLISHER_SCRIPT)
-        pages = read(".github/workflows/deploy-pages.yml")
-        finalization = pages.split(
-            "\n  finalize-private-snapshots:", 1
-        )[1].split("\n  cleanup-public-pages-artifacts:", 1)[0]
+        finalization = self._finalization_shell()
 
         for script in (publisher, finalization):
             self.assertIn("RETRY_DELAYS_SECONDS=(1 3)", script)
@@ -1310,7 +1309,8 @@ gh_mutate_once() {
             publisher,
         )
 
-        self.assertIn(f"sparse-checkout: {GH_RETRY_SCRIPT}", finalization)
+        self.assertIn("sparse-checkout: |", finalization)
+        self.assertIn(f"            {GH_RETRY_SCRIPT}\n", finalization)
         self.assertIn(
             f'python {GH_RETRY_SCRIPT} --allow-release-not-found -- "$@"',
             finalization,
@@ -1586,13 +1586,11 @@ gh_mutate_once() {
 
     def test_maintenance_stale_code_guard_fails_closed(self):
         publisher = read(PUBLISHER_SCRIPT)
-        fetch = "git fetch --no-tags origin main:refs/remotes/origin/main"
-        self.assertIn(fetch, publisher)
-        self.assertIn(
-            'if [ "$code_sha" != "$(git rev-parse origin/main)" ]; then',
-            publisher,
-        )
-        self.assertIn("aborting stale publication", publisher)
+        self.assertIn("git fetch --no-tags origin main:refs/remotes/origin/main", publisher)
+        self.assertIn('python scripts/data_code_identity.py --source "$code_sha" --target origin/main', publisher)
+        self.assertIn('--source-sha "$code_sha"', publisher)
+        self.assertIn('echo "code_sha=$deployment_code_sha"', publisher)
+        self.assertGreaterEqual(publisher.count("\nresolve_deployment_code\n"), 2)
         self.assertNotIn("git reset --hard", publisher)
 
     def test_data_workflow_timeouts_preserve_durable_partial_progress(self):
@@ -1711,15 +1709,15 @@ gh_mutate_once() {
                 cleanup_step = workflow[cleanup_at:validate_at]
                 self.assertIn("success()", cleanup_step)
 
-    def test_every_snapshot_publisher_runs_contract_tests_first(self):
-        command = (
-            "python -m unittest discover -s tests "
-            "-p 'test_data_contract.py' -v"
-        )
+    def test_every_snapshot_publisher_runs_contract_tests_once_before_publish(self):
+        # Unfiltered discovery includes test_data_contract.py and its live
+        # corpus assertions. Do not run that expensive module a second time.
+        command = "python -m unittest discover -s tests -v"
         for path in MAINTENANCE_WORKFLOWS:
             with self.subTest(path=path):
                 workflow = read(path)
-                self.assertIn(command, workflow)
+                self.assertEqual(1, workflow.count(command))
+                self.assertNotIn("-p 'test_data_contract.py'", workflow)
                 self.assertLess(
                     workflow.index(command),
                     workflow.index("- name: Publish "),
@@ -1737,7 +1735,7 @@ gh_mutate_once() {
                 self.assertLess(workflow.index(python_command), publish_at)
                 self.assertLess(workflow.index(node_command), publish_at)
 
-        pages = read(".github/workflows/deploy-pages.yml")
+        pages = read(".github/workflows/publish-pages.yml")
         build = pages.split("\n  build:", 1)[1].split("\n  deploy:", 1)[0]
         build_artifact_at = build.index("- name: Build bounded public Pages artifact")
         self.assertIn(python_command, build)
@@ -1757,7 +1755,7 @@ gh_mutate_once() {
                 self.assertIn("python scripts/annotate_ticker_health.py", annotation)
 
     def test_pages_restores_exact_snapshot_and_builds_explicit_allowlist(self):
-        workflow = read(".github/workflows/deploy-pages.yml")
+        workflow = read(".github/workflows/publish-pages.yml")
         build = workflow.split("\n  build:", 1)[1].split("\n  deploy:", 1)[0]
 
         restore_at = build.index("- name: Restore exact validated private snapshot")
@@ -1793,7 +1791,7 @@ gh_mutate_once() {
             self.assertNotIn(private_file, build)
 
     def test_pages_stale_guard_checks_public_code_and_latest_private_release(self):
-        workflow = read(".github/workflows/deploy-pages.yml")
+        workflow = read(".github/workflows/publish-pages.yml")
         guard = workflow.split(
             "- name: Refuse an artifact superseded by newer public or private inputs",
             1,
@@ -1812,9 +1810,9 @@ gh_mutate_once() {
         self.assertIn('if [ "$ALLOW_OLDER_RELEASE" != true ]; then', guard)
 
     def test_live_manifest_requires_code_and_dataset_identity(self):
-        workflow = read(".github/workflows/deploy-pages.yml")
+        workflow = read(".github/workflows/publish-pages.yml")
         verify = workflow.split("- name: Verify live deployment manifest", 1)[1].split(
-            "\n  finalize-private-snapshots:", 1
+            "\n  deployment-identity:", 1
         )[0]
 
         self.assertIn("observed_code_sha", verify)
@@ -1845,21 +1843,20 @@ gh_mutate_once() {
         self.assertIn("cf-mitigated:", helper)
 
     def test_finalization_self_heals_marker_and_keeps_active_plus_fallback(self):
-        workflow = read(".github/workflows/deploy-pages.yml")
+        workflow = read(".github/workflows/publish-pages.yml")
         deploy = workflow.split("\n  deploy:", 1)[1].split(
-            "\n  finalize-private-snapshots:", 1
+            "\n  deployment-identity:", 1
         )[0]
-        finalization = workflow.split(
-            "\n  finalize-private-snapshots:", 1
-        )[1].split("\n  cleanup-public-pages-artifacts:", 1)[0]
+        finalization = self._finalization_shell()
 
-        self.assertIn("needs: [resolve, deploy]", finalization)
-        self.assertIn("${{ always() &&", finalization)
-        self.assertIn("needs.resolve.result == 'success'", finalization)
-        self.assertIn(
-            "needs.resolve.outputs.deploy_needed == 'false'", finalization
-        )
-        self.assertIn("needs.deploy.result == 'success'", finalization)
+        receipt = workflow.split("\n  deployment-identity:", 1)[1].split("\n  cleanup-public-pages-artifacts:", 1)[0]
+        self.assertIn("needs: [resolve, deploy]", receipt)
+        self.assertIn("needs.resolve.result == 'success'", receipt)
+        self.assertIn("needs.resolve.outputs.deploy_needed == 'false'", receipt)
+        self.assertIn("needs.deploy.result == 'success'", receipt)
+        self.assertIn('"$EXPECTED_DEPLOYMENT_ID"', finalization)
+        self.assertLess(finalization.index("A newer successful Pages deployment superseded"),
+                        finalization.index('release_json=$(gh_read_retry'))
         self.assertIn("pages-deployment.json", finalization)
         self.assertNotIn("pages-deployment.json", deploy)
         self.assertIn(
@@ -1893,7 +1890,7 @@ gh_mutate_once() {
         self.assertNotIn("actions/artifacts/$artifact_id", finalization)
 
     def test_public_pages_artifacts_are_cleaned_even_after_deploy_failure(self):
-        workflow = read(".github/workflows/deploy-pages.yml")
+        workflow = read(".github/workflows/publish-pages.yml")
         cleanup = workflow.split(
             "\n  cleanup-public-pages-artifacts:", 1
         )[1]
@@ -1915,11 +1912,9 @@ gh_mutate_once() {
         )
 
     def test_latest_release_pointer_persists_manual_rollback(self):
-        workflow = read(".github/workflows/deploy-pages.yml")
+        workflow = read(".github/workflows/publish-pages.yml")
         resolve = workflow.split("\n  resolve:", 1)[1].split("\n  build:", 1)[0]
-        finalization = workflow.split(
-            "\n  finalize-private-snapshots:", 1
-        )[1].split("\n  cleanup-public-pages-artifacts:", 1)[0]
+        finalization = self._finalization_shell()
 
         self.assertIn(
             'latest_release_tag=$(\n            gh_read_retry api '

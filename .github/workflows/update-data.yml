@@ -3,6 +3,14 @@ name: Update 13F Data
 on:
   push:
     branches: [main]
+    # Keep this allowlist aligned with scripts/data_code_identity.py. Unknown
+    # files still trigger ingestion; frontend contracts are checked by Pages.
+    paths-ignore:
+      - 'index.html'
+      - 'app.js'
+      - 'site-data-loader.js'
+      - 'CNAME'
+      - '.nojekyll'
   schedule:
     # GitHub schedules run in UTC. This covers the full 7am-6pm
     # America/New_York window in both EST and EDT; the filing-window job below
@@ -406,12 +414,9 @@ jobs:
       - name: Validate reviewed identities and report coverage warnings
         run: python scripts/validate_reviewed_coverage.py
 
-      - name: Run generated-data contract regression tests
-        # Run the focused corpus contract here so stale-cache identity losses
-        # fail before a private snapshot is published.
-        run: python -m unittest discover -s tests -p 'test_data_contract.py' -v
-
       - name: Run full Python regression suite
+        # Includes the bootstrapped generated-data contract exactly once,
+        # before a private snapshot can be published.
         run: python -m unittest discover -s tests -v
 
       - name: Test compressed site loader

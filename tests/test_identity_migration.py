@@ -269,6 +269,18 @@ class IdentityMarkerTests(unittest.TestCase):
 
 
 class IdentityReplayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Replay fixtures own their identity inputs. The production master is
+        # exercised separately by the bootstrapped data-contract regression.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        master_path = Path(temporary.name) / '.cache/sec_security_master.json'
+        master_path.parent.mkdir()
+        master_path.write_text('{}')
+        patcher = mock.patch.object(pipeline, 'SEC_SECURITY_MASTER_PATH', master_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_interrupt_checkpoints_identity_replay_state(self) -> None:
         state = {}
 
