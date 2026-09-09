@@ -8755,6 +8755,41 @@ def _filer_security_kind(entry: dict | None) -> str | None:
     return None
 
 
+def issuer_display_symbols(registry: dict[str, dict]) -> dict[str, str]:
+    """Display-only issuer shorthand; never a security ticker or identity bridge.
+
+    Require SEC-list issuer names AND issuer prefixes to agree. Reject multiple
+    common symbols, historical-only mappings, funds, and cross-prefix aliases.
+    """
+    def issuer_key(cusip, entry):
+        if (not re.fullmatch(r"[A-Z0-9]{9}", cusip)
+                or entry.get("label_source") != "sec_13f_list"):
+            return None
+        name = " ".join(str(entry.get("name") or "").upper().split())
+        return (cusip[:6], name) if name else None
+
+    candidates: dict[tuple, set[str]] = {}
+    for cusip, entry in registry.items():
+        key = issuer_key(cusip, entry)
+        if not key or entry.get("security_kind") != "COMMON":
+            continue
+        display = entry.get("display_mappings", {}).get("EQUITY", {})
+        ticker = None
+        if (display.get("match_kind") == "exact_cusip"
+                and display.get("ticker_temporality") != "historical_only"):
+            ticker = display.get("ticker")
+        if not ticker and entry.get("mapping_status") == "resolved" and entry.get("ticker_source") in {"sec_ftd", "sec_ixbrl"}:
+            ticker = entry.get("ticker")
+        if ticker and re.fullmatch(r"[A-Z0-9][A-Z0-9.\-^/]{0,19}", ticker):
+            candidates.setdefault(key, set()).add(ticker)
+    result = {}
+    for cusip, entry in registry.items():
+        symbols = candidates.get(issuer_key(cusip, entry), set())
+        if len(symbols) == 1 and entry.get("security_kind") in {"BOND", "PREFERRED", "WARRANT", "RIGHT", "UNIT"}:
+            result[cusip] = next(iter(symbols))
+    return result
+
+
 def write_security_labels(registry: dict[str, dict]) -> None:
     """Write compact browser metadata without changing public identities."""
 
@@ -8813,6 +8848,7 @@ def write_security_labels(registry: dict[str, dict]) -> None:
             "labels": labels,
             "product_names": product_names,
             "reviewed_displays": displays,
+            "issuer_display_symbols": issuer_display_symbols(registry),
             "note_type_corrections": public_note_type_corrections(registry),
             **public_preferred_metadata(registry),
             "identity_history": public_identity_history(),
