@@ -281,6 +281,7 @@ a{color:var(--ac);text-underline-offset:3px}
 .empty h1{font-size:clamp(34px,5vw,54px)}
 .spinner{border-color:var(--bd2);border-top-color:var(--ac)}
 
+body:has(.home-hero){min-height:100svh}
 .wrap:has(>.home-hero){max-width:none;padding:0 24px}
 .home-hero{
   min-height:calc(100svh - 72px);
@@ -288,7 +289,8 @@ a{color:var(--ac);text-underline-offset:3px}
   flex-direction:column;
   justify-content:center;
   align-items:center;
-  padding:64px 0 168px;
+  /* Keep the full spacing on tall screens without forcing blank overflow. */
+  padding:clamp(16px,calc(100svh - 576px),64px) 0 clamp(16px,calc(100svh - 472px),168px);
 }
 .home-copy{max-width:920px;margin:0 0 36px;text-align:center}
 .home-copy h1{
@@ -528,7 +530,7 @@ th.sort.active,th.sort.active .arr{color:var(--ac)}
   .gsearch-wrap{order:3;flex-basis:100%;max-width:none}
   .back{padding:6px 11px;margin-left:auto}
   .wrap{padding:28px 16px 48px}
-  .home-hero{min-height:calc(100svh - 62px);padding:40px 0 112px}
+  .home-hero{min-height:calc(100svh - 62px);padding:clamp(12px,calc(100svh - 480px),40px) 0 clamp(16px,calc(100svh - 408px),112px)}
   .home-copy{margin-bottom:32px}
   .home-copy h1{max-width:420px;font-size:clamp(32px,10.25vw,46px);line-height:1.08}
   .home-title-subject{white-space:nowrap}
