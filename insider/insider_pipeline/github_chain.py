@@ -23,7 +23,7 @@ from .http import atomic_write
 from .increment import MANIFEST, restore as restore_increment, verify as verify_increment
 from .inventory import canonical
 from .inventory_archive import describe, restore as restore_inventory
-from .inventory_delta import restore as replay_delta
+from .inventory_delta import MANIFEST as DELTA_MANIFEST, MAX_RAW_BYTES, restore as replay_delta
 
 BUCKET_MARKER = 'Insider content-addressed checkpoint storage (v1).'
 MAX_CHAIN = 32
@@ -200,11 +200,11 @@ def metadata(locator, directory, downloader, seen=None):
     return [*parents, node]
 
 
-def download_archives(chain, downloader):
+def download_archives(chain, downloader, inventory_only=False):
     tasks = {}
     for node in chain:
         tag = node['locator']['tag']
-        for asset in node['expected'].values():
+        for asset in node['inventory_assets' if inventory_only else 'expected'].values():
             remote_name = blob_name(asset['sha256']) if node['locator']['layout'] == 'content_addressed' else asset['file']
             downloader.plan(tag, remote_name, asset['bytes'], asset['sha256'])
             tasks[(tag, remote_name)] = (tag, remote_name, asset['bytes'], asset['sha256'])
@@ -212,10 +212,84 @@ def download_archives(chain, downloader):
     with ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(lambda task: downloader.get(*task), tasks.values()))
     for node in chain:
-        for asset in node['expected'].values():
+        for asset in node['inventory_assets' if inventory_only else 'expected'].values():
             remote_name = blob_name(asset['sha256']) if node['locator']['layout'] == 'content_addressed' else asset['file']
             path = downloader.downloaded[(node['locator']['tag'], remote_name)]
             shutil.copyfile(path, node['directory'] / asset['file'])
+
+
+def select_inventory_assets(chain, downloader, output):
+    """Bind each inventory manifest to its checkpoint before planning its parts.
+
+    Original documents, source ZIPs, indexes, and audits stay in their archives.
+    Their remote declarations are checked by metadata(); their bytes are not read.
+    """
+    previous = None
+    growth = 0
+    for index, node in enumerate(chain):
+        checkpoint = node['manifest']
+        name = 'inventory-manifest.json' if index == 0 else DELTA_MANIFEST
+        pin_key = 'inventory_manifest_sha256' if index == 0 else 'inventory_delta_manifest_sha256'
+        asset = node['expected'].get(name)
+        if (asset is None or asset['sha256'] != checkpoint.get(pin_key)
+                or not 0 < asset['bytes'] <= MAX_METADATA_BYTES):
+            raise ValueError('Inventory metadata differs from the pinned checkpoint')
+        remote_name = asset['file'] if index == 0 else blob_name(asset['sha256'])
+        path = downloader.get(node['locator']['tag'], remote_name, asset['bytes'], asset['sha256'])
+        value = json.loads(path.read_text())
+        raw_bytes = value.get('raw_bytes')
+        if (type(raw_bytes) is not int or not 0 <= raw_bytes <= MAX_RAW_BYTES
+                or not valid_hash(value.get('raw_sha256'))
+                or value.get('compression') != 'gzip_concatenated_parts'):
+            raise ValueError('Inventory metadata has an invalid schema or decoded size')
+        if index == 0:
+            if (value.get('inventory_archive_schema') != 1 or not raw_bytes
+                    or value['scope'] != checkpoint['scope']
+                    or value['tables']['filings'] != checkpoint['inventory_filings']
+                    or value['committed_documents'] != checkpoint['documents']
+                    or value['committed_selection_sha256'] != checkpoint['selection_sha256']
+                    or value['queue_counts'] != checkpoint['queue_counts_at_checkpoint']):
+                raise ValueError('Base inventory coverage differs from the pinned baseline')
+            estimated_inventory = raw_bytes
+        else:
+            if (value.get('inventory_delta_schema') != 1
+                    or checkpoint.get('requires_parent_checkpoint') is not True
+                    or checkpoint.get('standalone_restore_ready') is not False
+                    or checkpoint.get('complete_backfill') is not False
+                    or value['target'] != checkpoint['target_inventory_state']
+                    or {table: row['rows'] for table, row in value['target']['tables'].items()} != checkpoint['target_inventory']['tables']):
+                raise ValueError('Incremental inventory coverage differs from its pinned checkpoint')
+            if index == 1:
+                if (checkpoint['parent_inventory_file_sha256'] != previous['raw_sha256']
+                        or {table: row['rows'] for table, row in value['parent']['tables'].items()} != previous['tables']):
+                    raise ValueError('First inventory delta differs from its baseline parent')
+            elif value['parent'] != previous['target']:
+                raise ValueError('Inventory deltas do not form the pinned sequence of states')
+            growth += raw_bytes
+        parts = value.get('parts')
+        if not isinstance(parts, list) or not 1 <= len(parts) <= 997:
+            raise ValueError('Invalid selected inventory part count')
+        selected = {node['manifest_name']: node['expected'][node['manifest_name']], name: asset}
+        prefix = 'inventory' if index == 0 else 'inventory-delta'
+        for number, part in enumerate(parts, 1):
+            if (not isinstance(part, dict) or set(part) != {'file', 'bytes', 'sha256'}
+                    or not valid_hash(part['sha256'])
+                    or part['file'] != f'{prefix}-{number:05d}-{part["sha256"][:16]}.gz.part'
+                    or part['file'] in selected or part != node['expected'].get(part['file'])):
+                raise ValueError('Inventory parts differ from the pinned checkpoint assets')
+            selected[part['file']] = part
+        node['inventory_assets'], node['inventory_metadata'] = selected, value
+        shutil.copyfile(path, node['directory'] / name)
+        previous = value
+    # Plan the entire selected chain before downloading any large part. Include
+    # both inventory copies and SQLite journal growth during sequential replay.
+    for node in chain:
+        for asset in node['inventory_assets'].values():
+            name = asset['file'] if node['locator']['layout'] == 'legacy_baseline' else blob_name(asset['sha256'])
+            downloader.plan(node['locator']['tag'], name, asset['bytes'], asset['sha256'])
+    required_free = 3 * (estimated_inventory + 4 * growth) + 2 * sum(size for size, _ in downloader.planned.values()) + 2 * 1024**3
+    if shutil.disk_usage(output).free < required_free:
+        raise ValueError('Insufficient free disk for the declared inventory chain')
 
 
 def restore_parent_inventory(chain, output):
@@ -233,7 +307,29 @@ def restore_parent_inventory(chain, output):
     return destination / 'inventory.sqlite3'
 
 
-def read_chain(tag, transport_pin, output, workers=4):
+def inventory_chain(chain, downloader, output):
+    select_inventory_assets(chain, downloader, output)
+    download_archives(chain, downloader, inventory_only=True)
+    final_inventory = restore_parent_inventory(chain, output / 'inventory-work')
+    root = chain[-1]
+    verified = describe(final_inventory)
+    if verified != root['manifest']['target_inventory']:
+        raise ValueError('Final inventory coverage differs from its pinned checkpoint')
+    # Every replay checked every table row, not only the changed or committed rows.
+    final_inventory.parent.rename(output / 'restored')
+    return {'documents': verified['committed_documents'], 'inventory_filings': verified['tables']['filings'],
+            'inventory_only_restore_verified': True, 'inventory_logical_state_verified': True,
+            'every_inventory_row_verified': True, 'inventory_byte_identical': False,
+            'base_inventory_byte_identical': True,
+            'inventory_state_sha256': root['inventory_metadata']['target']['state_sha256'],
+            'inventory_tables': verified['tables'], 'inventory_queue_counts': verified['queue_counts'],
+            'inventory_sqlite_integrity_check': verified['sqlite_integrity_check'],
+            'inventory_file_sha256': file_hash(output / 'restored/inventory.sqlite3'),
+            'full_restore_verified': False, 'includes_original_documents': False,
+            'collection_resume_ready': False, 'source_audit_performed': False}
+
+
+def read_chain(tag, transport_pin, output, workers=4, inventory_only=False):
     locator = validate_locator({'layout': 'content_addressed', 'tag': tag, 'sha256': transport_pin})
     output = Path(output).absolute()
     if output.exists() or output.is_symlink():
@@ -248,6 +344,22 @@ def read_chain(tag, transport_pin, output, workers=4):
     started = time.monotonic()
     downloader = Downloader(output / 'cache', budget=MAX_DOWNLOAD_BYTES)
     chain = metadata(locator, output / 'archives', downloader)
+    if inventory_only:
+        verified = inventory_chain(chain, downloader, output)
+        latest_after = api('repos/' + REPOSITORY + '/releases/latest')
+        if not latest_after['tag_name'].startswith('dataset-'):
+            raise ValueError('The normal dataset release pointer is not selected')
+        report = {**verified, 'repository': REPOSITORY, 'tag': tag, 'transport_sha256': transport_pin,
+                  'release_id': chain[-1]['release_id'], 'checkpoints': len(chain),
+                  'assets': len(downloader.downloaded), 'asset_bytes': sum(size for size, _ in downloader.planned.values()),
+                  'read_only_operations': True, 'latest_dataset_release_before': latest_before['id'],
+                  'latest_dataset_release_after': latest_after['id'],
+                  'latest_release_unchanged': latest_before['id'] == latest_after['id'],
+                  'elapsed_seconds': round(time.monotonic() - started, 3),
+                  'remaining_free_bytes': shutil.disk_usage(output).free,
+                  'cloud_daily_maintenance_active': False, 'complete_backfill': False}
+        atomic_write(output / 'cloud-verification.json', canonical(report))
+        return report
     download_archives(chain, downloader)
     root, parent = chain[-1], chain[-2]
     verify_increment(root['directory'], root['reference']['manifest_sha256'])
@@ -295,8 +407,9 @@ def main():
     parser.add_argument('--transport-sha256', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--workers', type=int, choices=range(1, 5), default=4)
+    parser.add_argument('--inventory-only', action='store_true', help='Replay the complete inventory chain without historical document or source downloads')
     args = parser.parse_args()
-    print(json.dumps(read_chain(args.tag, args.transport_sha256, args.output, args.workers), indent=2), flush=True)
+    print(json.dumps(read_chain(args.tag, args.transport_sha256, args.output, args.workers, args.inventory_only), indent=2), flush=True)
 
 
 if __name__ == '__main__':
