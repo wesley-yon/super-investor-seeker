@@ -72,7 +72,7 @@ def connect(root):
     return db
 
 
-def read_quarter(task):
+def read_quarter(task, *, max_records=None):
     metadata, body_path, start, end = task
     digest = hashlib.sha256()
     with open(body_path, "rb") as stream:
@@ -102,6 +102,8 @@ def read_quarter(task):
                     raise ValueError("Invalid accession: " + accession)
                 if accession in records:
                     raise ValueError("Duplicate quarterly accession: " + accession)
+                if max_records is not None and len(records) >= max_records:
+                    raise ValueError('Quarterly source exceeds the configured filing-record bound')
                 issuer = int(row["ISSUERCIK"])
                 records[accession] = [issuer, row["DOCUMENT_TYPE"], filed,
                                       gzip.compress(canonical(row), mtime=0), dict.fromkeys(TABLES, 0)]

@@ -38,6 +38,15 @@ class InventorySession:
 
     def recover_refresh(self, directory, pin, *, document_index_pin=None):
         from .discovery_refresh import read_plan
+        return self._recover_plan(directory, pin, document_index_pin, read_plan,
+                                   'discovery_plan', 'local_discovery_plan')
+
+    def recover_bulk_refresh(self, directory, pin, *, document_index_pin=None):
+        from .bulk_refresh import read_plan
+        return self._recover_plan(directory, pin, document_index_pin, read_plan,
+                                   'bulk_refresh_plan', 'local_bulk_refresh_plan')
+
+    def _recover_plan(self, directory, pin, document_index_pin, read_plan, prefix, selection_source):
         if self.used:
             raise ValueError('A staged recovery session accepts only one final selection')
         try:
@@ -51,8 +60,8 @@ class InventorySession:
             self.used = True
             (self.output / 'cloud-verification.json').unlink(missing_ok=True)
             raise
-        self.report = {**result, 'discovery_plan_sha256': pin, 'discovery_plan_parent_verified': True,
-                       'filing_selection_source': 'local_discovery_plan'}
+        self.report = {**result, prefix + '_sha256': pin, prefix + '_parent_verified': True,
+                       'filing_selection_source': selection_source}
         atomic_write(self.output / 'cloud-verification.json', canonical(self.report))
         return dict(self.report)
 
