@@ -90,6 +90,20 @@ class WorkflowTrustBoundaryTests(unittest.TestCase):
         policy = job_header(workflow, "keepalive")
         self.assertRegex(policy, r"(?m)^    if: github.ref == 'refs/heads/main'$")
 
+    def test_insider_verifier_uses_protected_main_and_read_token_only(self):
+        workflow = (WORKFLOWS / 'verify-insider-checkpoint.yml').read_text()
+        policy = job_header(workflow, 'verify')
+        self.assertIn("github.ref == 'refs/heads/main'", policy)
+        self.assertIn('github.event.repository.private == false', policy)
+        self.assertIn('environment: private-data', policy)
+        self.assertEqual(['read'], re.findall(r'permission-contents: (\w+)', workflow))
+        self.assertNotRegex(workflow, r'(?m)^\s+(?:contents|actions|pages): write$')
+        self.assertNotIn('upload-artifact', workflow)
+        self.assertNotIn('SEC_USER_AGENT', workflow)
+        self.assertNotRegex(workflow, r'(?m)^  (schedule|push|pull_request):')
+        self.assertIn('INSIDER_RELEASE_TAG: ${{ inputs.release_tag }}', workflow)
+        self.assertIn('--tag "$INSIDER_RELEASE_TAG"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

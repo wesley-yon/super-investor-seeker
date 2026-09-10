@@ -61,6 +61,10 @@ jobs:
       - name: Run data-integrity regression tests
         run: python -m unittest discover -s tests -v
 
+      - name: Run isolated insider archive regression tests
+        working-directory: insider
+        run: python -m unittest discover -s tests -q
+
       - name: Prove tests did not create generated data
         run: |
           set -euo pipefail
