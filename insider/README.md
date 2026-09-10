@@ -14,7 +14,7 @@ Draft releases are restricted to users with push access, so a checkpoint must be
 
 The verifier has a 2 GB download limit and requires 10 GiB free disk before starting. This bounds the initial cloud transport test. Routine maintenance for the completed historical corpus must restore only its inventory and needed incremental data; it must not assume the entire history fits a standard runner. Daily maintenance is not implemented or activated by this verification workflow.
 
-The optional `inventory_only` workflow input, or `--inventory-only` CLI flag, restores just the inventory component. It still checks the pinned baseline, private release asset metadata, inventory manifest, exact restored database bytes, and complete queue membership. The download budget applies to the selected inventory assets, allowing historical document archives to be larger. It also checks free disk against the inventory's declared uncompressed size. This mode excludes filing documents, source ZIPs, and original-source auditing; its report explicitly leaves full recovery and collection-resume readiness unverified.
+The optional `inventory_only` workflow input, or `--inventory-only` CLI flag, restores just the inventory component. For a legacy baseline it checks the pinned baseline, private release asset metadata, inventory manifest, exact restored database bytes, and complete queue membership. Incremental chains additionally replay and verify every intervening change, as described below. The download budget applies to selected inventory assets, allowing historical document archives to be larger. This mode excludes filing documents, source ZIPs, and original-source auditing; its report explicitly leaves full recovery and collection-resume readiness unverified.
 
 ```sh
 python -m unittest discover -s tests -q
@@ -71,9 +71,12 @@ The staging command verifies the local increment and the parent's remote metadat
 # For a later increment, use the preceding stage report's exact locator object.
 python -m insider_pipeline.github_increment_stage --increment /new/increment --increment-sha256 INCREMENT_PIN --parent-locator /private/parent.json --bucket-tag insider-archives-YYYYMM-001 --expected-latest-release-id DATASET_ID --evidence /private/stage-evidence
 python -m insider_pipeline.github_chain --tag insider-archives-YYYYMM-001 --transport-sha256 TRANSPORT_PIN --output /new/cloud-restore --workers 4
+python -m insider_pipeline.github_chain --tag insider-archives-YYYYMM-001 --transport-sha256 TRANSPORT_PIN --inventory-only --output /new/cloud-inventory
 ```
 
-The manual verification workflow accepts exactly one of `baseline_sha256` and `transport_sha256`. Incremental transport currently requires a full restore; `inventory_only` remains available for legacy baselines. The code adds no schedule, SEC fetch, site publication, or public data artifact. The backfill and daily cloud maintenance remain unfinished.
+The manual verification workflow accepts exactly one of `baseline_sha256` and `transport_sha256`; `inventory_only` works with either. For an incremental chain, the reader downloads the pinned transport/checkpoint metadata, baseline inventory, and ordered inventory deltas. It does not download historical filing chunks, quarterly source ZIPs, original indexes, or audit detail files. Every nested manifest and part must match its checkpoint declaration; each delta must match its exact logical parent, and replay verifies every row in every resulting table. Retry state, binary metadata, discovery observations, and correction-history settings are preserved. The final inventory must also match the target checkpoint's counts and collected-document selection.
+
+The chain budget covers all selected metadata and parts across all ancestors, and it is checked before large parts are downloaded. A separate disk check accounts for the baseline, decoded change sizes, temporary copies, and SQLite journal growth. Intermediate inventories are removed after their successor passes verification. The final report distinguishes the byte-identical baseline from the logically identical result of delta replay; it does not claim the final SQLite file has the original physical page layout. This is inventory-state recovery only. Selective collection still needs source loading, discovery, collection, audit, and publication orchestration. The code adds no schedule, SEC fetch, site publication, or public data artifact. The backfill and daily cloud maintenance remain unfinished.
 
 ## Supplementary bulk-source review
 

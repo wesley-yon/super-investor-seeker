@@ -69,24 +69,24 @@ jobs:
           INSIDER_TRANSPORT_SHA256: ${{ inputs.transport_sha256 }}
           INSIDER_INVENTORY_ONLY: ${{ inputs.inventory_only }}
         run: |
+          options=()
+          if [[ "$INSIDER_INVENTORY_ONLY" == "true" ]]; then
+            options+=(--inventory-only)
+          fi
           if [[ -n "$INSIDER_TRANSPORT_SHA256" ]]; then
-            if [[ -n "$INSIDER_BASELINE_SHA256" || "$INSIDER_INVENTORY_ONLY" == "true" ]]; then
-              echo "::error::Incremental chain verification requires only the transport pin and a full restore"
+            if [[ -n "$INSIDER_BASELINE_SHA256" ]]; then
+              echo "::error::Provide exactly one pinned baseline or transport checksum"
               exit 1
             fi
             python -m insider_pipeline.github_chain \
               --tag "$INSIDER_RELEASE_TAG" \
               --transport-sha256 "$INSIDER_TRANSPORT_SHA256" \
-              --output "$RUNNER_TEMP/insider-checkpoint" --workers 4
+              --output "$RUNNER_TEMP/insider-checkpoint" --workers 4 "${options[@]}"
             exit 0
           fi
           if [[ -z "$INSIDER_BASELINE_SHA256" ]]; then
             echo "::error::Provide exactly one pinned baseline or transport checksum"
             exit 1
-          fi
-          options=()
-          if [[ "$INSIDER_INVENTORY_ONLY" == "true" ]]; then
-            options+=(--inventory-only)
           fi
           python -m insider_pipeline.github_read \
             --tag "$INSIDER_RELEASE_TAG" \
@@ -102,7 +102,10 @@ jobs:
           report = json.loads(pathlib.Path(os.environ['INSIDER_REPORT']).read_text())
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               if report.get('inventory_only_restore_verified'):
-                  summary.write('Private inventory restored byte for byte with read-only access.\n\n')
+                  if report.get('inventory_byte_identical'):
+                      summary.write('Private inventory restored byte for byte with read-only access.\n\n')
+                  else:
+                      summary.write(f"Private inventory restored through {report['checkpoints']} pinned checkpoints; every resulting inventory row verified with read-only access.\n\n")
                   summary.write(f"Queue rows: {report['inventory_filings']:,}; downloaded assets: {report['assets']:,}; bytes: {report['asset_bytes']:,}.\n\n")
                   summary.write('Filing documents were not downloaded; original-source audit and collection-resume readiness were not verified.\n\n')
               else:
