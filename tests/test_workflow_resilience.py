@@ -1288,6 +1288,14 @@ gh_mutate_once() {
         self.assertIn("Refusing to delete protected snapshot tag", result.stdout)
         self.assertEqual([], deleted_tags)
 
+    def test_orphan_sweep_rejects_multiple_documents_in_one_api_response(self):
+        result, deleted = self._run_orphan_tag_sweep(
+            release_pages='[[{"tag_name":"dataset-active"},{"tag_name":"dataset-fallback"}]] []',
+            ref_pages='[[{"ref":"refs/tags/dataset-orphan"}]]',
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual([], deleted)
+
     def test_release_cleanup_reconciles_tag_after_release_is_already_missing(self):
         for mutation_status in ("0", "75"):
             with self.subTest(mutation_status=mutation_status):

@@ -317,6 +317,8 @@ jobs:
                [[ ! "$active_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
                ! printf '%s\n%s\n' "$release_json" "$active_release_json" |
                  jq -es '
+                   if length != 2 then error("expected two API responses") else . end
+                   |
                    .[0] as $expected_release | .[1]
                    |
                    type == "object"
@@ -573,6 +575,8 @@ jobs:
             # Bash's builtin printf streams them without exporting large argv.
             printf '%s\n%s\n' "$retained_json" "$dataset_tag_refs_json" |
               jq -cs '
+              if length != 2 then error("expected two API responses") else . end
+              |
               .[0] as $release_pages | .[1] as $ref_pages
               |
               ($release_pages | add // [] | map(.tag_name)) as $release_tags
