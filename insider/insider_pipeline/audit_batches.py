@@ -56,13 +56,18 @@ def validate_selection(db, metadata):
         raise ValueError('Audit selection checksum or coverage changed')
 
 
-def snapshot(root, destination, limit=0, reuse=None, inventory_snapshot=None):
+def snapshot(root, destination, limit=0, reuse=None, inventory_snapshot=None, parent_inventory=None):
     root, destination = Path(root).resolve(), Path(destination)
     if reuse and inventory_snapshot:
         raise ValueError('Choose a reused selection or a frozen inventory, not both')
+    if parent_inventory and (not inventory_snapshot or reuse or limit):
+        raise ValueError('Incremental selection requires a frozen target and excludes reuse or a sample limit')
     frozen = None
+    parent = None
     if inventory_snapshot:
         frozen = {'path': str(Path(inventory_snapshot).resolve()), 'sha256': file_hash(inventory_snapshot)}
+    if parent_inventory:
+        parent = {'path': str(Path(parent_inventory).resolve()), 'sha256': file_hash(parent_inventory)}
     if destination.exists():
         db = readonly(destination)
         metadata = json.loads(db.execute('SELECT value FROM metadata').fetchone()[0])
@@ -72,12 +77,17 @@ def snapshot(root, destination, limit=0, reuse=None, inventory_snapshot=None):
             raise ValueError('Existing audit selection belongs to another source or schema')
         if frozen and metadata.get('inventory_snapshot') != frozen:
             raise ValueError('Existing audit selection belongs to a different frozen inventory')
+        if parent and metadata.get('parent_inventory_snapshot') != parent:
+            raise ValueError('Existing audit selection belongs to a different parent inventory')
+        if frozen and bool(metadata.get('parent_inventory_snapshot')) != bool(parent):
+            raise ValueError('Existing audit selection has a different complete or incremental scope')
         return metadata
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix('.creating.sqlite3')
     if temporary.exists():
         raise ValueError('An unfinished audit snapshot exists; inspect it before retrying')
     target = sqlite3.connect(temporary)
+    source = None
     try:
         if reuse:
             source = readonly(reuse)
@@ -99,7 +109,21 @@ def snapshot(root, destination, limit=0, reuse=None, inventory_snapshot=None):
             counts = dict(source.execute('SELECT status,count(*) FROM filings GROUP BY status'))
             sources = {r['source_key']: dict(r) for r in source.execute('SELECT * FROM sources')}
             scope = dict(source.execute('SELECT key,value FROM settings WHERE key IN (\'window_start\',\'window_end\')'))
-            sql = 'SELECT ' + ','.join(SELECTION_COLUMNS) + " FROM filings WHERE status IN ('verified','review') ORDER BY filing_date,accession"
+            if parent:
+                source.execute('ATTACH DATABASE ? AS previous', (Path(parent['path']).as_uri() + '?mode=ro',))
+                columns = [tuple(row) for row in source.execute('PRAGMA main.table_info(filings)')]
+                if columns != [tuple(row) for row in source.execute('PRAGMA previous.table_info(filings)')]:
+                    raise ValueError('Incremental selection cannot cross an inventory schema change')
+                names = [row[1] for row in columns]
+                if any(not re.fullmatch(r'[a-z][a-z0-9_]*', name) for name in names):
+                    raise ValueError('Unsupported inventory column name')
+                changed = ' OR '.join('f.' + name + ' IS NOT p.' + name for name in names)
+                sql = ('SELECT ' + ','.join('f.' + name for name in SELECTION_COLUMNS)
+                       + " FROM filings f LEFT JOIN previous.filings p ON p.accession=f.accession"
+                       + " WHERE f.status IN ('verified','review') AND (p.accession IS NULL OR " + changed + ')'
+                       + ' ORDER BY f.filing_date,f.accession')
+            else:
+                sql = 'SELECT ' + ','.join(SELECTION_COLUMNS) + " FROM filings WHERE status IN ('verified','review') ORDER BY filing_date,accession"
             if limit:
                 sql += ' LIMIT ' + str(int(limit))
             digest = hashlib.sha256()
@@ -122,6 +146,9 @@ def snapshot(root, destination, limit=0, reuse=None, inventory_snapshot=None):
                         'sources': sources, 'scope': scope, 'selected_at': datetime.now(timezone.utc).isoformat()}
             if frozen:
                 metadata['inventory_snapshot'] = frozen
+            if parent:
+                metadata['parent_inventory_snapshot'] = parent
+                metadata['selection_kind'] = 'changed_committed_inventory_rows'
             target.execute('INSERT INTO metadata VALUES(?)', (canonical(metadata).decode(),))
         target.commit()
         target.close()
@@ -129,6 +156,9 @@ def snapshot(root, destination, limit=0, reuse=None, inventory_snapshot=None):
     except BaseException:
         target.close()
         raise
+    finally:
+        if source is not None:
+            source.close()
     return metadata
 
 
@@ -248,16 +278,16 @@ def audit_group(task):
         selection.close()
 
 
-def run(root, output, workers=4, limit=0, selection=None, inventory_snapshot=None):
+def run(root, output, workers=4, limit=0, selection=None, inventory_snapshot=None, parent_inventory=None):
     with writer_lock(output):
-        return _run(root, output, workers, limit, selection, inventory_snapshot)
+        return _run(root, output, workers, limit, selection, inventory_snapshot, parent_inventory)
 
 
-def _run(root, output, workers=1, limit=0, selection=None, inventory_snapshot=None):
+def _run(root, output, workers=1, limit=0, selection=None, inventory_snapshot=None, parent_inventory=None):
     root, output = Path(root).resolve(), Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    metadata = snapshot(root, output / 'selection.sqlite3', limit, selection, inventory_snapshot)
+    metadata = snapshot(root, output / 'selection.sqlite3', limit, selection, inventory_snapshot, parent_inventory)
     tasks = [(str(root), str(output / 'selection.sqlite3'), str(output), group) for group in sorted(metadata['groups'])]
     if workers == 1:
         results = [audit_group(task) for task in tasks]
@@ -289,8 +319,9 @@ def main():
     parser.add_argument('--limit', type=int, default=0)
     parser.add_argument('--selection', type=Path)
     parser.add_argument('--inventory-snapshot', type=Path)
+    parser.add_argument('--parent-inventory', type=Path, help='Select all committed target rows changed from this frozen parent')
     args = parser.parse_args()
-    report = run(args.root, args.output, args.workers, args.limit, args.selection, args.inventory_snapshot)
+    report = run(args.root, args.output, args.workers, args.limit, args.selection, args.inventory_snapshot, args.parent_inventory)
     print(json.dumps({k: v for k, v in report.items() if k not in {'groups', 'limitation'}}), flush=True)
     if any(report['counts'].get(k, 0) for k in ('document_failure', 'original_xml_field_failure')):
         raise SystemExit(1)

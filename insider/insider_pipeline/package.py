@@ -130,7 +130,9 @@ def package(root, audit_directory, output, max_bytes=DEFAULT_CHUNK_BYTES, max_do
         if any(audit['counts'].get(k, 0) for k in ['document_failure', 'original_xml_field_failure']):
             raise ValueError('Source audit failures must be resolved before packaging normalized data')
         metadata = snapshot(root, output / 'selection.sqlite3', reuse=audit_directory / 'selection.sqlite3')
-        if metadata['selection_sha256'] != audit['selection_sha256'] or metadata['selected_documents'] <= 0:
+        if (metadata['selection_sha256'] != audit['selection_sha256']
+                or metadata['selected_documents'] < 0
+                or (metadata['selected_documents'] == 0 and not metadata.get('parent_inventory_snapshot'))):
             raise ValueError('Package selection is empty or differs from the audit')
         config = {'package_schema': PACKAGE_SCHEMA, 'selection_sha256': metadata['selection_sha256'], 'audit_semantic_sha256': audit['semantic_sha256'],
                   'max_chunk_bytes': max_bytes, 'max_documents_per_chunk': max_documents, 'include_sources': include_sources}
@@ -139,6 +141,12 @@ def package(root, audit_directory, output, max_bytes=DEFAULT_CHUNK_BYTES, max_do
             if file_hash(frozen['path']) != frozen['sha256']:
                 raise ValueError('Frozen inventory changed after the audit selection')
             config['inventory_snapshot_sha256'] = frozen['sha256']
+        parent = metadata.get('parent_inventory_snapshot')
+        if parent:
+            if file_hash(parent['path']) != parent['sha256']:
+                raise ValueError('Frozen parent inventory changed after the audit selection')
+            config['parent_inventory_snapshot_sha256'] = parent['sha256']
+            config['selection_kind'] = metadata['selection_kind']
         if (output / 'manifest.json').exists():
             existing = json.loads((output / 'manifest.json').read_text())
             if any(existing.get(k) != value for k, value in config.items()):
