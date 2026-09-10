@@ -3050,7 +3050,10 @@ def _resolve_loaded_security(
     }
 
 
-def build_cusip_registry() -> CusipRegistry:
+def build_cusip_registry(
+    *, affected_cusips: set[str] | None = None,
+    fund_paths: list[Path] | None = None,
+) -> CusipRegistry:
     """Build the public registry from exact SEC and pinned reviewed identities."""
 
     log.info("Building SEC and reviewed CUSIP registry...")
@@ -3058,11 +3061,15 @@ def build_cusip_registry() -> CusipRegistry:
         log.info("  no funds directory; skipping registry build")
         return CusipRegistry()
 
-    evidence = _aggregate_cusip_evidence()
+    evidence = _aggregate_cusip_evidence(fund_paths=fund_paths, cusips=affected_cusips)
     master = apply_review(load_security_master(SEC_SECURITY_MASTER_PATH),
                           SEC_SECURITY_MASTER_PATH.parent.parent)
     review = load_review(SEC_SECURITY_MASTER_PATH.parent.parent)
-    registry: dict[str, dict] = {}
+    registry: dict[str, dict] = (
+        {cusip: entry for cusip, entry in load_cusip_registry().items()
+         if cusip not in affected_cusips}
+        if affected_cusips is not None else {}
+    )
 
     for cusip, rec in sorted(evidence.items()):
         dominant_issuer = _dominant_registry_value(rec.get("issuer_value"))
@@ -3286,6 +3293,7 @@ def build_cusip_registry() -> CusipRegistry:
             assert_display_compatibility(entry)
         registry[cusip] = entry
 
+    registry = dict(sorted(registry.items()))
     save_cusip_registry(registry)
     resolved = sum(entry["mapping_status"] == "resolved" for entry in registry.values())
     log.info(
@@ -3294,7 +3302,7 @@ def build_cusip_registry() -> CusipRegistry:
         resolved,
         len(registry) - resolved,
     )
-    return CusipRegistry(registry, observed_cusips=set(evidence))
+    return CusipRegistry(registry, observed_cusips=set(registry))
 
 
 def validate_cusip_registry(
@@ -7385,11 +7393,14 @@ def inventory_published_quarter_health_issues(
 
 
 @_serialize_pipeline_maintenance
-def enforce_published_quarter_health(state: dict) -> int:
+def enforce_published_quarter_health(
+    state: dict, *, health_inventory: tuple[dict, set] | None = None,
+) -> int:
     """Withhold every unhealthy quarter and durably queue an SEC retry."""
     log.info("Checking published quarter health before output generation...")
     issues_by_key, published_keys = (
         inventory_published_quarter_health_issues()
+        if health_inventory is None else health_inventory
     )
     pending = state.setdefault("quarter_health_pending", {})
     quarantined = state.setdefault("_quarantined", {})
@@ -7421,7 +7432,7 @@ def enforce_published_quarter_health(state: dict) -> int:
                 quarantined.pop(accession, None)
 
     affected: dict[int, set[str]] = defaultdict(set)
-    for path in sorted(FUNDS_DIR.glob("*.json")):
+    for path in sorted(FUNDS_DIR.glob("*.json")) if issues_by_key else []:
         try:
             with open(path) as handle:
                 fund = json.load(handle)
@@ -7822,7 +7833,7 @@ def infer_proven_split_adjustments(
 @_serialize_pipeline_maintenance
 def regenerate_stock_files_and_index(
     *, state: dict | None = None, stock_ids: set[str] | None = None,
-) -> None:
+) -> int:
     """Rebuild stock files, the full search index, and the fund bootstrap.
 
     Display tickers come only from the provenance-bearing CUSIP registry. A
@@ -7836,7 +7847,7 @@ def regenerate_stock_files_and_index(
 
     if not FUNDS_DIR.exists():
         log.info("  no funds directory; nothing to rebuild")
-        return
+        return 0
 
     registry = load_cusip_registry()
     if registry:
@@ -7934,6 +7945,9 @@ def regenerate_stock_files_and_index(
                     h,
                     reg_entry,
                 )
+                stock_id = stock_lookup_id(stock_key, holding_type)
+                if stock_ids is not None and stock_id not in stock_ids:
+                    continue
                 if reg_entry is not None:
                     # Registry is authoritative for display. A null ticker in
                     # the registry means "we know this CUSIP has no resolvable
@@ -7964,9 +7978,6 @@ def regenerate_stock_files_and_index(
                         or cusip
                     )
 
-                stock_id = stock_lookup_id(stock_key, holding_type)
-                if stock_ids is not None and stock_id not in stock_ids:
-                    continue
                 s = stocks.setdefault(stock_id, {
                     "stock_id": stock_id,
                     "cusip": cusip,
@@ -8222,6 +8233,7 @@ def regenerate_stock_files_and_index(
             f"  {registry_fallback_count} holdings had no registry proof; "
             "published identifier-only displays with no search ticker"
         )
+    return len(stocks)
 
 
 # ----------------------------------------------------------------------------
@@ -8316,24 +8328,13 @@ def _has_complete_sec_ftd_health_proof(
     return len(shorter) >= 12 and longer.startswith(shorter)
 
 
-def write_ticker_health_report() -> dict:
-    """Scan every fund file and emit data/ticker_health.json.
-
-    Ticker health and display-label coverage are deliberately separate:
-    non-traded notes and pools may have no canonical ticker while still having
-    a useful human label. Ticker buckets are informational diagnostics only;
-    SEC-master discovery and retry state are driven by exact source evidence.
-    Label coverage is the release-facing guarantee that the UI never needs a
-    raw CUSIP as its primary security name.
-    """
-    log.info("Writing ticker health report...")
-    if not FUNDS_DIR.exists():
-        log.info("  no funds directory; skipping health report")
-        return {}
-
-    registry = load_cusip_registry()
+def aggregate_ticker_health(
+    registry: dict, *, fund_paths: list[Path] | None = None,
+    cusips: set[str] | None = None,
+) -> dict:
+    """Aggregate exact rows for the requested identifiers in fund-file order."""
     records: dict[str, dict] = {}
-    for fp in sorted(FUNDS_DIR.glob("*.json")):
+    for fp in sorted(FUNDS_DIR.glob("*.json")) if fund_paths is None else sorted(fund_paths):
         try:
             with open(fp) as f:
                 fund = json.load(f)
@@ -8347,6 +8348,8 @@ def write_ticker_health_report() -> dict:
                     h.get("reported_cusip") or h.get("cusip")
                 )
                 if not cusip:
+                    continue
+                if cusips is not None and cusip not in cusips:
                     continue
                 instrument_type = classify_saved_holding(h)
                 registry_entry = registry.get(cusip)
@@ -8389,6 +8392,23 @@ def write_ticker_health_report() -> dict:
                         rec["first_seen"] = rep_date
                     if rep_date > (rec["last_seen"] or ""):
                         rec["last_seen"] = rep_date
+
+    return records
+
+
+def write_ticker_health_report(*, records: dict | None = None) -> dict:
+    """Render complete ticker diagnostics and label coverage from exact rows.
+
+    The selective updater may supply content-bound aggregate records. The
+    default always reconstructs them from the entire fund corpus.
+    """
+    log.info("Writing ticker health report...")
+    if not FUNDS_DIR.exists():
+        log.info("  no funds directory; skipping health report")
+        return {}
+    registry = load_cusip_registry()
+    if records is None:
+        records = aggregate_ticker_health(registry)
 
     resolved_equity_prefixes = {
         cusip[:6]
@@ -8553,7 +8573,9 @@ def write_ticker_health_report() -> dict:
 # ----------------------------------------------------------------------------
 
 
-def _aggregate_cusip_evidence() -> dict[str, dict]:
+def _aggregate_cusip_evidence(
+    *, fund_paths: list[Path] | None = None, cusips: set[str] | None = None,
+) -> dict[str, dict]:
     """Walk fund files once and return per-CUSIP aggregated evidence.
 
     For each CUSIP we collect:
@@ -8571,7 +8593,7 @@ def _aggregate_cusip_evidence() -> dict[str, dict]:
     thousands of correct filings.
     """
     evidence: dict[str, dict] = {}
-    for fp in sorted(FUNDS_DIR.glob("*.json")):
+    for fp in sorted(FUNDS_DIR.glob("*.json")) if fund_paths is None else sorted(fund_paths):
         try:
             with open(fp) as f:
                 fund = json.load(f)
@@ -8585,6 +8607,8 @@ def _aggregate_cusip_evidence() -> dict[str, dict]:
                     h.get("reported_cusip") or h.get("cusip")
                 )
                 if not cusip:
+                    continue
+                if cusips is not None and cusip not in cusips:
                     continue
                 rec = evidence.setdefault(cusip, {
                     "total_value": 0,
@@ -9022,7 +9046,7 @@ def canonicalize_fund_files(
 
 
 @_serialize_pipeline_maintenance
-def upgrade_composition_hashes_in_place() -> int:
+def upgrade_composition_hashes_in_place(*, fund_paths: list[Path] | None = None) -> int:
     """Bind exact parser-backed filing identity into retained hashes.
 
     Hash v2 added holding type. Hash v3 also binds the immutable as-filed
@@ -9037,7 +9061,7 @@ def upgrade_composition_hashes_in_place() -> int:
         return 0
 
     upgraded = 0
-    for fund_path in sorted(FUNDS_DIR.glob("*.json")):
+    for fund_path in sorted(FUNDS_DIR.glob("*.json")) if fund_paths is None else sorted(fund_paths):
         try:
             with open(fund_path) as f:
                 fund = json.load(f)

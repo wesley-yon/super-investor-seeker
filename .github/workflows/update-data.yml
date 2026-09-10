@@ -18,6 +18,11 @@ on:
     - cron: '23 11-23 * * 1-5'
   workflow_dispatch:           # manual "Run workflow" button
     inputs:
+      full_rebuild:
+        description: Ignore selective rebuild caches and regenerate every derived output
+        required: false
+        default: false
+        type: boolean
       repair_amendments:
         description: Rebuild every retained quarter affected by a 13F amendment
         required: false
@@ -216,7 +221,7 @@ jobs:
           restore-keys: |
             sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-
 
-      - name: Capture validated baseline before ingestion
+      - name: Capture code identity before ingestion
         if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
         run: python scripts/incremental_pipeline.py capture
 
@@ -402,8 +407,13 @@ jobs:
         timeout-minutes: 90
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          FULL_REBUILD: ${{ inputs.full_rebuild || false }}
         run: |
-          python scripts/incremental_pipeline.py regenerate
+          if [ "$FULL_REBUILD" = true ]; then
+            python scripts/incremental_pipeline.py regenerate --full-rebuild
+          else
+            python scripts/incremental_pipeline.py regenerate
+          fi
 
       - name: Validate generated data
         id: validate_data

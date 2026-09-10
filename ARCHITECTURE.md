@@ -183,7 +183,11 @@ sparkline data) client-side from this raw data.
 }
 ```
 
-Stock files are built by cross-referencing all fund holdings after the fund files are generated. **Stock files and `index.json` must be regenerated at the end of every pipeline run**, even if the run only processed a subset of filers. This ensures stock-level data stays consistent with the latest fund data.
+Stock files cross-reference fund holdings. Every pipeline run must leave the
+stock views and both indexes consistent with the complete current fund corpus.
+Routine updates use content-bound dependencies to rebuild affected securities
+from all their holders and retain unchanged files. A reporting-quarter rollover
+rebuilds every stock view because current-holder eligibility changes globally.
 
 ### Index JSON Format (`data/index.json`)
 
@@ -514,6 +518,28 @@ complete corpus up front.
   validated snapshot.
 - Runs the quarterly pipeline, recent-filing replay, registry rebuild, complete
   corpus validator, and regression tests.
+- `scripts/incremental_pipeline.py` uses the optional private
+  `.cache/selective_rebuild.json` acceleration cache. Actual file hashes bind
+  prior calculations to the fund corpus, SEC/review evidence, output files,
+  program code, installed dependencies, and date-sensitive policies.
+  The pre-ingestion marker contains only code compatibility; the last complete
+  generation supplies the dependency inventory, avoiding a duplicate corpus in memory.
+- Unchanged inputs reuse portfolio-health calculations, registry results,
+  quantity work, stock/index outputs, and ticker-health aggregates. State and
+  complete report rendering still reconcile on every run. Changed fund or peer
+  inputs rerun the complete cross-fund health and quantity calculations.
+- Registry and ticker-health aggregates for changed identifiers are recomputed
+  from every contributing fund, including removals and changes made before the
+  pre-ingestion capture. Full source changes rebuild the entire registry.
+- Missing, damaged, or incompatible caches select the full builders. A missing
+  or changed stock output forces a complete stock rebuild. Cache state is saved
+  only after successful regeneration, is retained in authenticated private
+  snapshots, and is excluded from public artifacts. It never replaces the
+  mandatory complete publication validator or regression gates.
+- The manual `full_rebuild` input forces all derived builders. The local
+  equivalent is `python scripts/incremental_pipeline.py regenerate --full-rebuild`.
+  Offline full regeneration does not request fresh SEC evidence; the separate
+  security-master maintenance workflow owns source refreshes.
 - Mints a fresh write-scoped token only immediately before publication.
 - If the content digest is unchanged, reuses the active release. Otherwise it
   publishes a draft release, round-trips its manifest and archive, then marks it
