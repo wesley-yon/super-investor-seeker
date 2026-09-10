@@ -11,6 +11,11 @@ on:
         description: Independently verified SHA-256 of baseline.json
         required: true
         type: string
+      inventory_only:
+        description: Restore inventory only; exclude filing documents and original-source audit
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -51,17 +56,22 @@ jobs:
           repositories: super-investor-seeker-data
           permission-contents: read
 
-      - name: Download, restore, and independently audit the pinned checkpoint
+      - name: Download and verify the pinned checkpoint
         working-directory: insider
         env:
           GH_TOKEN: ${{ steps.archive-reader.outputs.token }}
           INSIDER_RELEASE_TAG: ${{ inputs.release_tag }}
           INSIDER_BASELINE_SHA256: ${{ inputs.baseline_sha256 }}
+          INSIDER_INVENTORY_ONLY: ${{ inputs.inventory_only }}
         run: |
+          options=()
+          if [[ "$INSIDER_INVENTORY_ONLY" == "true" ]]; then
+            options+=(--inventory-only)
+          fi
           python -m insider_pipeline.github_read \
             --tag "$INSIDER_RELEASE_TAG" \
             --baseline-sha256 "$INSIDER_BASELINE_SHA256" \
-            --output "$RUNNER_TEMP/insider-checkpoint" --workers 4
+            --output "$RUNNER_TEMP/insider-checkpoint" --workers 4 "${options[@]}"
 
       - name: Record verification summary without raw private data
         env:
@@ -71,8 +81,13 @@ jobs:
           import json, os, pathlib
           report = json.loads(pathlib.Path(os.environ['INSIDER_REPORT']).read_text())
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              summary.write('Private insider checkpoint verified with read-only access.\n\n')
-              summary.write(f"Collected filings: {report['documents']:,}; full queue: {report['inventory_filings']:,}.\n\n")
-              summary.write(f"Original-source checks: {report['source_checks']:,}; archived audit reproduced exactly.\n\n")
+              if report.get('inventory_only_restore_verified'):
+                  summary.write('Private inventory restored byte for byte with read-only access.\n\n')
+                  summary.write(f"Queue rows: {report['inventory_filings']:,}; downloaded assets: {report['assets']:,}; bytes: {report['asset_bytes']:,}.\n\n")
+                  summary.write('Filing documents were not downloaded; original-source audit and collection-resume readiness were not verified.\n\n')
+              else:
+                  summary.write('Private insider checkpoint verified with read-only access.\n\n')
+                  summary.write(f"Collected filings: {report['documents']:,}; full queue: {report['inventory_filings']:,}.\n\n")
+                  summary.write(f"Original-source checks: {report['source_checks']:,}; archived audit reproduced exactly.\n\n")
               summary.write('This verification does not complete the backfill or activate daily maintenance.\n')
           PY

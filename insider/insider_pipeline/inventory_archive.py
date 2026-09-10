@@ -64,8 +64,10 @@ def capture_snapshot(root, destination, progress=None):
 
 
 class PartsWriter:
-    def __init__(self, output, max_bytes):
-        self.output, self.max_bytes = output, max_bytes
+    def __init__(self, output, max_bytes, prefix='inventory'):
+        if not re.fullmatch(r'[a-z][a-z0-9-]*', prefix):
+            raise ValueError('Unsafe inventory part prefix')
+        self.output, self.max_bytes, self.prefix = output, max_bytes, prefix
         self.parts, self.stream, self.size = [], None, 0
 
     def write(self, body):
@@ -86,7 +88,7 @@ class PartsWriter:
         self.stream.flush(); os.fsync(self.stream.fileno()); self.stream.close(); self.stream = None
         path = self.output / 'part-building'
         sha = file_hash(path)
-        name = f'inventory-{len(self.parts) + 1:05d}-{sha[:16]}.gz.part'
+        name = f'{self.prefix}-{len(self.parts) + 1:05d}-{sha[:16]}.gz.part'
         destination = self.output / name
         if destination.exists() and file_hash(destination) != sha:
             raise ValueError('Existing immutable inventory part differs')
