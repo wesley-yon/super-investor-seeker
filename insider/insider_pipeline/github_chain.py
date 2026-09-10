@@ -308,22 +308,34 @@ def restore_parent_inventory(chain, output):
     return destination / 'inventory.sqlite3'
 
 
-def inventory_chain(chain, downloader, output, source_quarters=None):
+def inventory_chain(chain, downloader, output, source_quarters=None, document_index_pin=None, filing_selection_pin=None):
     required_free = select_inventory_assets(chain, downloader, output)
     source_selection = None
+    source_disk = 0
     if source_quarters is not None:
         from . import github_sources
         planned_before = sum(size for size, _ in downloader.planned.values())
         source_selection = github_sources.plan(chain, downloader, source_quarters)
         extra_downloads = sum(size for size, _ in downloader.planned.values()) - planned_before
-        if shutil.disk_usage(output).free < required_free + 2 * extra_downloads + source_selection['raw_bytes']:
+        source_disk = 2 * extra_downloads + source_selection['raw_bytes']
+        if shutil.disk_usage(output).free < required_free + source_disk:
             raise ValueError('Insufficient free disk for the selected inventory and source cache')
+    document_selection = None
+    if document_index_pin is not None:
+        from . import github_documents
+        planned_before = sum(size for size, _ in downloader.planned.values())
+        document_selection = github_documents.plan(chain, downloader, document_index_pin, filing_selection_pin)
+        extra_downloads = sum(size for size, _ in downloader.planned.values()) - planned_before
+        document_disk = 2 * extra_downloads + 4 * document_selection['decoded_bytes']
+        if shutil.disk_usage(output).free < required_free + source_disk + document_disk:
+            raise ValueError('Insufficient free disk for selected inventory, sources, and documents')
     download_archives(chain, downloader, inventory_only=True)
     final_inventory = restore_parent_inventory(chain, output / 'inventory-work')
     root = chain[-1]
     verified = describe(final_inventory)
     if verified != root['manifest']['target_inventory']:
         raise ValueError('Final inventory coverage differs from its pinned checkpoint')
+    documents = github_documents.restore(document_selection, downloader, final_inventory.parent) if document_selection else {}
     sources = github_sources.restore(source_selection, downloader, final_inventory.parent) if source_selection else {}
     # Every replay checked every table row, not only the changed or committed rows.
     final_inventory.parent.rename(output / 'restored')
@@ -336,15 +348,19 @@ def inventory_chain(chain, downloader, output, source_quarters=None):
             'inventory_sqlite_integrity_check': verified['sqlite_integrity_check'],
             'inventory_file_sha256': file_hash(output / 'restored/inventory.sqlite3'),
             'full_restore_verified': False, 'includes_original_documents': False,
-            'collection_resume_ready': False, 'source_audit_performed': False, **sources}
+            'collection_resume_ready': False, 'source_audit_performed': False, **sources, **documents}
 
 
-def read_chain(tag, transport_pin, output, workers=4, inventory_only=False, source_quarters=None):
+def read_chain(tag, transport_pin, output, workers=4, inventory_only=False, source_quarters=None,
+               document_index_pin=None, filing_selection_pin=None):
     if source_quarters is not None:
         from .github_sources import quarter_keys
         source_quarters = quarter_keys(source_quarters)
         if not inventory_only:
             raise ValueError('Selected source quarters require inventory-only mode')
+    if document_index_pin is not None or filing_selection_pin is not None:
+        if not inventory_only or not valid_hash(document_index_pin) or not valid_hash(filing_selection_pin):
+            raise ValueError('Selected documents require inventory-only mode and both index and private selection checksums')
     locator = validate_locator({'layout': 'content_addressed', 'tag': tag, 'sha256': transport_pin})
     output = Path(output).absolute()
     if output.exists() or output.is_symlink():
@@ -360,7 +376,7 @@ def read_chain(tag, transport_pin, output, workers=4, inventory_only=False, sour
     downloader = Downloader(output / 'cache', budget=MAX_DOWNLOAD_BYTES)
     chain = metadata(locator, output / 'archives', downloader)
     if inventory_only:
-        verified = inventory_chain(chain, downloader, output, source_quarters)
+        verified = inventory_chain(chain, downloader, output, source_quarters, document_index_pin, filing_selection_pin)
         latest_after = api('repos/' + REPOSITORY + '/releases/latest')
         if not latest_after['tag_name'].startswith('dataset-'):
             raise ValueError('The normal dataset release pointer is not selected')
@@ -422,11 +438,14 @@ def main():
     parser.add_argument('--transport-sha256', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--workers', type=int, choices=range(1, 5), default=4)
-    parser.add_argument('--inventory-only', action='store_true', help='Replay the complete inventory without filing documents; selected source loading is optional')
+    parser.add_argument('--inventory-only', action='store_true', help='Replay the complete inventory; selected source and filing loading are optional')
     parser.add_argument('--source-quarters', help='Space-separated YYYYQ1..YYYYQ4 source quarters; requires --inventory-only')
+    parser.add_argument('--document-index-sha256', help='Pinned complete document lookup index; requires --inventory-only and --filing-selection-sha256')
+    parser.add_argument('--filing-selection-sha256', help='Pinned private accession selection in the same archive bucket')
     args = parser.parse_args()
     quarters = args.source_quarters.split() if args.source_quarters is not None else None
-    print(json.dumps(read_chain(args.tag, args.transport_sha256, args.output, args.workers, args.inventory_only, quarters), indent=2), flush=True)
+    print(json.dumps(read_chain(args.tag, args.transport_sha256, args.output, args.workers, args.inventory_only, quarters,
+                                args.document_index_sha256, args.filing_selection_sha256), indent=2), flush=True)
 
 
 if __name__ == '__main__':
