@@ -146,6 +146,60 @@ Changed index observations retain their earlier source identity and reported val
 
 Tests cover serial/parallel output equivalence and the full refresh, collection, incremental archive, and restore sequence, comparing every inventory row and complete document row including compressed BLOBs. Missing originals or required sources, stale or corrupt plans, incomplete coverage, active writers, and changes to a frozen input stop without publishing a candidate. The CLI does not upload an archive or activate a schedule. Quarterly ownership-ZIP refresh, complete source auditing, final cutoff reconciliation, and daily publication orchestration remain separate integration work.
 
+## Quarterly ownership-source refresh
+
+`bulk_refresh` refreshes one to four explicitly selected published ownership ZIPs
+against a frozen inventory with complete prior index discovery. It reuses each
+recorded SEC URL; a newly added quarter requires an explicit URL from the
+[SEC dataset page](https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets).
+The SEC uses both `structureddata` and `datastandardsinnovation` paths. The URL
+must identify the selected quarter on the SEC site. Cache reads and fresh fetches
+are separate modes, and every response retains its checksum and retrieval time.
+
+```sh
+python -m insider_pipeline.bulk_refresh prepare \
+  --inventory /frozen/inventory.sqlite3 --output /new/bulk-plan \
+  --source-quarters 2026Q1 2026Q2 --fetch-sec --workers 2
+python -m insider_pipeline.bulk_refresh materialize \
+  --plan /new/bulk-plan --plan-sha256 PLAN_PIN \
+  --restored-parent /prepared/parent --output /new/bulk-candidate
+```
+
+For a newly published quarter, pass `--source-url YYYYQn=URL` for each selected
+quarter, or provide the same mapping as `source_urls` to the Python API. Fetches
+share the SEC client's request clock. Quarter parsing uses independent worker
+processes and disk-backed intermediate records; `--workers 1` is the serial
+fallback. Each ZIP is bounded to 150 MB compressed, 1 GB decoded, and 250,000
+in-scope filings. An exceeded bound fails without publishing a candidate.
+
+The plan identifies all committed originals affected by changed source bytes or
+provenance, including financial-value changes that leave submission metadata and
+table counts unchanged. It preserves earlier source identities and changed bulk
+observations in inventory history. Removed bulk associations are flagged and
+cleared from the current comparison fields while their original filings remain.
+Cross-quarter overlaps retain the existing association and a separate competing
+observation. Removals are processed across all selected quarters before additions
+so movement is independent of input order. Canonical original filing identity is
+preserved when bulk metadata disagrees. New bulk-only filings remain pending
+until their original SEC location is established.
+
+Use `session.recover_bulk_refresh(plan_directory, plan_pin,
+document_index_pin=index_pin)` after `github_session.open_inventory` to retrieve
+the plan's selected originals and any inherited source files. New source bytes
+come from the plan. Materialization independently replays the source changes and
+checks the entire proposed inventory, then rechecks originals in fresh shards
+while preserving their raw and compressed bytes. Existing unchanged ZIPs do not
+reopen previously collected documents. Financial-field comparisons remain the
+responsibility of the subsequent source audit; a successful refresh is not
+approval of bulk values as replacements for original filings.
+
+Tests cover serial/parallel byte equality, count-preserving value changes,
+source movement and conflicts, exact compressed-document retention, and the full
+session, refresh, incremental archive, and restore sequence. This component does
+not advance the filing-date cutoff, publish an archive, or activate maintenance.
+The daily orchestrator still needs published-quarter selection, index discovery,
+collection, audits, publication, and retention.
+
 ## Adaptive recovery after inventory discovery
 
 `github_session.open_inventory` retains the verified archive chain and download

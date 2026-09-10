@@ -381,6 +381,19 @@ def validate_target_sources(db, directory, plan, selected, shape):
 
 
 def materialize(directory, pin, restored_parent, output):
+    return materialize_prepared(directory, pin, restored_parent, output, read_plan=read_plan,
+                                validate_candidate=validate_index_candidate,
+                                report_key='discovery_metadata_refresh_verified', report_filename='discovery-refresh.json')
+
+
+def validate_index_candidate(db, directory, plan, selected, shape, parent_path):
+    if changed_committed(db, parent_path, shape) != selected:
+        raise ValueError('Discovery plan omitted or added a changed committed document')
+    validate_target_sources(db, directory, plan, selected, shape)
+
+
+def materialize_prepared(directory, pin, restored_parent, output, *, read_plan, validate_candidate,
+                         report_key, report_filename):
     directory, plan, selected = read_plan(directory, pin)
     restored_parent = Path(restored_parent).resolve()
     parent_path = restored_parent / 'inventory.sqlite3'
@@ -398,9 +411,7 @@ def materialize(directory, pin, restored_parent, output):
             try:
                 if schema(target_check) != shape or state(target_check, shape) != plan['target_inventory_state']:
                     raise ValueError('Discovery target logical state differs')
-                if changed_committed(target_check, parent_path, shape) != selected:
-                    raise ValueError('Discovery plan omitted or added a changed committed document')
-                validate_target_sources(target_check, directory, plan, selected, shape)
+                validate_candidate(target_check, directory, plan, selected, shape, parent_path)
                 difference = (plan['target_inventory_state']['tables']['filings']['rows']
                               - plan['parent_inventory_state']['tables']['filings']['rows'])
                 if difference != plan['new_filings']:
@@ -468,7 +479,7 @@ def materialize(directory, pin, restored_parent, output):
                 raise ValueError('Restored parent inventory changed during materialization')
             if frozen_hash(directory / 'inventory.sqlite3') != plan['target_inventory_file_sha256']:
                 raise ValueError('Discovery plan inventory changed during materialization')
-            report = {'discovery_metadata_refresh_verified': True, 'plan_sha256': pin,
+            report = {report_key: True, 'plan_sha256': pin,
                       'target_scope': plan['target_scope'], 'source_quarters': plan['source_quarters'],
                       'new_filings': plan['new_filings'], 'rechecked_committed_documents': len(selected),
                       'rechecked_documents_in_review': reviews, 'original_bytes_and_compressed_blobs_preserved': True,
@@ -477,7 +488,7 @@ def materialize(directory, pin, restored_parent, output):
                       'retrieval_mode': plan['retrieval_mode'], 'source_audit_performed': False,
                       'current_cutoff_completeness_verified': False, 'cloud_daily_maintenance_active': False,
                       'complete_backfill': False}
-            atomic_write(work / 'discovery-refresh.json', canonical(report))
+            atomic_write(work / report_filename, canonical(report))
             if output.exists() or output.is_symlink():
                 raise ValueError('Discovery output was created by another process')
             os.rename(work, output)
