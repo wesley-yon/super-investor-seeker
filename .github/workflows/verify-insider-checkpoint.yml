@@ -8,8 +8,12 @@ on:
         required: true
         type: string
       baseline_sha256:
-        description: Independently verified SHA-256 of baseline.json
-        required: true
+        description: Legacy baseline.json SHA-256; leave empty when using transport_sha256
+        required: false
+        type: string
+      transport_sha256:
+        description: Pinned incremental transport descriptor SHA-256; leave empty for a legacy baseline
+        required: false
         type: string
       inventory_only:
         description: Restore inventory only; exclude filing documents and original-source audit
@@ -62,8 +66,24 @@ jobs:
           GH_TOKEN: ${{ steps.archive-reader.outputs.token }}
           INSIDER_RELEASE_TAG: ${{ inputs.release_tag }}
           INSIDER_BASELINE_SHA256: ${{ inputs.baseline_sha256 }}
+          INSIDER_TRANSPORT_SHA256: ${{ inputs.transport_sha256 }}
           INSIDER_INVENTORY_ONLY: ${{ inputs.inventory_only }}
         run: |
+          if [[ -n "$INSIDER_TRANSPORT_SHA256" ]]; then
+            if [[ -n "$INSIDER_BASELINE_SHA256" || "$INSIDER_INVENTORY_ONLY" == "true" ]]; then
+              echo "::error::Incremental chain verification requires only the transport pin and a full restore"
+              exit 1
+            fi
+            python -m insider_pipeline.github_chain \
+              --tag "$INSIDER_RELEASE_TAG" \
+              --transport-sha256 "$INSIDER_TRANSPORT_SHA256" \
+              --output "$RUNNER_TEMP/insider-checkpoint" --workers 4
+            exit 0
+          fi
+          if [[ -z "$INSIDER_BASELINE_SHA256" ]]; then
+            echo "::error::Provide exactly one pinned baseline or transport checksum"
+            exit 1
+          fi
           options=()
           if [[ "$INSIDER_INVENTORY_ONLY" == "true" ]]; then
             options+=(--inventory-only)
@@ -88,6 +108,10 @@ jobs:
               else:
                   summary.write('Private insider checkpoint verified with read-only access.\n\n')
                   summary.write(f"Collected filings: {report['documents']:,}; full queue: {report['inventory_filings']:,}.\n\n")
-                  summary.write(f"Original-source checks: {report['source_checks']:,}; archived audit reproduced exactly.\n\n")
+                  summary.write(f"Original-source checks: {report['source_checks']:,}.\n\n")
+                  if report.get('changed_source_audit_matches_archive'):
+                      summary.write(f"Restored {report['checkpoints']} pinned checkpoints; the changed-document audit reproduced exactly across {report['changed_source_checks']:,} checks.\n\n")
+                  else:
+                      summary.write('The archived full-source audit reproduced exactly.\n\n')
               summary.write('This verification does not complete the backfill or activate daily maintenance.\n')
           PY

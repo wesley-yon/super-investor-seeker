@@ -8,7 +8,7 @@ The inventory and document archives are separate, immutable components. A combin
 
 ## Cloud verification
 
-`Verify private insider checkpoint` is a manual workflow that runs only trusted `main` code in the existing protected `private-data` environment. It requests a Contents-read token limited to the private data repository. It downloads an explicit published `insider-*` release, requires a separately pinned baseline SHA-256, restores the combined checkpoint, and reproduces its source audit. It does not fetch SEC filings, publish releases, upload raw data as public Actions artifacts, deploy the site, or schedule daily collection.
+`Verify private insider checkpoint` is a manual workflow that runs only trusted `main` code in the existing protected `private-data` environment. It requests a Contents-read token limited to the private data repository. It downloads an explicit published `insider-*` release, requires a separately pinned baseline or incremental transport SHA-256, restores the combined checkpoint, and reproduces its source audit. It does not fetch SEC filings, publish releases, upload raw data as public Actions artifacts, deploy the site, or schedule daily collection.
 
 Draft releases are restricted to users with push access, so a checkpoint must be published privately before the read-only cloud verification. When publishing an insider checkpoint, explicitly keep `make_latest=false`; the existing site's latest dataset release must remain selected. A preflight checkpoint may be a prerelease and still be read by this explicit-tag verifier.
 
@@ -54,6 +54,23 @@ python -m insider_pipeline.increment --restore-from /new/increment --parent-mani
 python -m insider_pipeline.increment --restore-from /next/increment --parent-manifest /previous/increment.json --ancestor-manifest /parent/baseline.json --expected-manifest-sha256 NEXT_PIN --output /new/restored-chain
 ```
 
-Use the command-line module entry point for multiprocessing on macOS. Existing output directories are refused. Failed builds retain their intermediate audit evidence and a `failure.json` file in the reported working directory; they do not publish the requested checkpoint path. Originals remain intact. A successful increment preserves the collected checkpoint and pending work; it does not finish the market-wide backfill. Cloud publication, scheduled discovery and collection, and automatic chain resolution remain separate integration work.
+Use the command-line module entry point for multiprocessing on macOS. Existing output directories are refused. Failed builds retain their intermediate audit evidence and a `failure.json` file in the reported working directory; they do not publish the requested checkpoint path. Originals remain intact. A successful increment preserves the collected checkpoint and pending work; it does not finish the market-wide backfill. Scheduled discovery and collection remain separate integration work.
 
 A September 10 local round trip extended the 9,551-document checkpoint to 20,008 documents with eight new assets totaling 69,886,801 bytes. It added 10,457 filings and the full inventory delta, inheriting all 69 unchanged source files. Complete restoration from the pinned parent and increment passed in 104.52 seconds. Independent comparison matched all 20,008 complete document rows, including compressed BLOBs, and the full inventory state matched its target. The changed-document source audit reproduced its archived digest across 2,286,075 checks; a separate full audit passed 4,199,486 checks. Its bulk comparison still recorded 1,262 non-rounding differences for review. This increment remained local during validation; it did not activate daily cloud maintenance.
+
+## Private incremental transport
+
+`github_increment_stage` uploads incremental archives to an explicit monthly bucket such as `insider-archives-202609-001` in the existing private data repository. Each remote blob is named with its complete SHA-256. A small pinned transport descriptor binds the increment manifest to its exact parent locator. Legacy baseline locators retain their existing release tags and manifest pins; later increments refer to the preceding transport descriptor. No release or asset in the `dataset-*` namespace is reused.
+
+The staging command verifies the local increment and the parent's remote metadata, uploads missing blobs with three workers, and independently downloads and verifies every blob before uploading the descriptor. Repeating the same upload reuses identical assets. Conflicting names, corrupt data, and unrelated bucket assets fail without overwriting anything. New buckets are drafts; existing published buckets must be mutable prereleases. Publishing a new bucket is a separate step that must preserve `--prerelease --latest=false`. Serialize writers to a bucket. Keep every referenced parent and do not delete assets to reclaim capacity: the tool stops at 900 assets so the next checkpoint can use a fresh numbered bucket below GitHub's 1,000-asset limit.
+
+`github_chain` follows independently pinned descriptors, confirms each parent against the increment's own parent checksum, and reconstructs the whole checkpoint from private GitHub assets. It uses read-only access. Downloads are limited to 2 GB across the complete chain, with at most 32 checkpoints and a disk check for the declared inventory and restore copies. It reproduces the latest changed-document audit and separately checks every restored document against its original source. These full-recovery checks read historical documents; selective daily processing still needs integration.
+
+```sh
+# parent.json: {"layout":"legacy_baseline","tag":"insider-BASELINE","sha256":"BASELINE_PIN"}
+# For a later increment, use the preceding stage report's exact locator object.
+python -m insider_pipeline.github_increment_stage --increment /new/increment --increment-sha256 INCREMENT_PIN --parent-locator /private/parent.json --bucket-tag insider-archives-YYYYMM-001 --expected-latest-release-id DATASET_ID --evidence /private/stage-evidence
+python -m insider_pipeline.github_chain --tag insider-archives-YYYYMM-001 --transport-sha256 TRANSPORT_PIN --output /new/cloud-restore --workers 4
+```
+
+The manual verification workflow accepts exactly one of `baseline_sha256` and `transport_sha256`. Incremental transport currently requires a full restore; `inventory_only` remains available for legacy baselines. The code adds no schedule, SEC fetch, site publication, or public data artifact. The backfill and daily cloud maintenance remain unfinished.
