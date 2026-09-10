@@ -290,6 +290,7 @@ def select_inventory_assets(chain, downloader, output):
     required_free = 3 * (estimated_inventory + 4 * growth) + 2 * sum(size for size, _ in downloader.planned.values()) + 2 * 1024**3
     if shutil.disk_usage(output).free < required_free:
         raise ValueError('Insufficient free disk for the declared inventory chain')
+    return required_free
 
 
 def restore_parent_inventory(chain, output):
@@ -307,14 +308,23 @@ def restore_parent_inventory(chain, output):
     return destination / 'inventory.sqlite3'
 
 
-def inventory_chain(chain, downloader, output):
-    select_inventory_assets(chain, downloader, output)
+def inventory_chain(chain, downloader, output, source_quarters=None):
+    required_free = select_inventory_assets(chain, downloader, output)
+    source_selection = None
+    if source_quarters is not None:
+        from . import github_sources
+        planned_before = sum(size for size, _ in downloader.planned.values())
+        source_selection = github_sources.plan(chain, downloader, source_quarters)
+        extra_downloads = sum(size for size, _ in downloader.planned.values()) - planned_before
+        if shutil.disk_usage(output).free < required_free + 2 * extra_downloads + source_selection['raw_bytes']:
+            raise ValueError('Insufficient free disk for the selected inventory and source cache')
     download_archives(chain, downloader, inventory_only=True)
     final_inventory = restore_parent_inventory(chain, output / 'inventory-work')
     root = chain[-1]
     verified = describe(final_inventory)
     if verified != root['manifest']['target_inventory']:
         raise ValueError('Final inventory coverage differs from its pinned checkpoint')
+    sources = github_sources.restore(source_selection, downloader, final_inventory.parent) if source_selection else {}
     # Every replay checked every table row, not only the changed or committed rows.
     final_inventory.parent.rename(output / 'restored')
     return {'documents': verified['committed_documents'], 'inventory_filings': verified['tables']['filings'],
@@ -326,10 +336,15 @@ def inventory_chain(chain, downloader, output):
             'inventory_sqlite_integrity_check': verified['sqlite_integrity_check'],
             'inventory_file_sha256': file_hash(output / 'restored/inventory.sqlite3'),
             'full_restore_verified': False, 'includes_original_documents': False,
-            'collection_resume_ready': False, 'source_audit_performed': False}
+            'collection_resume_ready': False, 'source_audit_performed': False, **sources}
 
 
-def read_chain(tag, transport_pin, output, workers=4, inventory_only=False):
+def read_chain(tag, transport_pin, output, workers=4, inventory_only=False, source_quarters=None):
+    if source_quarters is not None:
+        from .github_sources import quarter_keys
+        source_quarters = quarter_keys(source_quarters)
+        if not inventory_only:
+            raise ValueError('Selected source quarters require inventory-only mode')
     locator = validate_locator({'layout': 'content_addressed', 'tag': tag, 'sha256': transport_pin})
     output = Path(output).absolute()
     if output.exists() or output.is_symlink():
@@ -345,7 +360,7 @@ def read_chain(tag, transport_pin, output, workers=4, inventory_only=False):
     downloader = Downloader(output / 'cache', budget=MAX_DOWNLOAD_BYTES)
     chain = metadata(locator, output / 'archives', downloader)
     if inventory_only:
-        verified = inventory_chain(chain, downloader, output)
+        verified = inventory_chain(chain, downloader, output, source_quarters)
         latest_after = api('repos/' + REPOSITORY + '/releases/latest')
         if not latest_after['tag_name'].startswith('dataset-'):
             raise ValueError('The normal dataset release pointer is not selected')
@@ -407,9 +422,11 @@ def main():
     parser.add_argument('--transport-sha256', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--workers', type=int, choices=range(1, 5), default=4)
-    parser.add_argument('--inventory-only', action='store_true', help='Replay the complete inventory chain without historical document or source downloads')
+    parser.add_argument('--inventory-only', action='store_true', help='Replay the complete inventory without filing documents; selected source loading is optional')
+    parser.add_argument('--source-quarters', help='Space-separated YYYYQ1..YYYYQ4 source quarters; requires --inventory-only')
     args = parser.parse_args()
-    print(json.dumps(read_chain(args.tag, args.transport_sha256, args.output, args.workers, args.inventory_only), indent=2), flush=True)
+    quarters = args.source_quarters.split() if args.source_quarters is not None else None
+    print(json.dumps(read_chain(args.tag, args.transport_sha256, args.output, args.workers, args.inventory_only, quarters), indent=2), flush=True)
 
 
 if __name__ == '__main__':

@@ -20,6 +20,10 @@ on:
         required: false
         default: false
         type: boolean
+      source_quarters:
+        description: Optional space-separated source quarters (e.g. 2026Q2 2026Q3); requires inventory_only and transport_sha256
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -68,10 +72,18 @@ jobs:
           INSIDER_BASELINE_SHA256: ${{ inputs.baseline_sha256 }}
           INSIDER_TRANSPORT_SHA256: ${{ inputs.transport_sha256 }}
           INSIDER_INVENTORY_ONLY: ${{ inputs.inventory_only }}
+          INSIDER_SOURCE_QUARTERS: ${{ inputs.source_quarters }}
         run: |
           options=()
           if [[ "$INSIDER_INVENTORY_ONLY" == "true" ]]; then
             options+=(--inventory-only)
+          fi
+          if [[ -n "$INSIDER_SOURCE_QUARTERS" ]]; then
+            if [[ "$INSIDER_INVENTORY_ONLY" != "true" || -z "$INSIDER_TRANSPORT_SHA256" ]]; then
+              echo "::error::Selected source quarters require inventory_only and an incremental transport checksum"
+              exit 1
+            fi
+            options+=(--source-quarters "$INSIDER_SOURCE_QUARTERS")
           fi
           if [[ -n "$INSIDER_TRANSPORT_SHA256" ]]; then
             if [[ -n "$INSIDER_BASELINE_SHA256" ]]; then
@@ -107,6 +119,9 @@ jobs:
                   else:
                       summary.write(f"Private inventory restored through {report['checkpoints']} pinned checkpoints; every resulting inventory row verified with read-only access.\n\n")
                   summary.write(f"Queue rows: {report['inventory_filings']:,}; downloaded assets: {report['assets']:,}; bytes: {report['asset_bytes']:,}.\n\n")
+                  if report.get('source_cache_verified'):
+                      summary.write(f"Selected SEC source files restored and checked against the inventory: {report['selected_source_files_verified']:,}.\n\n")
+                      summary.write(f"Quarter ZIPs: {', '.join(report['quarter_zip_keys']) or 'none'}; indexes: {', '.join(report['index_source_keys']) or 'none'}.\n\n")
                   summary.write('Filing documents were not downloaded; original-source audit and collection-resume readiness were not verified.\n\n')
               else:
                   summary.write('Private insider checkpoint verified with read-only access.\n\n')
