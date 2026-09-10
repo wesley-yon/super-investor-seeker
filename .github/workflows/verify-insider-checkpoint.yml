@@ -16,12 +16,20 @@ on:
         required: false
         type: string
       inventory_only:
-        description: Restore inventory only; exclude filing documents and original-source audit
+        description: Restore inventory and optional selected data; exclude complete filing history and source audit
         required: false
         default: false
         type: boolean
       source_quarters:
         description: Optional space-separated source quarters (e.g. 2026Q2 2026Q3); requires inventory_only and transport_sha256
+        required: false
+        type: string
+      document_index_sha256:
+        description: Optional pinned complete document index; requires inventory_only, transport_sha256, and filing_selection_sha256
+        required: false
+        type: string
+      filing_selection_sha256:
+        description: Pinned private filing selection; accession values remain in private archive storage
         required: false
         type: string
 
@@ -73,6 +81,8 @@ jobs:
           INSIDER_TRANSPORT_SHA256: ${{ inputs.transport_sha256 }}
           INSIDER_INVENTORY_ONLY: ${{ inputs.inventory_only }}
           INSIDER_SOURCE_QUARTERS: ${{ inputs.source_quarters }}
+          INSIDER_DOCUMENT_INDEX_SHA256: ${{ inputs.document_index_sha256 }}
+          INSIDER_FILING_SELECTION_SHA256: ${{ inputs.filing_selection_sha256 }}
         run: |
           options=()
           if [[ "$INSIDER_INVENTORY_ONLY" == "true" ]]; then
@@ -84,6 +94,13 @@ jobs:
               exit 1
             fi
             options+=(--source-quarters "$INSIDER_SOURCE_QUARTERS")
+          fi
+          if [[ -n "$INSIDER_DOCUMENT_INDEX_SHA256" || -n "$INSIDER_FILING_SELECTION_SHA256" ]]; then
+            if [[ "$INSIDER_INVENTORY_ONLY" != "true" || -z "$INSIDER_TRANSPORT_SHA256" || -z "$INSIDER_DOCUMENT_INDEX_SHA256" || -z "$INSIDER_FILING_SELECTION_SHA256" ]]; then
+              echo "::error::Selected filings require inventory_only, transport_sha256, and both document index and private selection checksums"
+              exit 1
+            fi
+            options+=(--document-index-sha256 "$INSIDER_DOCUMENT_INDEX_SHA256" --filing-selection-sha256 "$INSIDER_FILING_SELECTION_SHA256")
           fi
           if [[ -n "$INSIDER_TRANSPORT_SHA256" ]]; then
             if [[ -n "$INSIDER_BASELINE_SHA256" ]]; then
@@ -122,7 +139,11 @@ jobs:
                   if report.get('source_cache_verified'):
                       summary.write(f"Selected SEC source files restored and checked against the inventory: {report['selected_source_files_verified']:,}.\n\n")
                       summary.write(f"Quarter ZIPs: {', '.join(report['quarter_zip_keys']) or 'none'}; indexes: {', '.join(report['index_source_keys']) or 'none'}.\n\n")
-                  summary.write('Filing documents were not downloaded; original-source audit and collection-resume readiness were not verified.\n\n')
+                  if report.get('selected_documents_verified'):
+                      summary.write(f"Requested filing documents restored and verified: {report['selected_documents_verified']:,}, using {report['selected_document_chunks']:,} archive chunks. The complete document index matched the inventory.\n\n")
+                  else:
+                      summary.write('Filing documents were not downloaded.\n\n')
+                  summary.write('Original-source audit and collection-resume readiness were not verified.\n\n')
               else:
                   summary.write('Private insider checkpoint verified with read-only access.\n\n')
                   summary.write(f"Collected filings: {report['documents']:,}; full queue: {report['inventory_filings']:,}.\n\n")
