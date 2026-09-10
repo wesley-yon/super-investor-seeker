@@ -143,20 +143,75 @@ def verified_document(db, accession):
 
 
 class Shards:
-    def __init__(self, root):
-        self.root = Path(root)
+    def __init__(self, root, inventory=None):
+        self.root = Path(root).resolve()
         self.databases = {}
+        self.highest = {}
+        self.active = {}
+        self.allocated = set()
+        directory = self.root / 'shards'
+        if directory.is_symlink():
+            raise ValueError('Shard directory must not be a symlink')
+        # A partial restore can contain inventory references without their files.
+        # Reserve every recorded slot, including intended writes left by a crash.
+        owned = inventory is None and (self.root / 'inventory.sqlite3').exists()
+        if owned:
+            inventory = sqlite3.connect((self.root / 'inventory.sqlite3').as_uri() + '?mode=ro', uri=True)
+        try:
+            if inventory is not None:
+                for relative, in inventory.execute('SELECT DISTINCT shard FROM filings WHERE shard IS NOT NULL'):
+                    self.reserve(relative)
+        finally:
+            if owned:
+                inventory.close()
+        if directory.exists():
+            for path in directory.iterdir():
+                # A sidecar alone can survive an interrupted write. It also
+                # reserves its slot; never open it as an empty new database.
+                name = re.sub(r'-(?:wal|shm|journal)$', '', path.name)
+                if re.fullmatch(r'\d{4}-\d{2}-\d{4}\.sqlite3', name):
+                    self.reserve('shards/' + name)
+
+    def reserve(self, relative):
+        match = re.fullmatch(r'shards/(\d{4}-(?:0[1-9]|1[0-2]))-(\d{4})\.sqlite3', relative) if isinstance(relative, str) else None
+        if not match or int(match[2]) == 0:
+            raise ValueError('Invalid collection shard path')
+        month, number = match[1], int(match[2])
+        self.highest[month] = max(number, self.highest.get(month, 0))
+
+    def path(self, relative):
+        self.reserve(relative)
+        path = self.root / relative
+        if path.is_symlink() or not path.resolve().is_relative_to(self.root):
+            raise ValueError('Collection shard points outside its root or is a symlink')
+        return path
 
     def database(self, relative):
         if relative not in self.databases:
-            self.databases[relative] = shard_connect(self.root / relative)
+            self.databases[relative] = shard_connect(self.path(relative))
         return self.databases[relative]
 
     def existing(self, row):
+        if not row.get('shard') and (row.get('source_sha256') or row.get('parsed_sha256')):
+            raise ValueError('Previously collected document is missing its inventory shard: ' + row['accession'])
         if row.get('shard'):
-            record = verified_document(self.database(row['shard']), row['accession'])
+            path = self.path(row['shard'])
+            record = None
+            if path.exists():
+                db = sqlite3.connect(path.as_uri() + '?mode=ro', timeout=60, uri=True)
+                db.row_factory = sqlite3.Row
+                try:
+                    record = verified_document(db, row['accession'])
+                finally:
+                    db.close()
+            if record is None and (row.get('source_sha256') or row.get('parsed_sha256')):
+                raise ValueError('Previously collected document must be restored before retry: ' + row['accession'])
             if record and record['parser_version'] != PARSER_VERSION:
                 raise ValueError('Stored parser version requires explicit migration')
+            if record:
+                for key in ('source_sha256', 'parsed_sha256'):
+                    if row.get(key) and row[key] != record[key]:
+                        raise ValueError('Stored document differs from inventory: ' + row['accession'] + ':' + key)
             return record
         return None
 
@@ -164,15 +219,28 @@ class Shards:
         directory = self.root / 'shards'
         directory.mkdir(parents=True, exist_ok=True)
         month = row['filing_date'][:7]
-        matches = sorted(directory.glob(month + '-*.sqlite3'))
-        last = matches[-1] if matches else directory / (month + '-0001.sqlite3')
-        current_size = sum(p.stat().st_size for p in [last, Path(str(last) + '-wal')] if p.exists())
+        if not re.fullmatch(r'\d{4}-(?:0[1-9]|1[0-2])', month):
+            raise ValueError('Invalid filing month for collection shard')
+        relative = self.active.get(month)
+        last = self.path(relative) if relative else None
+        current_size = sum(p.stat().st_size for p in [last, Path(str(last) + '-wal')] if p.exists()) if last else 0
         added = len(record['source_gzip']) + len(record['parsed_gzip']) + len(record['audit_json']) + 4096
-        if current_size and current_size + added > SHARD_LIMIT:
-            last = directory / (month + f'-{int(last.stem[-4:]) + 1:04d}.sqlite3')
-        return str(last.relative_to(self.root))
+        if not relative or (current_size and current_size + added > SHARD_LIMIT):
+            number = self.highest.get(month, 0) + 1
+            if number > 9999:
+                raise ValueError('Monthly collection shard slots exhausted; archive compaction is required')
+            relative = f'shards/{month}-{number:04d}.sqlite3'
+            path = self.path(relative)
+            if any(p.exists() or p.is_symlink() for p in
+                   [path, *(Path(str(path) + suffix) for suffix in ('-wal', '-shm', '-journal'))]):
+                raise ValueError('New collection shard slot was created by another writer')
+            self.allocated.add(relative)
+            self.active[month] = relative
+        return relative
 
     def save(self, relative, record):
+        if relative not in self.allocated:
+            raise ValueError('New documents require a shard allocated in this collection run')
         db = self.database(relative)
         old = verified_document(db, record['accession'])
         if old:
@@ -214,7 +282,11 @@ def run(root, client, workers=4, limit=0, seconds=0, start='', end='', sample_ea
     signal.signal(signal.SIGINT, stop_soon)
     with writer_lock(root):
         db = connect(root)
-        shards = Shards(root)
+        try:
+            shards = Shards(root, db)
+        except BaseException:
+            db.close()
+            raise
         with db:
             db.execute("UPDATE filings SET status='pending' WHERE status='inflight'")
         clauses = ['source_url IS NOT NULL']
