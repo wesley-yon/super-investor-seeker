@@ -74,3 +74,15 @@ python -m insider_pipeline.github_chain --tag insider-archives-YYYYMM-001 --tran
 ```
 
 The manual verification workflow accepts exactly one of `baseline_sha256` and `transport_sha256`. Incremental transport currently requires a full restore; `inventory_only` remains available for legacy baselines. The code adds no schedule, SEC fetch, site publication, or public data artifact. The backfill and daily cloud maintenance remain unfinished.
+
+## Supplementary bulk-source review
+
+`bulk_review` builds a separate evidence ledger for every non-exact comparison in a pinned source audit. It validates the audit's selection and detail checksums, rechecks affected filings against their retained original XML, and reproduces every comparison from the checksummed SEC bulk ZIP. Each entry preserves original field strings and row numbers, raw bulk records and their ordinal, source URLs and checksums, the archived finding hash, and a diagnostic category. It does not change source documents, normalized values, or the existing audit.
+
+The diagnostics distinguish two-decimal rounding, row-association conflicts, and timezone information omitted by bulk calendar dates. Matching column totals cannot pass as matching complete rows. Valid timezone-bearing `xs:date` forms are recognized only for a separately labeled calendar-date projection; offsets are preserved and no UTC conversion or equality-of-instants claim is made. Invalid or unsupported forms and unexplained values remain flagged. The old audit's `INVALID:` comparison marker can mean its date normalizer did not recognize a timezone suffix; it is not sufficient evidence that the original XML date is invalid. See the [W3C date datatype specification](https://www.w3.org/TR/xmlschema-2/#date).
+
+```sh
+python -m insider_pipeline.bulk_review --root /restored/checkpoint --audit /pinned/source-audit --audit-semantic-sha256 AUDIT_PIN --output /new/private-review-ledger --workers 2
+```
+
+Existing output directories are refused, and failed reviews retain their evidence without publishing the requested output. Quarter workers are independent and bounded by `--workers`; serial execution is available. A diagnostic explanation verifies source retention and helps review a conflict. It does not approve bulk values as replacements, finish collection, or erase outstanding source-review requirements.
