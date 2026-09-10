@@ -78,7 +78,8 @@ QUANTITY_CACHE_FILES = (
     Path(".cache/quarter_close_prices.json"),
 )
 OPTIONAL_CACHE_FILES = (*QUANTITY_CACHE_FILES, Path(".cache/validation_cache.sqlite3"),
-                        Path(".cache/reviewed_ticker_map.json"))
+                        Path(".cache/reviewed_ticker_map.json"),
+                        Path(".cache/selective_rebuild.json"))
 # Accept and hash older archives, but never extract or republish the retired queue.
 ARCHIVED_CACHE_FILES = (Path(".cache/quarter_close_price_requests.json"),)
 PAIR_TRANSACTION_ARTIFACT_PREFIX = ".sec-security-master-pair."

@@ -272,7 +272,7 @@ class TickerRuleUpgradeTests(unittest.TestCase):
                 self.assertEqual('ftd_class_designator_conflicts_with_official_13f_identity', record['resolution_reason'])
                 self.assertEqual(before, self.pair_bytes())
 
-    def test_regenerate_propagates_rule_change_to_unchanged_dependent_fund(self):
+    def test_rule_upgrade_full_fallback_preserves_position_economics(self):
         other_cusip = numbered_cusip(99883)
         other_path = self.funds / '2.json'
         self.write_fund(other_path, [self.holding(cusip=other_cusip, issuer='UNRELATED INC')])
@@ -293,7 +293,7 @@ class TickerRuleUpgradeTests(unittest.TestCase):
             'registry': inc.registry_identity(prior_registry), 'state': inc.public_state({}),
         }))
 
-        def current_registry():
+        def current_registry(**kwargs):
             result = copy.deepcopy(prior_registry)
             record = sec.load_security_master(self.master_path)['records'][f'{CUSIP}|EQUITY']
             result[CUSIP].update(ticker=record['ticker'], mapping_status=record['mapping_status'])
@@ -310,7 +310,15 @@ class TickerRuleUpgradeTests(unittest.TestCase):
                 path.write_text(json.dumps(fund))
 
         with self.fixture_populations(), ExitStack() as patches:
-            patches.enter_context(mock.patch.object(inc, 'checker_fingerprint', return_value='fixture'))
+            patches.enter_context(mock.patch.object(inc, 'ROOT', self.root))
+            patches.enter_context(mock.patch.multiple(
+                p, STOCKS_DIR=self.root / 'data/stocks',
+                INDEX_PATH=self.root / 'data/index.json', FUNDS_INDEX_PATH=self.root / 'data/funds-index.json',
+                CUSIP_REGISTRY_PATH=self.root / '.cache/cusip_registry.json',
+                LEGACY_CUSIP_REGISTRY_PATH=self.root / 'data/cusip_registry.json',
+                SECURITY_LABELS_PATH=self.root / 'data/security_labels.json'))
+            patches.enter_context(mock.patch.object(p, 'inventory_published_quarter_health_issues', return_value=({}, set())))
+            patches.enter_context(mock.patch.object(p, 'aggregate_ticker_health', return_value={}))
             patches.enter_context(mock.patch.object(p, 'load_state', return_value={}))
             patches.enter_context(mock.patch.object(p, 'load_cusip_registry', return_value=prior_registry))
             patches.enter_context(mock.patch.object(p, 'build_cusip_registry', side_effect=current_registry))
@@ -324,10 +332,12 @@ class TickerRuleUpgradeTests(unittest.TestCase):
             patches.enter_context(mock.patch.object(
                 inc, 'extend_master_for_changed_funds', side_effect=AssertionError('full upgrade already includes all funds')))
             summary = inc.regenerate.__wrapped__(baseline)
-        canonical.assert_called_once_with(preserve_position_identity=True, fund_paths=[self.funds / '1.json'])
-        self.assertEqual(1, summary['changed_funds'])
-        self.assertEqual(1, summary['registry_identity_changes'])
-        self.assertIn(CUSIP, stock_rebuild.call_args.kwargs['stock_ids'])
+        canonical.assert_called_once_with(preserve_position_identity=True,
+                                          fund_paths=[self.funds / '1.json', self.funds / '2.json'])
+        self.assertEqual(2, summary['changed_funds'])
+        self.assertEqual(2, summary['registry_identity_changes'])
+        self.assertTrue(summary['full_rebuild'])
+        self.assertIsNone(stock_rebuild.call_args.kwargs['stock_ids'])
         self.assertEqual(other_before, other_path.read_bytes())
         holdings = json.loads((self.funds / '1.json').read_bytes())['quarters'][0]['holdings']
         self.assertEqual(['EQUITY', 'NOTE', 'CALL'], [row['holding_type'] for row in holdings])

@@ -365,6 +365,17 @@ are rebuilt for changed funds, removed holdings, changed registry identities,
 and changed verification status. A modal reporting-quarter rollover triggers a
 full stock rebuild.
 
+Routine regeneration also retains a content-bound calculation cache in the
+private snapshot. When fund files and evidence are unchanged, it reuses the
+expensive health, registry, quantity, and stock/index calculations. Changed
+identifiers are recomputed across all contributing holders. Code, policy,
+dependency, and date changes invalidate cached calculations; missing or damaged
+cache state selects the full builders. All publication validation still runs.
+Use the workflow's **full_rebuild** input or
+`python scripts/incremental_pipeline.py regenerate --full-rebuild` to force the
+complete derived rebuild. See [SELECTIVE-REBUILD.md](SELECTIVE-REBUILD.md) for
+dependency rules, fallback behavior, and verification.
+
 `python validate_data.py --incremental` reuses successful per-file checks only
 when file bytes, checker code, registry identity, quantity evidence, holder
 calendars, and relevant cross-file totals still match. Cross-fund peer evidence
