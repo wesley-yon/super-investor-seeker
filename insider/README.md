@@ -120,6 +120,32 @@ Recovery of an interrupted write opens an existing shard in read-only mode, veri
 
 Synthetic tests exercise inventory-only collection with historical shards absent, then build an incremental checkpoint and restore it with the original parent. They compare all reconstructed inventory and document rows, including compressed BLOBs, and check that parent files remain unchanged. This establishes safe allocation and interrupted-write recovery. It does not supply discovery refresh, selective recovery of changed historical documents, publication orchestration, or a daily schedule.
 
+## Targeted index discovery and metadata refresh
+
+`discovery_refresh` advances a frozen inventory's filing-date cutoff through selected SEC quarterly master indexes. By default it reads the most recent two quarters plus every quarter crossed since the previous cutoff. An explicit selection must still cover that cutoff interval. Earlier index coverage and membership must already be complete; the refresh neither downloads unselected indexes nor removes existing filings.
+
+Preparation creates a separate, pinned plan containing the candidate inventory, retained source bytes, and the exact list of committed documents that must be recovered. Use `--fetch` for a fresh, paced SEC request or `--cache` for retained evidence. Cached evidence is labeled explicitly and does not establish coverage through a newly requested cutoff. A valid empty index can start a new quarter; an unexpectedly empty previously populated index or malformed ownership row stops preparation.
+
+```sh
+python -m insider_pipeline.discovery_refresh prepare \
+  --inventory recovery/restored/inventory.sqlite3 \
+  --through 2026-09-10 --fetch --output refresh-plan
+```
+
+The returned `plan_sha256` pins the plan. `committed-accessions.json` identifies originals to recover from that exact parent checkpoint, and `required_bulk_quarters` identifies original quarterly ZIPs needed for their later audit. Restore those selected originals and sources into the parent root before materializing the candidate:
+
+```sh
+python -m insider_pipeline.discovery_refresh materialize \
+  --plan refresh-plan --plan-sha256 EXPECTED_PLAN_SHA256 \
+  --restored-parent recovery/restored --output daily-candidate
+```
+
+Materialization checks the complete parent inventory, planned source bytes and observations, and every changed committed document. It reads archived originals without a repeat request, preserves their compressed source bytes and original fetch timestamps, rechecks parsed metadata, and writes fresh monthly shards. The parent inventory and historical shards remain unchanged. Unchanged historical documents can remain absent. The candidate can then be passed to the existing bounded collector and incremental archive builder.
+
+Changed index observations retain their earlier source identity and reported values in inventory history. A removed index membership records a review issue and retains the original filing. Canonical metadata for an archived original is preserved while a conflicting new index observation is flagged for source review. An unchanged observation does not reopen a finding that was already resolved against its original. Pending filings can adopt an updated SEC-indexed URL. The complete inventory continues to retain every earlier filing and pending work item.
+
+Tests cover serial/parallel output equivalence and the full refresh, collection, incremental archive, and restore sequence, comparing every inventory row and complete document row including compressed BLOBs. Missing originals or required sources, stale or corrupt plans, incomplete coverage, active writers, and changes to a frozen input stop without publishing a candidate. The CLI does not upload an archive or activate a schedule. Quarterly ownership-ZIP refresh, complete source auditing, final cutoff reconciliation, and daily publication orchestration remain separate integration work.
+
 ## Supplementary bulk-source review
 
 `bulk_review` builds a separate evidence ledger for every non-exact comparison in a pinned source audit. It validates the audit's selection and detail checksums, rechecks affected filings against their retained original XML, and reproduces every comparison from the checksummed SEC bulk ZIP. Each entry preserves original field strings and row numbers, raw bulk records and their ordinal, source URLs and checksums, the archived finding hash, and a diagnostic category. It does not change source documents, normalized values, or the existing audit.

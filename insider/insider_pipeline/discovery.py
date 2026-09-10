@@ -21,19 +21,25 @@ def quarters(start, end):
         year, quarter = (year + 1, 1) if quarter == 4 else (year, quarter + 1)
 
 
-def parse_index(body, start, end):
+def parse_index(body, start, end, *, allow_empty=False):
     text = body.decode('utf-8-sig', errors='strict')
     if 'CIK|Company Name|Form Type|Date Filed|Filename' not in text:
         raise ValueError('SEC master index schema changed')
     records = {}
     for line in text.splitlines():
         cells = line.split('|')
-        if len(cells) != 5 or not cells[0].isdigit():
+        if cells[0].isdigit() and len(cells) != 5:
+            raise ValueError('Malformed SEC index data row')
+        if len(cells) != 5:
             continue
         cik, name, form, filed, filename = cells
-        if form not in FORMS or not start <= filed <= end:
+        if form not in FORMS:
             continue
+        if not cik.isdigit() or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', filed):
+            raise ValueError('Malformed SEC ownership index identity or date')
         date.fromisoformat(filed)
+        if not start <= filed <= end:
+            continue
         if not re.fullmatch(r'edgar/data/\d+/\d{10}-\d{2}-\d{6}\.txt', filename):
             raise ValueError('Unexpected complete-filing path: ' + filename)
         accession = Path(filename).stem
@@ -44,7 +50,7 @@ def parse_index(body, start, end):
         if previous and previous[:2] != record[:2]:
             raise ValueError('Conflicting duplicate index accession: ' + accession)
         records.setdefault(accession, record)
-    if not records:
+    if not records and not allow_empty:
         raise ValueError('SEC ownership index unexpectedly empty')
     return records
 
