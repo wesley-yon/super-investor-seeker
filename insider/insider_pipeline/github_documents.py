@@ -52,13 +52,34 @@ def plan_local(chain, downloader, index_pin, accessions):
     return _plan(chain, downloader, index_pin, selected=selected)
 
 
-def _plan(chain, downloader, index_pin, selection_pin=None, selected=None):
+def cache_index(chain, downloader, index_pin):
+    """Load the complete pinned index without selecting or downloading originals."""
     target = chain[-1]
     tag = target['locator']['tag']
     remote = transport.asset_map(transport.api('repos/' + transport.REPOSITORY + '/releases/' +
                                               str(target['release_id']) + '/assets?per_page=100', pages=True), bucket=True)
     manifest_path, manifest = remote_json(tag, index_pin, remote, downloader)
     index.validate_manifest(manifest, chain)
+    part = manifest['index_file']
+    transport.check_asset(remote, transport.blob_name(part['sha256']), part['bytes'], part['sha256'])
+    index_path = downloader.get(tag, transport.blob_name(part['sha256']), part['bytes'], part['sha256'])
+    directory = downloader.directory.parent / 'document-index'
+    if directory.is_symlink():
+        raise ValueError('Document-index cache must not be linked')
+    directory.mkdir(exist_ok=True)
+    for source, path in ((manifest_path, directory / index.MANIFEST), (index_path, directory / part['file'])):
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not path.is_file() or path.stat().st_size != source.stat().st_size or index.file_hash(path) != index.file_hash(source):
+                raise ValueError('Retained document-index cache differs from the pinned source')
+        else:
+            shutil.copyfile(source, path)
+    return {'tag': tag, 'remote': remote, 'manifest': manifest, 'directory': directory,
+            'index_path': directory / part['file']}
+
+
+def _plan(chain, downloader, index_pin, selection_pin=None, selected=None):
+    cached = cache_index(chain, downloader, index_pin)
+    tag, remote, manifest = cached['tag'], cached['remote'], cached['manifest']
     selection_source = 'local' if selected is not None else 'private_archive_asset'
     if selected is None:
         selection_path, selected = remote_json(tag, selection_pin, remote, downloader)
@@ -68,9 +89,7 @@ def _plan(chain, downloader, index_pin, selection_pin=None, selected=None):
             raise ValueError('Private filing selection differs from its pinned document index')
     else:
         selection_pin = hashlib.sha256(canonical(selected)).hexdigest()
-    part = manifest['index_file']
-    transport.check_asset(remote, transport.blob_name(part['sha256']), part['bytes'], part['sha256'])
-    index_path = downloader.get(tag, transport.blob_name(part['sha256']), part['bytes'], part['sha256'])
+    index_path = cached['index_path']
     wanted = set(selected['accessions'])
     chosen = []
     for row in index.records(index_path, manifest):
@@ -89,15 +108,12 @@ def _plan(chain, downloader, index_pin, selection_pin=None, selected=None):
         tasks[number] = task
     # Keep a reusable index for the next incremental writer. Private selections
     # remain in local files; only their hashes and counts enter the public report.
-    directory = downloader.directory.parent / 'document-index'
-    directory.mkdir()
-    shutil.copyfile(manifest_path, directory / index.MANIFEST)
-    shutil.copyfile(index_path, directory / part['file'])
+    directory = cached['directory']
     if selection_source == 'private_archive_asset':
         shutil.copyfile(selection_path, directory / 'filing-selection.json')
     else:
         atomic_write(directory / 'filing-selection.json', canonical(selected))
-    return {'manifest': manifest, 'index_path': directory / part['file'], 'chosen': chosen, 'tasks': tasks,
+    return {'manifest': manifest, 'index_path': index_path, 'chosen': chosen, 'tasks': tasks,
             'index_pin': index_pin, 'selection_pin': selection_pin, 'selection_source': selection_source,
             'decoded_bytes': sum(row[4] for row in chosen),
             'selection_sha256': hashlib.sha256(canonical(selected['accessions'])).hexdigest()}

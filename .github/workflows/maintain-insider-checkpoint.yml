@@ -1,0 +1,142 @@
+name: Maintain private insider checkpoint
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact published parent insider archive bucket in the private data repository
+        required: true
+        type: string
+      transport_sha256:
+        description: Pinned parent incremental transport descriptor SHA-256
+        required: true
+        type: string
+      document_index_sha256:
+        description: Pinned complete parent document index SHA-256
+        required: true
+        type: string
+      archive_bucket_tag:
+        description: Explicit destination insider-archives-YYYYMM-NNN bucket; new buckets remain private drafts
+        required: true
+        type: string
+      through:
+        description: Optional final filing date; defaults to yesterday in New York
+        required: false
+        type: string
+      collection_start:
+        description: Optional earliest filing date for this bounded collection; defaults to the full inventory start
+        required: false
+        type: string
+      max_filings:
+        description: Maximum selected filings and attempts in this run (1 through 1000)
+        required: true
+        default: 250
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: insider-checkpoint-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    if: github.ref == 'refs/heads/main' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    environment: private-data
+    timeout-minutes: 45
+    steps:
+      - name: Checkout trusted main code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Verify insider archive implementation
+        working-directory: insider
+        run: python -m unittest discover -s tests -q
+
+      - name: Authenticate for private archive reads
+        id: archive-reader
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: super-investor-seeker-data
+          permission-contents: read
+
+      - name: Refresh sources, collect bounded originals, audit, and build checkpoint
+        id: prepared
+        working-directory: insider
+        env:
+          GH_TOKEN: ${{ steps.archive-reader.outputs.token }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          INSIDER_RELEASE_TAG: ${{ inputs.release_tag }}
+          INSIDER_TRANSPORT_SHA256: ${{ inputs.transport_sha256 }}
+          INSIDER_DOCUMENT_INDEX_SHA256: ${{ inputs.document_index_sha256 }}
+          INSIDER_THROUGH: ${{ inputs.through }}
+          INSIDER_COLLECTION_START: ${{ inputs.collection_start }}
+          INSIDER_MAX_FILINGS: ${{ inputs.max_filings }}
+        run: |
+          set -euo pipefail
+          options=()
+          if [[ -n "$INSIDER_THROUGH" ]]; then
+            options+=(--through "$INSIDER_THROUGH")
+          fi
+          if [[ -n "$INSIDER_COLLECTION_START" ]]; then
+            options+=(--collection-start "$INSIDER_COLLECTION_START")
+          fi
+          python -m insider_pipeline.cloud_maintenance prepare \
+            --output "$RUNNER_TEMP/insider-maintenance" \
+            --tag "$INSIDER_RELEASE_TAG" \
+            --transport-sha256 "$INSIDER_TRANSPORT_SHA256" \
+            --document-index-sha256 "$INSIDER_DOCUMENT_INDEX_SHA256" \
+            --max-filings "$INSIDER_MAX_FILINGS" --seconds 600 --workers 2 ${options[@]+"${options[@]}"}
+
+      - name: Authenticate for verified private archive publication
+        id: archive-writer
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DATA_ARCHIVE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_ARCHIVE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: super-investor-seeker-data
+          permission-contents: write
+
+      - name: Append and independently download the verified private checkpoint
+        working-directory: insider
+        env:
+          GH_TOKEN: ${{ steps.archive-writer.outputs.token }}
+          INSIDER_PREPARED_SHA256: ${{ steps.prepared.outputs.prepared_sha256 }}
+          INSIDER_BUCKET_TAG: ${{ inputs.archive_bucket_tag }}
+        run: |
+          set -euo pipefail
+          python -m insider_pipeline.cloud_maintenance publish \
+            --work "$RUNNER_TEMP/insider-maintenance" \
+            --prepared-sha256 "$INSIDER_PREPARED_SHA256" --bucket-tag "$INSIDER_BUCKET_TAG"
+
+      - name: Record maintenance result without raw private filings
+        env:
+          INSIDER_REPORT: ${{ runner.temp }}/insider-maintenance/maintenance-publication.json
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          report = json.loads(pathlib.Path(os.environ['INSIDER_REPORT']).read_text())
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('Bounded insider maintenance checkpoint archived and independently downloaded.\n\n')
+              summary.write(f"Newly collected documents: {report['collection_completed_documents']:,}; rechecked originals: {report['originals_rechecked']:,}.\n\n")
+              summary.write(f"Changed documents archived: {report['changed_documents_archived']:,}; original-source checks: {report['original_source_checks']:,}.\n\n")
+              summary.write(f"Unparsed responses retained for review: {report.get('source_audit_counts', {}).get('unparsed_documents', 0):,}; collection network errors: {report.get('collection_network_errors', 0):,}.\n\n")
+              summary.write(f"Complete lookup index: {report['indexed_documents']:,} documents.\n\n")
+              summary.write(f"Next parent tag: `{report['locator']['tag']}`\n\n")
+              summary.write(f"Next transport SHA-256: `{report['locator']['sha256']}`\n\n")
+              summary.write(f"Next document-index SHA-256: `{report['document_index_sha256']}`\n\n")
+              summary.write('This manual run does not activate a schedule, advance a latest-checkpoint pointer, or complete the historical backfill.\n')
+          PY
