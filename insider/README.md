@@ -87,7 +87,15 @@ The loader binds document manifests and source catalogs to the pinned checkpoint
 
 After inventory replay verifies every row, every source-catalog row must match the restored source tables exactly. Selected source files are then downloaded with a bounded worker pool and checked against both their compressed archive identity and original byte length/checksum. Index decompression stops if it exceeds its declared length. The ZIP bytes and index cache metadata retain their recorded provenance. A failed catalog, download, or source verification cannot expose a completed restored root or cloud verification report.
 
-The result records which ZIPs and indexes were restored and a digest of all selected source identities. It leaves `includes_original_documents`, `full_restore_verified`, `source_audit_performed`, and `collection_resume_ready` false: the requested source cache supports later collection and auditing, while complete daily processing still requires discovery refresh, handling changes to previously collected documents, shard allocation, audit, and publication orchestration. It does not resume the collector, write archives, fetch SEC data, or activate a schedule.
+The result records which ZIPs and indexes were restored and a digest of all selected source identities. It leaves `includes_original_documents`, `full_restore_verified`, `source_audit_performed`, and `collection_resume_ready` false: the requested source cache supports later collection and auditing, while complete daily processing still requires discovery refresh, handling changes to previously collected documents, audit, and publication orchestration. It does not resume the collector, write archives, fetch SEC data, or activate a schedule.
+
+## Collection after a partial restore
+
+The collector reserves shard numbers from every inventory reference as well as files and SQLite sidecars present on disk. Each collection run writes new documents into fresh monthly shard numbers above all reserved numbers and rotates its own files at the existing size threshold. It does not append to historical or partially restored files. A restarted run may therefore add a new shard for a month even if an older file has capacity. The four-digit shard namespace stops at 9,999 files per month and requires archive compaction before another slot can be allocated.
+
+Recovery of an interrupted write opens an existing shard in read-only mode, verifies its document bytes and any recorded inventory hashes, and completes the queue entry without fetching it again. Looking for an uncommitted write in a missing shard does not create an empty database. If the inventory already records collected-document hashes but the document is unavailable or differs, collection stops: that document must be restored from its pinned archive before retrying.
+
+Synthetic tests exercise inventory-only collection with historical shards absent, then build an incremental checkpoint and restore it with the original parent. They compare all reconstructed inventory and document rows, including compressed BLOBs, and check that parent files remain unchanged. This establishes safe allocation and interrupted-write recovery. It does not supply discovery refresh, selective recovery of changed historical documents, publication orchestration, or a daily schedule.
 
 ## Supplementary bulk-source review
 
