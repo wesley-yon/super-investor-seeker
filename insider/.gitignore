@@ -1,0 +1,6 @@
+state/
+packages/
+evidence/
+__pycache__/
+*.pyc
+.venv/
