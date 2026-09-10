@@ -129,7 +129,11 @@ class Downloader:
         key = (tag, name)
         self.plan(tag, name, size, pin)
         if key in self.downloaded:
-            return self.downloaded[key]
+            path = self.downloaded[key]
+            if (path.is_symlink() or not path.is_file() or path.stat().st_size != size
+                    or file_hash(path) != pin):
+                raise ValueError('Cached checkpoint bytes differ from their pinned identity')
+            return path
         folder = Path(tempfile.mkdtemp(prefix='asset-', dir=self.directory))
         command(['release', 'download', tag, '--repo', REPOSITORY, '--pattern', name, '--dir', str(folder)])
         path = folder / name
@@ -351,8 +355,10 @@ def inventory_chain(chain, downloader, output, source_quarters=None, document_in
             'collection_resume_ready': False, 'source_audit_performed': False, **sources, **documents}
 
 
-def read_chain(tag, transport_pin, output, workers=4, inventory_only=False, source_quarters=None,
-               document_index_pin=None, filing_selection_pin=None):
+def _read_chain(tag, transport_pin, output, workers=4, inventory_only=False, source_quarters=None,
+                document_index_pin=None, filing_selection_pin=None, *, keep_session=False):
+    if keep_session and (not inventory_only or document_index_pin is not None or filing_selection_pin is not None):
+        raise ValueError('A staged session must begin with inventory and optional sources only')
     if source_quarters is not None:
         from .github_sources import quarter_keys
         source_quarters = quarter_keys(source_quarters)
@@ -390,6 +396,9 @@ def read_chain(tag, transport_pin, output, workers=4, inventory_only=False, sour
                   'remaining_free_bytes': shutil.disk_usage(output).free,
                   'cloud_daily_maintenance_active': False, 'complete_backfill': False}
         atomic_write(output / 'cloud-verification.json', canonical(report))
+        if keep_session:
+            from .github_session import InventorySession
+            return InventorySession(chain, downloader, output, report, started)
         return report
     download_archives(chain, downloader)
     root, parent = chain[-1], chain[-2]
@@ -430,6 +439,12 @@ def read_chain(tag, transport_pin, output, workers=4, inventory_only=False, sour
               'cloud_daily_maintenance_active': False, 'complete_backfill': False}
     atomic_write(output / 'cloud-verification.json', canonical(report))
     return report
+
+
+def read_chain(tag, transport_pin, output, workers=4, inventory_only=False, source_quarters=None,
+               document_index_pin=None, filing_selection_pin=None):
+    return _read_chain(tag, transport_pin, output, workers, inventory_only, source_quarters,
+                       document_index_pin, filing_selection_pin)
 
 
 def main():

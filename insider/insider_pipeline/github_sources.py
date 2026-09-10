@@ -159,7 +159,7 @@ def plan(chain, downloader, quarters):
             'raw_bytes': sum(item['row']['bytes'] for item in selected)}
 
 
-def restore(selection, downloader, root):
+def restore(selection, downloader, root, *, reuse_verified=False):
     root = Path(root).resolve()
     db = readonly(root / 'inventory.sqlite3')
     try:
@@ -170,6 +170,25 @@ def restore(selection, downloader, root):
             raise ValueError('Source catalog rows differ from the fully restored inventory')
     finally:
         db.close()
+    reusable = set()
+    for item in selection['selected']:
+        table, row = item['table'], item['row']
+        destination = source_path(root, table, row)
+        metadata = destination.with_suffix('.json') if table == 'index_sources' else None
+        present = destination.exists() or destination.is_symlink()
+        meta_present = metadata is not None and (metadata.exists() or metadata.is_symlink())
+        if not present and not meta_present:
+            continue
+        if (not reuse_verified or destination.is_symlink() or not destination.is_file()
+                or destination.stat().st_size != row['bytes'] or file_hash(destination) != row['sha256']):
+            raise ValueError('Existing source cache differs from the pinned inventory or reuse is disabled')
+        if metadata is not None:
+            expected = {'url': row['url'], 'sha256': row['sha256'], 'bytes': row['bytes'],
+                        'retrieved_at_utc': row['retrieved_at']}
+            if (metadata.is_symlink() or not metadata.is_file() or metadata.stat().st_size > MAX_METADATA_BYTES
+                    or json.loads(metadata.read_text()) != expected):
+                raise ValueError('Existing index cache metadata differs from the pinned inventory')
+        reusable.add((table, row['source_key']))
     tasks = {}
     for item in selection['selected']:
         node, asset = item['node'], item['asset']
@@ -185,15 +204,18 @@ def restore(selection, downloader, root):
         destination.parent.mkdir(parents=True, exist_ok=True)
         size = 0
         opener = gzip.open if table == 'index_sources' else open
-        with opener(source, 'rb') as stream, destination.open('xb') as target:
-            for body in iter(lambda: stream.read(1024 * 1024), b''):
-                size += len(body)
-                if size > row['bytes']:
-                    raise ValueError('Selected source exceeds its declared original byte length')
-                target.write(body)
+        if (table, row['source_key']) in reusable:
+            size = row['bytes']
+        else:
+            with opener(source, 'rb') as stream, destination.open('xb') as target:
+                for body in iter(lambda: stream.read(1024 * 1024), b''):
+                    size += len(body)
+                    if size > row['bytes']:
+                        raise ValueError('Selected source exceeds its declared original byte length')
+                    target.write(body)
         if size != row['bytes'] or file_hash(destination) != row['sha256']:
             raise ValueError('Selected source bytes differ from the restored inventory')
-        if table == 'index_sources':
+        if table == 'index_sources' and (table, row['source_key']) not in reusable:
             metadata = destination.with_suffix('.json')
             if metadata.exists():
                 raise ValueError('Selected index cache metadata already exists')
@@ -203,6 +225,7 @@ def restore(selection, downloader, root):
                          'bytes': size, 'path': str(destination.relative_to(root))})
     report = {'source_cache_verified': True, 'source_catalog_matches_inventory': True,
               'source_quarters': selection['quarters'], 'selected_source_files_verified': len(retained),
+              'selected_source_files_reused': len(reusable),
               'selected_source_raw_bytes': selection['raw_bytes'],
               'selected_sources_sha256': hashlib.sha256(canonical(retained)).hexdigest(),
               'quarter_zip_keys': [item['source_key'] for item in retained if item['table'] == 'sources'],

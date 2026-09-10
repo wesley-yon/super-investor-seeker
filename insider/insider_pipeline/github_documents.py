@@ -32,17 +32,42 @@ def remote_json(tag, pin, remote, downloader):
 def plan(chain, downloader, index_pin, selection_pin):
     if not transport.valid_hash(index_pin) or not transport.valid_hash(selection_pin):
         raise ValueError('Selected documents require pinned index and private selection checksums')
+    return _plan(chain, downloader, index_pin, selection_pin=selection_pin)
+
+
+def local_selection(index_pin, accessions):
+    if (not transport.valid_hash(index_pin) or not isinstance(accessions, (list, tuple))
+            or not 1 <= len(accessions) <= 100000
+            or any(not isinstance(value, str) or not re.fullmatch(index.ACCESSION, value) for value in accessions)
+            or len(set(accessions)) != len(accessions)):
+        raise ValueError('Local document recovery requires distinct accessions and a pinned index')
+    selected = {'filing_selection_schema': 1, 'document_index_sha256': index_pin, 'accessions': sorted(accessions)}
+    if len(canonical(selected)) > transport.MAX_METADATA_BYTES:
+        raise ValueError('Local document selection exceeds the bounded metadata size')
+    return selected
+
+
+def plan_local(chain, downloader, index_pin, accessions):
+    selected = local_selection(index_pin, accessions)
+    return _plan(chain, downloader, index_pin, selected=selected)
+
+
+def _plan(chain, downloader, index_pin, selection_pin=None, selected=None):
     target = chain[-1]
     tag = target['locator']['tag']
     remote = transport.asset_map(transport.api('repos/' + transport.REPOSITORY + '/releases/' +
                                               str(target['release_id']) + '/assets?per_page=100', pages=True), bucket=True)
     manifest_path, manifest = remote_json(tag, index_pin, remote, downloader)
     index.validate_manifest(manifest, chain)
-    selection_path, selected = remote_json(tag, selection_pin, remote, downloader)
-    if (not isinstance(selected, dict) or set(selected) != {'filing_selection_schema', 'document_index_sha256', 'accessions'}
-            or type(selected['filing_selection_schema']) is not int
-            or selected != index.selection(index_pin, selected['accessions'])):
-        raise ValueError('Private filing selection differs from its pinned document index')
+    selection_source = 'local' if selected is not None else 'private_archive_asset'
+    if selected is None:
+        selection_path, selected = remote_json(tag, selection_pin, remote, downloader)
+        if (not isinstance(selected, dict) or set(selected) != {'filing_selection_schema', 'document_index_sha256', 'accessions'}
+                or type(selected['filing_selection_schema']) is not int
+                or selected != index.selection(index_pin, selected['accessions'])):
+            raise ValueError('Private filing selection differs from its pinned document index')
+    else:
+        selection_pin = hashlib.sha256(canonical(selected)).hexdigest()
     part = manifest['index_file']
     transport.check_asset(remote, transport.blob_name(part['sha256']), part['bytes'], part['sha256'])
     index_path = downloader.get(tag, transport.blob_name(part['sha256']), part['bytes'], part['sha256'])
@@ -68,9 +93,12 @@ def plan(chain, downloader, index_pin, selection_pin):
     directory.mkdir()
     shutil.copyfile(manifest_path, directory / index.MANIFEST)
     shutil.copyfile(index_path, directory / part['file'])
-    shutil.copyfile(selection_path, directory / 'filing-selection.json')
+    if selection_source == 'private_archive_asset':
+        shutil.copyfile(selection_path, directory / 'filing-selection.json')
+    else:
+        atomic_write(directory / 'filing-selection.json', canonical(selected))
     return {'manifest': manifest, 'index_path': directory / part['file'], 'chosen': chosen, 'tasks': tasks,
-            'index_pin': index_pin, 'selection_pin': selection_pin,
+            'index_pin': index_pin, 'selection_pin': selection_pin, 'selection_source': selection_source,
             'decoded_bytes': sum(row[4] for row in chosen),
             'selection_sha256': hashlib.sha256(canonical(selected['accessions'])).hexdigest()}
 
@@ -134,6 +162,7 @@ def restore(selection, downloader, root):
                 db.close()
         report = {'document_index_complete_membership_verified': True, 'document_index_sha256': selection['index_pin'],
                   'filing_selection_sha256': selection['selection_pin'],
+                  'filing_selection_source': selection['selection_source'],
                   'selected_documents_verified': len(targets), 'selected_document_chunks': len(tasks),
                   'selected_accession_set_sha256': selection['selection_sha256'],
                   'selected_documents_rows_sha256': digest.hexdigest(), 'includes_original_documents': True,

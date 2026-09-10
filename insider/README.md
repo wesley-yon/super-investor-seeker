@@ -146,6 +146,46 @@ Changed index observations retain their earlier source identity and reported val
 
 Tests cover serial/parallel output equivalence and the full refresh, collection, incremental archive, and restore sequence, comparing every inventory row and complete document row including compressed BLOBs. Missing originals or required sources, stale or corrupt plans, incomplete coverage, active writers, and changes to a frozen input stop without publishing a candidate. The CLI does not upload an archive or activate a schedule. Quarterly ownership-ZIP refresh, complete source auditing, final cutoff reconciliation, and daily publication orchestration remain separate integration work.
 
+## Adaptive recovery after inventory discovery
+
+`github_session.open_inventory` retains the verified archive chain and download
+cache after the complete inventory is restored. A caller can inspect the
+inventory, prepare a discovery plan, and then recover the required originals and
+bulk sources inside the same job:
+
+```python
+from insider_pipeline.discovery_refresh import prepare, materialize
+from insider_pipeline.github_session import open_inventory
+
+session = open_inventory(tag, transport_pin, output, source_quarters=quarters)
+plan = prepare(session.root / 'inventory.sqlite3', plan_directory, through,
+               source_quarters=quarters, client=sec_client)
+session.recover_refresh(plan_directory, plan['plan_sha256'],
+                        document_index_pin=document_index_pin)
+materialize(plan_directory, plan['plan_sha256'], session.root, candidate_directory)
+```
+
+The session checks the complete discovery plan's parent against its checkpoint
+and rejects changes to the restored inventory. Local accession selections require
+no private selection upload. Empty selections skip the document index and filing
+chunks. A caller with an independently derived list can use `session.recover`
+directly. Local lists may exceed the manual selection limit, but remain bounded
+by the metadata size and the cumulative 2 GB archive download limit.
+
+Inventory archives are replayed once. Source selections retain the union of
+initial and later quarters; existing source bytes and provenance metadata are
+checked before reuse. Cached compressed downloads are rehashed before reuse,
+and download and free-disk limits cover both stages. Each session accepts one
+final recovery operation; a failed operation removes its final success report
+and must be discarded. Partial local files are never a successful candidate.
+
+Tests exercise discovery through candidate materialization, exact inventory and
+compressed-document equality, single downloads, and rejection of corrupt caches,
+changed parent inventories, mismatched plans, and capacity overruns. This API
+does not add a workflow schedule or perform publication. A daily orchestrator
+still needs quarterly bulk refresh, collection, audits, and incremental
+publication; final backfill completion remains unverified.
+
 ## Supplementary bulk-source review
 
 `bulk_review` builds a separate evidence ledger for every non-exact comparison in a pinned source audit. It validates the audit's selection and detail checksums, rechecks affected filings against their retained original XML, and reproduces every comparison from the checksummed SEC bulk ZIP. Each entry preserves original field strings and row numbers, raw bulk records and their ordinal, source URLs and checksums, the archived finding hash, and a diagnostic category. It does not change source documents, normalized values, or the existing audit.
