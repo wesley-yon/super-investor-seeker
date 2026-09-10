@@ -81,12 +81,10 @@ def public_state(state):
 
 @p._serialize_pipeline_maintenance
 def capture(path=BASELINE):
-    cache = RebuildCache(ROOT)
-    registry = p.load_cusip_registry()
-    p._atomic_write_json(path, {'version': 2, 'code': cache.code,
-                               'funds': inventory(registry, cache.data.get('funds')),
-                               'registry': registry_identity(registry),
-                               'state': public_state(p.load_state())})
+    # Exact before/after dependencies come from the last complete generation.
+    # Duplicating that corpus here needlessly retains a second large inventory
+    # during source extension. This marker only guards code changes in flight.
+    p._atomic_write_json(path, {'version': 3, 'code': code_fingerprint(ROOT)})
 
 
 def affected(before, after, changed_cusips, changed_ciks=()):
@@ -214,7 +212,8 @@ def regenerate(path=BASELINE, *, full_rebuild=False):
     p._recover_interrupted_derived_publishes()
     try:
         baseline = json.loads(path.read_bytes())
-        compatible = baseline.get('version') == 2 and baseline.get('code') == code_fingerprint(ROOT)
+        compatible = baseline.get('version') == 3 and baseline.get('code') == code_fingerprint(ROOT)
+        del baseline
     except (OSError, ValueError, AttributeError):
         compatible = False
     cache = RebuildCache(ROOT, enabled=not full_rebuild and compatible)

@@ -43,6 +43,9 @@ python -m unittest discover -s tests -v
 
 The full-rebuild option recomputes derived outputs using the saved SEC evidence.
 Refreshing or rebuilding that evidence remains a separate operation.
+This is also the fallback for disabling acceleration without changing snapshot
+compatibility. A code revert must retain the snapshot reader's support for the
+new optional cache file, or restore a snapshot produced before this change.
 
 ## Verification method
 

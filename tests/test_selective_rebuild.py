@@ -127,6 +127,15 @@ class SelectiveRebuildTests(unittest.TestCase):
         self.assertEqual(0, result['rebuilt_stock_ids'])
         self.assertEqual(before, self.outputs(self.root))
 
+    def test_capture_does_not_duplicate_the_dependency_corpus(self):
+        baseline = self.root / '.cache/incremental_update_baseline.json'
+        with mock.patch.object(inc, 'inventory', side_effect=AssertionError('capture parsed funds')):
+            inc.capture(baseline)
+        marker = json.loads(baseline.read_bytes())
+        self.assertEqual({'version', 'code'}, set(marker))
+        self.assertEqual(3, marker['version'])
+        self.assertLess(baseline.stat().st_size, 256)
+
     def test_amended_holding_rebuilds_all_holders_of_only_affected_security(self):
         self.write_fund(1, APPLE, value=1700)
         unrelated = self.root / f'data/stocks/{MICROSOFT}.json'
