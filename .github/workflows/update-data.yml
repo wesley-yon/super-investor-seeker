@@ -221,7 +221,7 @@ jobs:
           restore-keys: |
             sec-clean-v1-parser1-${{ runner.os }}-${{ steps.restore_snapshot.outputs.dataset_id }}-${{ steps.restore_snapshot.outputs.code_sha }}-
 
-      - name: Capture validated baseline before ingestion
+      - name: Capture code identity before ingestion
         if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
         run: python scripts/incremental_pipeline.py capture
 

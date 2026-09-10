@@ -345,7 +345,7 @@ snapshots remain readable and remove stale quantity evidence on restore; estimat
 
 ## Incremental filing updates
 
-The weekday workflow captures a baseline before ingestion, discovers SEC's recent
+The weekday workflow records code compatibility before ingestion, discovers SEC's recent
 13F feed, and processes up to 50 CIK groups in oldest-acceptance order. Discovered
 accessions are saved in `pipeline_state.json.recent_feed_pending` before replay.
 Unfinished and quarantined accessions remain queued across runs, even after they

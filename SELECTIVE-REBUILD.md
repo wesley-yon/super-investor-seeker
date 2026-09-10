@@ -28,6 +28,9 @@ The cache stores hashes of actual bytes, not modification-time promises. Its
 payload has a checksum and is transported only inside the authenticated private
 snapshot. The cache is acceleration state, never source evidence or permission
 to bypass validation. Old snapshots without the optional file remain usable.
+The pre-ingestion marker records only code compatibility. Dependency inventory
+comes from the last complete generation, so regeneration does not retain a
+second large copy of the corpus metadata in memory.
 
 ## Full-rebuild fallback
 
@@ -68,18 +71,56 @@ containing 9,509 funds and 61,127 stock files:
 
 | Phase | Previous updater | Selective updater, warm cache |
 | --- | ---: | ---: |
-| Capture before ingestion | 21.31 s | 5.44 s |
-| Regenerate with no filing changes | 537.67 s | 22.49 s |
-| Combined | 558.98 s | 27.93 s |
+| Capture before ingestion | 21.31 s | 0.007 s |
+| Regenerate with no filing changes | 537.67 s | 22.64 s |
+| Combined | 558.98 s | 22.65 s |
 
 All 70,643 files under `data/` were byte-identical after both the initial full
 generation and the warm selective generation. Warm regeneration reused all seven
 expensive phase groups and rebuilt zero stock files. Parent-process peak RSS
-was 3.39 GB. The uncompressed optional cache was 178.8 MB.
+was 2.11 GB. The uncompressed optional cache was 178.8 MB; the separate
+pre-ingestion compatibility marker was 87 bytes.
 
-Initial cache creation took 800.84 seconds of regeneration, separately from
-25.47 seconds of capture. This full fallback additionally rebuilds every stock
-file and inspects every fund for new master identities. It is intentionally
-more work than the previous updater's unchanged-fund path; the warm savings do
-not apply to missing-cache or changed-code/date runs. These are regeneration
-measurements, excluding ingestion, mandatory publication checks, and deployment.
+Cold cache creation additionally rebuilds every stock file and inspects every
+fund for new master identities. It is intentionally more work than the previous
+updater's unchanged-fund path; the warm savings do not apply to missing-cache
+or changed-code/date runs. The final full-rebuild bootstrap was tested while
+independent corpus checks ran in another checkout, so its wall time is excluded
+from these serial A/B comparisons. These are regeneration measurements,
+excluding ingestion, mandatory publication checks, and deployment.
+
+## Measured filing-change result
+
+A second serial comparison applied the same 13 real fund-file changes from
+verified snapshot
+`735d761c01123bc9f22dd826a4987d4a7322f0ef282ed75fc0f5e738fe457e33`
+to separate copies of the starting corpus. Every incoming and replaced file
+was checked against its recorded SHA-256. Eleven existing funds changed and
+two funds were added. The batch introduced two new security identities, so both
+implementations retained unresolved ticker status and rebuilt the full registry.
+
+| Phase | Previous updater | Selective updater, warm cache |
+| --- | ---: | ---: |
+| Capture before ingestion | 21.49 s | 0.016 s |
+| Regenerate the 13-fund batch | 868.17 s | 815.33 s |
+| Combined | 889.66 s | 815.35 s |
+| Peak parent-process RSS | 14.22 GB | 15.30 GB |
+
+This batch saved about 8% of capture-plus-regeneration time. Its global source,
+registry, portfolio-health, and quantity work limits the savings. Both paths
+rebuilt the same 4,539 stock views. The cache uses additional memory; the compact
+87-byte capture marker avoids retaining another large inventory during source
+extension. These are single paired measurements, not an end-to-end latency promise.
+
+Every one of the resulting 70,647 data files was byte-identical, as were the
+private SEC master/source pair, registry, quantity-evidence books, reviewed map,
+and pipeline state. Separately packaged public artifacts were byte-identical
+across 70,651 files and 738,329,425 bytes. Packaging used the same explicit code
+and dataset identifiers in both builds to hold deployment metadata constant;
+the comparison artifacts were never published.
+
+The final code passed all 1,194 Python tests against the complete corpus, all
+9 Node tests, reviewed-identity validation, the ETF search-description audit,
+and full data validation over 9,511 funds and 61,129 stocks. The five existing
+corpus-quality warnings were unchanged. The manual full-rebuild path and
+optional-cache snapshot round trip are also covered by verification.

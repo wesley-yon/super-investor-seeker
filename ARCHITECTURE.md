@@ -522,6 +522,8 @@ complete corpus up front.
   `.cache/selective_rebuild.json` acceleration cache. Actual file hashes bind
   prior calculations to the fund corpus, SEC/review evidence, output files,
   program code, installed dependencies, and date-sensitive policies.
+  The pre-ingestion marker contains only code compatibility; the last complete
+  generation supplies the dependency inventory, avoiding a duplicate corpus in memory.
 - Unchanged inputs reuse portfolio-health calculations, registry results,
   quantity work, stock/index outputs, and ticker-health aggregates. State and
   complete report rendering still reconcile on every run. Changed fund or peer
