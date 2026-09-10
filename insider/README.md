@@ -330,6 +330,60 @@ does not add a workflow schedule or perform publication. A daily orchestrator
 still needs quarterly bulk refresh, collection, audits, and incremental
 publication; final backfill completion remains unverified.
 
+## Queryable normalized snapshot
+
+`query_export` creates a local SQLite database from an independently pinned frozen
+inventory and its retained document shards. It verifies each selected original
+and normalized response, then stores every normalized record without discarding
+fields. A separate database readback compares every record and its complete
+document provenance. The source archive remains the record of the original bytes.
+
+```sh
+python -m insider_pipeline.query_export --root /restored/checkpoint --inventory-snapshot /frozen/inventory.sqlite3 --inventory-sha256 INVENTORY_FILE_PIN --output /new/private-query-export
+```
+
+Optional `--issuer-cik`, `--filed-from`, and `--filed-through` select an issuer or
+filing-date range inside that snapshot. They do not reinterpret transaction dates.
+The result includes pending/review counts for the selected scope and explicit
+unparsed-document counts. Empty selections are reported as empty; missing or
+corrupt selected documents fail before publishing an output directory. Existing
+outputs are never replaced. Reads use at most eight open shard connections, and
+SQLite writes remain ordered.
+
+The `normalized.sqlite3` database provides `filings`, `owners`, `transactions`,
+`holdings`, `footnotes`, and `signatures` views over complete `record_json` values.
+`documents` contains source URLs, checksums, collection status, inventory metadata,
+and parser-audit metadata. Each financial row is retained once; joint owners are
+separate records. Amendments remain separate filings, duplicate footnote IDs
+remain separate ordered records, and unusual source dates are preserved as text.
+
+An issuer query can use the indexed document metadata without scanning unrelated
+normalized records:
+
+```sql
+SELECT t.accession, t.row_id, t.transaction_date, t.transaction_code,
+       t.transaction_shares, t.transaction_price_per_share,
+       t.transaction_value, t.market_scope, t.source_url
+FROM documents AS d
+JOIN transactions AS t ON t.accession = d.accession
+WHERE d.issuer_cik = 64040
+  AND t.table_kind = 'non_derivative'
+  AND t.transaction_code IN ('P', 'S')
+ORDER BY d.filing_date, t.accession, t.row_number;
+```
+
+P/S rows retain the parser's open-or-private scope; the code alone does not prove
+an open-market trade. Amounts and reported numeric strings remain text, including
+trailing zeros and values beyond binary-float precision. Use exact decimal
+arithmetic for calculations; SQLite numeric aggregates can coerce strings to
+floating-point values. Joining owners directly onto financial rows can multiply
+those rows, so use filing-level owner names or aggregate the owner list first.
+Nested source fields, links, warnings, and all other normalized properties remain
+available in `record_json` even when they are not exposed as view columns.
+
+This export performs no network calls, uploads, or scheduling, and does not
+certify completion of an unfinished backfill.
+
 ## Supplementary bulk-source review
 
 `bulk_review` builds a separate evidence ledger for every non-exact comparison in a pinned source audit. It validates the audit's selection and detail checksums, rechecks affected filings against their retained original XML, and reproduces every comparison from the checksummed SEC bulk ZIP. Each entry preserves original field strings and row numbers, raw bulk records and their ordinal, source URLs and checksums, the archived finding hash, and a diagnostic category. It does not change source documents, normalized values, or the existing audit.
