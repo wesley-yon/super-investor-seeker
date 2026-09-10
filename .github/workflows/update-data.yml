@@ -223,7 +223,11 @@ jobs:
 
       - name: Capture code identity before ingestion
         if: steps.restore_snapshot.outputs.legacy_snapshot != 'true'
-        run: python scripts/incremental_pipeline.py capture
+        # The snapshot retains the published registry and removes its derived
+        # cache mirror. Restore identical bytes before checking reuse receipts.
+        run: |
+          cp data/cusip_registry.json .cache/cusip_registry.json
+          python scripts/incremental_pipeline.py capture
 
       - name: Run pipeline
         id: pipeline

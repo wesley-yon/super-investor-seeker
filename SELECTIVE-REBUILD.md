@@ -24,6 +24,11 @@ dependencies, so removed positions and identifiers do not leave stale outputs.
 Ticker-health aggregation preserves original fund/holding order to retain the
 same tie-breaking and output bytes as a full scan.
 
+The hosted updater recreates `.cache/cusip_registry.json` from the verified
+snapshot's `data/cusip_registry.json` before capturing inputs. The snapshot
+deliberately omits that derived mirror. Both copies must still match the saved
+hashes for registry reuse; altered published bytes trigger reconstruction.
+
 The cache stores hashes of actual bytes, not modification-time promises. Its
 payload has a checksum and is transported only inside the authenticated private
 snapshot. The cache is acceleration state, never source evidence or permission

@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -135,6 +137,43 @@ class SelectiveRebuildTests(unittest.TestCase):
         self.assertEqual({'version', 'code'}, set(marker))
         self.assertEqual(3, marker['version'])
         self.assertLess(baseline.stat().st_size, 256)
+
+    def restore_workflow_registry_mirror(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/update-data.yml').read_text()
+        step = workflow.split('      - name: Capture code identity before ingestion\n', 1)[1]
+        step = step.split('\n      - name:', 1)[0]
+        self.assertIn("legacy_snapshot != 'true'", step)
+        shell = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        # Exercise the workflow's file restoration. run_update below executes
+        # the real capture and regeneration against these dependency fixtures.
+        result = subprocess.run(
+            ['bash'], input='set -euo pipefail\npython() { :; }\n' + shell,
+            cwd=self.root, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_hosted_snapshot_restore_reuses_registry_after_mirror_rehydration(self):
+        before = self.outputs(self.root)
+        p.CUSIP_REGISTRY_PATH.unlink()  # Deliberately omitted by the snapshot contract.
+        self.restore_workflow_registry_mirror()
+        self.assertEqual(p.LEGACY_CUSIP_REGISTRY_PATH.read_bytes(), p.CUSIP_REGISTRY_PATH.read_bytes())
+        with mock.patch.object(p, 'build_cusip_registry', wraps=p.build_cusip_registry) as builder:
+            result = self.run_update()
+        builder.assert_not_called()
+        self.assertIn('registry', result['reused_phases'])
+        self.assertIn('labels', result['reused_phases'])
+        self.assertEqual(7, len(result['reused_phases']))
+        self.assertEqual(before, self.outputs(self.root))
+
+    def test_hosted_registry_mirror_does_not_certify_changed_published_bytes(self):
+        p.CUSIP_REGISTRY_PATH.unlink()
+        registry = json.loads(p.LEGACY_CUSIP_REGISTRY_PATH.read_bytes())
+        registry[APPLE]['name'] = 'ALTERED PUBLISHED LABEL'
+        p.LEGACY_CUSIP_REGISTRY_PATH.write_text(json.dumps(registry))
+        self.restore_workflow_registry_mirror()
+        result = self.compare_with_full()
+        self.assertEqual(2, result['registry_cusips_rebuilt'])
+        self.assertNotIn('registry', result['reused_phases'])
 
     def test_amended_holding_rebuilds_all_holders_of_only_affected_security(self):
         self.write_fund(1, APPLE, value=1700)
