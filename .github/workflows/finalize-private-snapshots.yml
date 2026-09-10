@@ -315,7 +315,10 @@ jobs:
              [ "$active_release_tag" != "$EXPECTED_RELEASE_TAG" ]; then
             if [ "$EXPECTED_PREVIOUS_LATEST_RELEASE_TAG" != "$EXPECTED_RELEASE_TAG" ] ||
                [[ ! "$active_release_tag" =~ ^dataset-[A-Za-z0-9._-]+$ ]] ||
-               ! jq -e --argjson expected_release "$release_json" '
+               ! printf '%s\n%s\n' "$release_json" "$active_release_json" |
+                 jq -es '
+                   .[0] as $expected_release | .[1]
+                   |
                    type == "object"
                    and ((.tag_name | type) == "string")
                    and ((.draft | type) == "boolean")
@@ -327,7 +330,7 @@ jobs:
                    and (($expected_release.published_at | type) == "string")
                    and ((.published_at | fromdateiso8601)
                      > ($expected_release.published_at | fromdateiso8601))
-                 ' <<<"$active_release_json" >/dev/null; then
+                 ' >/dev/null; then
               echo "::error::The active release changed unexpectedly before finalization"
               exit 1
             fi
@@ -566,9 +569,12 @@ jobs:
               "/repos/$DATA_REPOSITORY/git/matching-refs/tags/dataset-"
           )
           orphan_tags_json=$(
-            jq -cn \
-              --argjson release_pages "$retained_json" \
-              --argjson ref_pages "$dataset_tag_refs_json" '
+            # API pages can exceed the operating system's argument limit.
+            # Bash's builtin printf streams them without exporting large argv.
+            printf '%s\n%s\n' "$retained_json" "$dataset_tag_refs_json" |
+              jq -cs '
+              .[0] as $release_pages | .[1] as $ref_pages
+              |
               ($release_pages | add // [] | map(.tag_name)) as $release_tags
               | (
                   ($ref_pages | add // []

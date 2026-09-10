@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -332,6 +333,7 @@ gh_mutate_once() {
         *,
         active_release_json: str,
         expected_previous_latest_release_tag: str = "dataset-expected",
+        expected_release_json: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], int]:
         finalization = self._finalization_shell()
         block_start = finalization.index(
@@ -342,7 +344,7 @@ gh_mutate_once() {
         )
         block_source = textwrap.dedent(finalization[block_start:block_end])
 
-        expected_release_json = (
+        expected_release_json = expected_release_json or (
             '{"tag_name":"dataset-expected","draft":false,'
             '"prerelease":false,"published_at":"2026-08-21T20:09:07Z"}'
         )
@@ -350,6 +352,8 @@ gh_mutate_once() {
             counters = Path(tmpdir)
             mutation_counter = counters / "mutation"
             mutation_counter.write_text("0\n", encoding="utf-8")
+            (counters / "active.json").write_text(active_release_json, encoding="utf-8")
+            (counters / "expected.json").write_text(expected_release_json, encoding="utf-8")
             script = "\n".join(
                 (
                     "set -euo pipefail",
@@ -370,7 +374,7 @@ gh_mutate_once() {
                     r"""
 gh_read_retry() {
   if [ "$1" = api ] && [[ "$2" == */releases/tags/* ]]; then
-    printf '%s\n' "$EXPECTED_RELEASE_JSON"
+    cat "$COUNTER_DIR/expected.json"
     return 0
   fi
   if [ "$1" = release ] && [ "$2" = download ]; then
@@ -396,9 +400,9 @@ gh_read_retry() {
   fi
   if [ "$1" = api ] && [[ "$2" == */releases/latest ]]; then
     if [ "${3:-}" = --jq ]; then
-      jq -r "${4:-.}" <<<"$ACTIVE_RELEASE_JSON"
+      jq -r "${4:-.}" "$COUNTER_DIR/active.json"
     else
-      printf '%s\n' "$ACTIVE_RELEASE_JSON"
+      cat "$COUNTER_DIR/active.json"
     fi
     return 0
   fi
@@ -428,9 +432,7 @@ mapfile() {
             env = os.environ.copy()
             env.update(
                 {
-                    "ACTIVE_RELEASE_JSON": active_release_json,
                     "COUNTER_DIR": tmpdir,
-                    "EXPECTED_RELEASE_JSON": expected_release_json,
                 }
             )
             result = subprocess.run(
@@ -464,6 +466,8 @@ mapfile() {
         with tempfile.TemporaryDirectory() as tmpdir:
             deletion_log = Path(tmpdir) / "deletions"
             deletion_log.write_text("", encoding="utf-8")
+            (Path(tmpdir) / "releases.json").write_text(release_pages, encoding="utf-8")
+            (Path(tmpdir) / "refs.json").write_text(ref_pages, encoding="utf-8")
             script = "\n".join(
                 (
                     "set -euo pipefail",
@@ -473,8 +477,8 @@ mapfile() {
                     r"""
 gh_read_retry() {
   case "$*" in
-    *"/releases?per_page=100"*) printf '%s\n' "$RELEASE_PAGES" ;;
-    *"/git/matching-refs/tags/dataset-"*) printf '%s\n' "$REF_PAGES" ;;
+    *"/releases?per_page=100"*) cat "$RESPONSE_DIR/releases.json" ;;
+    *"/git/matching-refs/tags/dataset-"*) cat "$RESPONSE_DIR/refs.json" ;;
     *) return 99 ;;
   esac
 }
@@ -503,8 +507,7 @@ reconcile_tag_deletion() {
             env.update(
                 {
                     "DELETION_LOG": str(deletion_log),
-                    "REF_PAGES": ref_pages,
-                    "RELEASE_PAGES": release_pages,
+                    "RESPONSE_DIR": tmpdir,
                 }
             )
             result = subprocess.run(
@@ -1144,6 +1147,19 @@ gh_mutate_once() {
         self.assertIn("reached-cleanup=true", result.stdout)
         self.assertEqual(1, mutation_count)
 
+    def test_nonrollback_finalizer_handles_large_release_bodies(self):
+        expected = {
+            "tag_name": "dataset-expected", "draft": False, "prerelease": False,
+            "published_at": "2026-08-21T20:09:07Z", "body": "x" * 2097152,
+        }
+        active = {**expected, "tag_name": "dataset-newer",
+                  "published_at": "2026-08-21T21:13:28Z"}
+        result, mutations = self._run_nonrollback_finalization_until_cleanup(
+            active_release_json=json.dumps(active), expected_release_json=json.dumps(expected))
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("superseded", result.stdout.lower())
+        self.assertEqual(0, mutations)
+
     def test_nonrollback_finalizer_fails_closed_for_untrusted_pointer_change(self):
         cases = {
             "older_release": (
@@ -1240,6 +1256,24 @@ gh_mutate_once() {
         self.assertNotEqual(0, result.returncode)
         self.assertIn("Refusing to delete protected snapshot tag", result.stdout)
         self.assertEqual([], deleted_tags)
+
+    def test_orphan_sweep_handles_responses_larger_than_process_argument_limits(self):
+        releases = [[{"tag_name": "dataset-active"}, {"tag_name": "dataset-fallback"},
+                     {"tag_name": "candidate-sec-retained"}, {"tag_name": "insider-preflight"}]]
+        refs = [[{"ref": "refs/tags/dataset-active"},
+                 {"ref": "refs/tags/dataset-fallback"}, {"ref": "refs/tags/dataset-orphan"}]]
+        for large_field in ("releases", "refs"):
+            with self.subTest(large_field=large_field):
+                large_releases = json.loads(json.dumps(releases))
+                large_refs = json.loads(json.dumps(refs))
+                if large_field == "releases":
+                    large_releases[0][-1]["body"] = "x" * 2097152
+                else:
+                    large_refs[0].extend([{"ref": "refs/tags/dataset-active"}] * 64000)
+                result, deleted = self._run_orphan_tag_sweep(
+                    release_pages=json.dumps(large_releases), ref_pages=json.dumps(large_refs))
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual(["dataset-orphan"], deleted)
 
     def test_orphan_sweep_fails_closed_if_fallback_release_is_missing(self):
         result, deleted_tags = self._run_orphan_tag_sweep(
