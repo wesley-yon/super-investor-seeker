@@ -143,7 +143,10 @@ def import_sources(db, parsed):
     old_sources = {row['source_key']: dict(row) for row in db.execute('SELECT * FROM sources')}
     changed = [item for item in parsed if item['source_key'] not in old_sources
                or (old_sources[item['source_key']]['sha256'], old_sources[item['source_key']]['bytes'], old_sources[item['source_key']]['url'])
-               != (item['metadata']['sha256'], item['metadata']['bytes'], item['metadata']['url'])]
+               != (item['metadata']['sha256'], item['metadata']['bytes'], item['metadata']['url'])
+               # An advancing cutoff may admit additional filings from the
+               # same retained ZIP. Equal bytes alone cannot skip that import.
+               or old_sources[item['source_key']]['filing_count'] != item['filing_count']]
     changes = []
     # First remove withdrawn associations across every selected quarter. An
     # original remains in the inventory and its prior bulk observation is kept.

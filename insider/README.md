@@ -200,6 +200,54 @@ not advance the filing-date cutoff, publish an archive, or activate maintenance.
 The daily orchestrator still needs published-quarter selection, index discovery,
 collection, audits, publication, and retention.
 
+## Combined maintenance preparation
+
+`maintenance_refresh` reconciles selected indexes and published ownership ZIPs
+against one frozen inventory before selecting the affected-original union. It
+retains the [SEC dataset page](https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets)
+and follows its exact download links, including older SEC directory paths.
+The default includes all newly published in-scope quarters and the two latest
+published quarters. More than four required ZIPs fails explicitly; catch up with
+the bounded bulk-refresh command before preparing maintenance. Quarterly ZIPs
+are filtered by the full filing-date scope because SEC releases can carry filings
+from the preceding quarter. Advancing the cutoff also imports newly eligible
+records from an unchanged ZIP.
+
+```python
+from insider_pipeline import maintenance_refresh
+from insider_pipeline.github_session import open_inventory
+
+session = open_inventory(tag, transport_pin, recovery_directory)
+plan = maintenance_refresh.prepare(session.root / 'inventory.sqlite3', plan_directory,
+                                   through, client=sec_client, workers=2)
+session.recover_maintenance(plan_directory, plan['plan_sha256'],
+                            document_index_pin=document_index_pin)
+maintenance_refresh.materialize(plan_directory, plan['plan_sha256'], session.root,
+                                 candidate_directory)
+```
+
+The CLI provides `prepare --inventory PATH --output PATH --through YYYY-MM-DD
+--fetch-sec` and `materialize --plan PATH --plan-sha256 HASH --restored-parent PATH
+--output PATH`. Optional `--index-quarters`, `--bulk-quarters`, and `--workers`
+bound the work. A verified `--cache` has `catalog`, `indexes`, and `quarterly`
+subdirectories containing URL-hashed `.body`/`.json` pairs; it cannot be combined
+with fresh retrieval. Index and ZIP fetch pools share one client clock and split
+the fixed worker budget. ZIP parsing uses independent processes; inventory writes
+remain ordered, with `--workers 1` providing a serial fallback.
+
+The complete plan and its retained sources are checked again before use. An
+independent replay of both source sets must reproduce every proposed inventory
+change. Each affected original is recovered and reprocessed once, with original
+compressed bytes and fetch time preserved. New indexes and ZIPs travel with the
+same candidate so its subsequent increment can retain both kinds of provenance.
+Tests cover cutoff and quarter transitions, publication links, overlapping
+changes, unchanged-ZIP eligibility, value-only revisions, source corruption,
+serial/parallel equality, and full archive restoration.
+
+This component does not collect new originals, run a financial source audit,
+publish an archive, verify final cutoff completeness, or activate a schedule.
+Those remain subsequent steps in the daily orchestrator and backfill completion.
+
 ## Adaptive recovery after inventory discovery
 
 `github_session.open_inventory` retains the verified archive chain and download

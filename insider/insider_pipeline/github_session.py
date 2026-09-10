@@ -46,6 +46,11 @@ class InventorySession:
         return self._recover_plan(directory, pin, document_index_pin, read_plan,
                                    'bulk_refresh_plan', 'local_bulk_refresh_plan')
 
+    def recover_maintenance(self, directory, pin, *, document_index_pin=None):
+        from .maintenance_refresh import read_plan
+        return self._recover_plan(directory, pin, document_index_pin, read_plan,
+                                   'maintenance_plan', 'local_maintenance_plan')
+
     def _recover_plan(self, directory, pin, document_index_pin, read_plan, prefix, selection_source):
         if self.used:
             raise ValueError('A staged recovery session accepts only one final selection')
