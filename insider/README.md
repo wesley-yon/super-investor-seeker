@@ -200,6 +200,48 @@ not advance the filing-date cutoff, publish an archive, or activate maintenance.
 The daily orchestrator still needs published-quarter selection, index discovery,
 collection, audits, publication, and retention.
 
+## Bounded cloud maintenance run
+
+The manually dispatched `Maintain private insider checkpoint` workflow composes
+inventory recovery, complete lookup-index loading, combined SEC-source refresh,
+original recovery, bounded new collection, independent source audit, incremental
+packaging, lookup-index extension, and private archive upload/readback. It runs
+trusted `main` code on a standard runner in the existing `private-data`
+environment. Preparation receives an archive read token. A separate write token
+for the private data repository is issued only after the complete candidate and
+audit have passed.
+
+Provide the exact parent archive bucket, transport checksum, complete document
+index checksum, and destination bucket. `max_filings` defaults to 250 and is
+bounded to 1–1,000. The collection phase selects a fixed set before recovery,
+uses a 600-second budget, and caps attempts as well as successful downloads.
+An optional `collection_start` narrows that run's filing dates; the default
+covers eligible pending work throughout the inventory. Required inherited bulk
+ZIPs are recovered before collecting and auditing those selected originals.
+The default cutoff is yesterday's New York calendar date; the current day and
+future dates are refused. That cutoff choice does not certify index completeness.
+
+```sh
+python -m insider_pipeline.cloud_maintenance prepare --output /new/private-work --tag PARENT_BUCKET --transport-sha256 PARENT_PIN --document-index-sha256 INDEX_PIN --max-filings 250
+python -m insider_pipeline.cloud_maintenance publish --work /new/private-work --prepared-sha256 PREPARED_PIN --bucket-tag DESTINATION_BUCKET
+```
+
+Use `SEC_USER_AGENT` and existing `gh` authentication; credentials are never
+command arguments. Each command emits a result containing counts and pins.
+Raw filing diagnostics stay in its private workspace. Stored responses that
+cannot be parsed remain explicitly in `review`, with unparsed-document counts;
+network failures retain retry state. Original-field or checksum failures prevent
+normalized-data packaging and publication. Final backfill completion still
+requires resolving or documenting all outstanding cases.
+
+The complete document index is loaded even when no historical original needs
+rechecking, so extension reads only newly archived chunks. Uploads are immutable
+and verified through independent downloads. Existing bucket assets and the
+normal dataset release pointer are preserved. New buckets remain private drafts;
+published prerelease buckets accept verified appended assets. The final report
+provides the next transport and lookup-index pins. This manual workflow does not
+install a daily schedule or maintain a mutable latest-checkpoint pointer.
+
 ## Combined maintenance preparation
 
 `maintenance_refresh` reconciles selected indexes and published ownership ZIPs

@@ -267,11 +267,29 @@ def finish(db, row, record, relative):
             record['parsed_sha256'], relative, utcnow(), record['review_count'], row['accession']))
 
 
-def run(root, client, workers=4, limit=0, seconds=0, start='', end='', sample_each_form=0):
+def run(root, client, workers=4, limit=0, seconds=0, start='', end='', sample_each_form=0,
+        *, accessions=None, attempt_limit=0):
+    if (type(workers) is not int or not 1 <= workers <= 4
+            or any(type(value) is not int or value < 0 for value in (limit, seconds, sample_each_form, attempt_limit))):
+        raise ValueError('Collection worker and work limits must be bounded nonnegative integers')
+    if accessions is not None and (not isinstance(accessions, (list, tuple)) or len(accessions) > 1000
+            or any(not isinstance(value, str) or not re.fullmatch(r'\d{10}-\d{2}-\d{6}', value) for value in accessions)
+            or len(set(accessions)) != len(accessions) or sample_each_form):
+        raise ValueError('An explicit collection selection must contain at most 1000 distinct accessions')
+    handlers = {name: signal.getsignal(name) for name in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        return _run(root, client, workers, limit, seconds, start, end, sample_each_form, accessions, attempt_limit)
+    finally:
+        for name, handler in handlers.items():
+            signal.signal(name, handler)
+
+
+def _run(root, client, workers, limit, seconds, start, end, sample_each_form, accessions, attempt_limit):
     root = Path(root)
     started = time.monotonic()
     stop = False
-    completed = errors = 0
+    completed = errors = attempted = 0
+    initial_requests, initial_bytes = client.requests, client.download_bytes
     pending = {}
 
     def stop_soon(signum, frame):
@@ -295,6 +313,11 @@ def run(root, client, workers=4, limit=0, seconds=0, start='', end='', sample_ea
             clauses.append('filing_date>=?'); params.append(start)
         if end:
             clauses.append('filing_date<=?'); params.append(end)
+        if accessions is not None:
+            db.execute('CREATE TEMP TABLE collection_selection(accession TEXT PRIMARY KEY)')
+            db.executemany('INSERT INTO collection_selection VALUES(?)', [(value,) for value in accessions])
+            db.commit()
+            clauses.append('accession IN (SELECT accession FROM collection_selection)')
         selected = None
         if sample_each_form:
             selected = []
@@ -318,8 +341,9 @@ def run(root, client, workers=4, limit=0, seconds=0, start='', end='', sample_ea
             elapsed = time.monotonic() - started
             report = {'pid': os.getpid(), 'phase': phase, 'updated_at': utcnow(),
                       'elapsed_seconds': round(elapsed, 1), 'completed_this_run': completed,
-                      'network_errors_this_run': errors, 'http_requests_this_run': client.requests,
-                      'download_bytes_this_run': client.download_bytes,
+                      'attempted_this_run': attempted,
+                      'network_errors_this_run': errors, 'http_requests_this_run': client.requests - initial_requests,
+                      'download_bytes_this_run': client.download_bytes - initial_bytes,
                       'filings_per_second': round(completed / elapsed, 3) if elapsed else 0,
                       'inflight': len(pending),
                       'counts': dict(db.execute('SELECT status,count(*) FROM filings GROUP BY status'))}
@@ -339,6 +363,8 @@ def run(root, client, workers=4, limit=0, seconds=0, start='', end='', sample_ea
                     capacity = workers - len(pending)
                     if limit:
                         capacity = min(capacity, limit - completed - len(pending))
+                    if attempt_limit:
+                        capacity = min(capacity, attempt_limit - attempted)
                     if not stop and capacity > 0:
                         if shutil.disk_usage(root).free < 10 * 1024 ** 3:
                             raise RuntimeError('Less than 10 GiB free: pausing collection before disk exhaustion')
@@ -354,6 +380,7 @@ def run(root, client, workers=4, limit=0, seconds=0, start='', end='', sample_ea
                             with db:
                                 db.execute("UPDATE filings SET status='inflight',attempts=attempts+1,updated_at=? WHERE accession=?",
                                            (utcnow(), row['accession']))
+                            attempted += 1
                             pending[pool.submit(fetch, row)] = row
                     if not pending and not stop and capacity > 0 and rows and (not limit or completed < limit):
                         continue
@@ -404,9 +431,10 @@ def main():
     parser.add_argument('--start', default='')
     parser.add_argument('--end', default='')
     parser.add_argument('--sample-each-form', type=int, default=0)
+    parser.add_argument('--attempt-limit', type=int, default=0)
     args = parser.parse_args()
     run(args.root, SecClient(os.environ.get('SEC_USER_AGENT', '')), args.workers,
-        args.limit, args.seconds, args.start, args.end, args.sample_each_form)
+        args.limit, args.seconds, args.start, args.end, args.sample_each_form, attempt_limit=args.attempt_limit)
 
 
 if __name__ == '__main__':

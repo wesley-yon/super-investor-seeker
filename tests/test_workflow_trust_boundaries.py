@@ -104,6 +104,20 @@ class WorkflowTrustBoundaryTests(unittest.TestCase):
         self.assertIn('INSIDER_RELEASE_TAG: ${{ inputs.release_tag }}', workflow)
         self.assertIn('--tag "$INSIDER_RELEASE_TAG"', workflow)
 
+    def test_insider_maintenance_limits_read_and_write_tokens_to_ordered_main_steps(self):
+        workflow = (WORKFLOWS / 'maintain-insider-checkpoint.yml').read_text()
+        policy = job_header(workflow, 'maintain')
+        self.assertIn("github.ref == 'refs/heads/main' && github.event.repository.private == false", policy)
+        self.assertIn('environment: private-data', policy)
+        self.assertEqual(['read', 'write'], re.findall(r'permission-contents: (\w+)', workflow))
+        self.assertLess(workflow.index('cloud_maintenance prepare'), workflow.index('id: archive-writer'))
+        self.assertLess(workflow.index('id: archive-writer'), workflow.index('cloud_maintenance publish'))
+        self.assertIn('--max-filings "$INSIDER_MAX_FILINGS" --seconds 600 --workers 2', workflow)
+        self.assertNotIn('upload-artifact', workflow)
+        self.assertNotRegex(workflow, r'(?m)^  (schedule|push|pull_request):')
+        self.assertNotRegex(workflow, r'(?m)^\s+(?:contents|actions|pages): write$')
+        self.assertEqual(workflow.count('repositories: super-investor-seeker-data'), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

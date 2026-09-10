@@ -46,12 +46,12 @@ class InventorySession:
         return self._recover_plan(directory, pin, document_index_pin, read_plan,
                                    'bulk_refresh_plan', 'local_bulk_refresh_plan')
 
-    def recover_maintenance(self, directory, pin, *, document_index_pin=None):
+    def recover_maintenance(self, directory, pin, *, document_index_pin=None, additional_source_quarters=None):
         from .maintenance_refresh import read_plan
         return self._recover_plan(directory, pin, document_index_pin, read_plan,
-                                   'maintenance_plan', 'local_maintenance_plan')
+                                   'maintenance_plan', 'local_maintenance_plan', additional_source_quarters)
 
-    def _recover_plan(self, directory, pin, document_index_pin, read_plan, prefix, selection_source):
+    def _recover_plan(self, directory, pin, document_index_pin, read_plan, prefix, selection_source, additional_sources=None):
         if self.used:
             raise ValueError('A staged recovery session accepts only one final selection')
         try:
@@ -59,8 +59,11 @@ class InventorySession:
             _, plan, accessions = read_plan(directory, pin)
             if plan['parent_inventory_state'] != self.chain[-1]['manifest']['target_inventory_state']:
                 raise ValueError('Discovery plan parent differs from the pinned recovery session')
+            sources = set(plan['required_bulk_quarters'])
+            if additional_sources is not None:
+                sources.update(github_sources.quarter_keys(additional_sources))
             result = self.recover(accessions, document_index_pin=document_index_pin,
-                                  source_quarters=plan['required_bulk_quarters'] or None)
+                                  source_quarters=sorted(sources) or None)
         except Exception:
             self.used = True
             (self.output / 'cloud-verification.json').unlink(missing_ok=True)
